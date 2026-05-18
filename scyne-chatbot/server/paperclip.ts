@@ -58,6 +58,10 @@ export const paperclip = {
     return call("GET", `/issues/${issueId}/comments`);
   },
 
+  addComment(issueId: string, body: string) {
+    return call("POST", `/issues/${issueId}/comments`, { body });
+  },
+
   getWorkProducts(issueId: string) {
     return call("GET", `/issues/${issueId}/work-products`);
   },

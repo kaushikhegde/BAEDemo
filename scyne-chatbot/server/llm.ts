@@ -56,17 +56,22 @@ function formatFeatures(tree: Record<string, { name: string; counts: Record<stri
     .join("\n");
 }
 
-function buildSystemPrompt(featuresBlock: string): string {
+function buildSystemPrompt(featuresBlock: string, target?: { project: string | null; feature: string | null } | null): string {
+  const targetBlock = target?.project && target?.feature
+    ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
+    : "";
   return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.
 
 Inputs live under a project + feature hierarchy:
 
 \`\`\`
 ./projects/<project>/<feature>/
-├── policy/         (policy & domain docs)
-├── transcripts/    (meeting transcripts)
-├── notes/          (additional notes)
-└── ui/             (UI mockups / screens)
+├── requirements/
+│   ├── Policy/        (policy & domain docs)
+│   ├── Transcripts/   (meeting transcripts)
+│   ├── Notes/         (additional notes)
+│   └── UI/            (UI mockups / screens)
+└── design/            (style guides + example screens for the UI agent)
 \`\`\`
 
 ## Current state of the workspace
@@ -76,6 +81,7 @@ Available projects and features on disk right now:
 ${featuresBlock}
 
 This list is refreshed every time we talk, so trust it as the current truth.
+${targetBlock}
 
 ## Defaults used unless the user overrides
 
@@ -90,19 +96,35 @@ This list is refreshed every time we talk, so trust it as the current truth.
 
 ## Conversation flow — important
 
-Follow this discovery pattern unless the user jumps ahead:
+You orchestrate two workflows from the same chat:
+
+1. **Requirements** — turns transcripts + policy + UI screens into Jira stories + a Confluence Product Summary. Invoked via the \`trigger_requirement_generation\` tool.
+2. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool.
+
+### Requirements path
 
 1. **Greet briefly.** Just say hi. Do NOT list projects, features, or defaults upfront. Wait for the user to ask.
-2. **When the user asks about projects** (e.g. "what projects do you have?", "show me projects", "list projects") — respond with the project names from the workspace list above, one per line. Ask which one they want to dig into.
-3. **When the user picks a project** (e.g. "SADA", "tell me about SADA") — respond with the features under that project, one per line. Ask which feature.
-4. **When the user picks a feature** (e.g. "interim-benefit") — confirm in one line ("OK, I'll process *SADA / interim-benefit*"). Briefly note any defaults that matter. Ask if they're ready to fire.
-5. **When the user confirms** (any natural phrasing — "go", "fire it", "yes", "generate the product summary and Jira tickets", "run it") — call the \`trigger_requirement_generation\` tool with the chosen project + feature.
+2. **When the user asks about projects** — respond with the project names, one per line. Ask which one.
+3. **When the user picks a project** — respond with the features under that project, one per line. Ask which feature.
+4. **When the user picks a feature** — confirm in one line ("OK, I'll process *SADA / interim-benefit*"). Note any defaults. Ask if they're ready.
+5. **When the user confirms** (any natural phrasing — "go", "fire it", "yes", "run it", "generate") — call \`trigger_requirement_generation\` with the chosen project + feature.
 
-If the user jumps straight to "process SADA / interim-benefit" or similar — skip the discovery steps and go straight to step 4 or 5 as appropriate.
+### UI build path
 
-When you call the tool, ALWAYS include \`project\` and \`feature\`. Add any other overrides the user mentioned. Omit fields that should use defaults.
+The user can request a UI build either upfront ("make the UI for SADA/interim-benefit") or after the BA finishes ("yes, build it" in response to the post-push prompt).
 
-After firing, the application surfaces progress and approval. Don't add commentary unless the user asks something new.
+- **Upfront request** (e.g. "build the UI for SADA / interim-benefit", "make a UI for X", "design the screens for X"): call \`trigger_ui_build\` with the chosen project + feature. The backend will check that BA outputs (product-summary.md) exist; if not, it'll surface an error and you should ask the user whether to run the requirements flow first.
+- **After BA push**: when the Activity timeline shows the BA flow is \`done\` and a Confluence URL is live, the application may surface a quick "Yes, build the UI" action. Treat any affirmative reply ("yes", "build it", "go ahead") as a request to call \`trigger_ui_build\` for the currently active project/feature.
+
+If the user asks both at once ("generate requirements and build the UI for SADA/interim-benefit"): call \`trigger_requirement_generation\` first. The UI build prompt will follow automatically once requirements are done.
+
+### Target picker sync
+
+The user can pick a project + feature either from the UI's target picker OR by typing it in chat (e.g. "use SADA / interim-benefit", "switch to SADA / interim-benefit"). If they name a target in chat without committing to an action, call \`set_target\` so the UI picker reflects their selection. Don't call \`set_target\` if you're about to call a trigger tool in the same turn — the trigger tools update the picker themselves.
+
+When you call either tool, ALWAYS include \`project\` and \`feature\`. Omit fields that should use defaults.
+
+After firing, the application surfaces progress. Don't add commentary unless the user asks something new.
 
 Speak warmly and concisely. Australian English. No marketing fluff. Short replies — one or two short lines per turn unless the user asks for detail.`;
 }
@@ -125,6 +147,30 @@ const triggerTool: Tool = {
           jira_project_key: { type: SchemaType.STRING, description: "Override the default Jira project key." },
           confluence_space_key: { type: SchemaType.STRING, description: "Override the default Confluence space key." },
           confluence_page_title: { type: SchemaType.STRING, description: "Override the default Confluence page title." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "set_target",
+      description: "Update the target project + feature in the UI's target picker WITHOUT firing any workflow. Call this when the user names a project + feature in chat (e.g. 'use SADA / interim-benefit', 'switch to SADA / interim-benefit') but hasn't yet committed to generating requirements or building the UI. The UI picker will reflect the change; subsequent action tools (trigger_requirement_generation, trigger_ui_build) can then assume this target.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_ui_build",
+      description: "Fires the UI agent to scaffold a Vite + React + shadcn/ui app from the BA's Product Summary + the design folder. Call this when the user asks to make / build / design the UI for a specific project + feature, or affirmatively answers a 'build the UI?' prompt after the BA finishes.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
         },
         required: ["project", "feature"],
       },
@@ -175,9 +221,12 @@ function normalize(response: any) {
   return { content: blocks };
 }
 
-export async function chat(messages: AnthropicMsg[]) {
+export async function chat(
+  messages: AnthropicMsg[],
+  target?: { project: string | null; feature: string | null } | null,
+) {
   const tree = await listAvailable();
-  const systemPrompt = buildSystemPrompt(formatFeatures(tree));
+  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target);
 
   const history = toGeminiHistory(messages);
   const lastUser = history.pop();

@@ -3,6 +3,17 @@ import path from "node:path";
 export type Subfolder = "policy" | "transcripts" | "notes" | "ui";
 export type Hint = Subfolder | "audio" | undefined;
 
+const DISK_SUBFOLDER: Record<Subfolder, string> = {
+  policy: "Policy",
+  transcripts: "Transcripts",
+  notes: "Notes",
+  ui: "UI",
+};
+
+export function requirementsDir(workspace: string, project: string, feature: string, sub: Subfolder): string {
+  return `${workspace}/projects/${project}/${feature}/requirements/${DISK_SUBFOLDER[sub]}`;
+}
+
 export interface RouteResult {
   subfolder: Subfolder;
   savedName: string;

@@ -30,6 +30,7 @@ inputs/
 inputs-source/
 outputs/
 projects/
+generated-apps/
 
 # Misc
 *.log

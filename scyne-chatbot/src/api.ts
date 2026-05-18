@@ -1,8 +1,11 @@
-export async function postChat(messages: { role: "user" | "assistant"; content: any }[]) {
+export async function postChat(
+  messages: { role: "user" | "assistant"; content: any }[],
+  target?: { project: string | null; feature: string | null },
+) {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, target }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -20,6 +23,36 @@ export async function postTrigger(overrides: Record<string, string> = {}) {
 
 export async function getStatus(issueId: string) {
   const r = await fetch(`/api/status/${issueId}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function hasPreview(project: string, feature: string): Promise<boolean> {
+  const r = await fetch(`/api/preview/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`);
+  return r.ok;
+}
+
+export async function triggerUiBuild(project: string, feature: string) {
+  const r = await fetch("/api/ui-agent/trigger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, feature }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body?.message || body?.error || `UI trigger failed (${r.status})`);
+    (err as any).code = body?.error;
+    throw err;
+  }
+  return r.json();
+}
+
+export async function postUiComment(issueId: string, body: string) {
+  const r = await fetch("/api/ui-agent/comment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ issueId, body }),
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

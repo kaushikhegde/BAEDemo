@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket as WSWebSocket } from "ws";
 import { chat } from "./llm.js";
 import { paperclip } from "./paperclip.js";
 import type { RequirementParams } from "./types.js";
-import { routeFile, uniqueName, type Hint } from "./services/fileRouter.js";
+import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { writeTranscript } from "./services/transcriptWriter.js";
 import { transcribeAudioFile } from "./services/geminiFiles.js";
 import { MeetingSession } from "./services/geminiLive.js";
@@ -18,11 +18,13 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// 1. Chat — proxy to Claude
+// 1. Chat — proxy to Gemini. `target` (optional) is the current target picker
+//    selection in the UI; we forward it so the LLM stops re-asking when the
+//    user has already selected a project/feature.
 app.post("/api/chat", async (req, res) => {
   try {
-    const { messages } = req.body;
-    const result = await chat(messages);
+    const { messages, target } = req.body;
+    const result = await chat(messages, target);
     res.json(result);
   } catch (e: any) {
     console.error(e);
@@ -69,9 +71,9 @@ app.post("/api/trigger", async (req, res) => {
       ``,
       `## Inputs`,
       `Read every file in every subfolder of:`,
-      `\`${ws}/projects/${project}/${feature}/\``,
+      `\`${ws}/projects/${project}/${feature}/requirements/\``,
       ``,
-      `Subfolders: policy/, transcripts/, notes/, ui/.`,
+      `Subfolders: Policy/, Transcripts/, Notes/, UI/.`,
     ].join("\n");
 
     const issue = await paperclip.createIssue(
@@ -341,7 +343,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       });
     }
 
-    const targetDir = path.join(WORKSPACE_PATH, "projects", project, feature, route.subfolder);
+    const targetDir = requirementsDir(WORKSPACE_PATH, project, feature, route.subfolder);
     await fs.mkdir(targetDir, { recursive: true });
     const savedName = await uniqueName(targetDir, route.savedName);
     await fs.writeFile(path.join(targetDir, savedName), req.file.buffer);
@@ -349,11 +351,92 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       kind: "file",
       subfolder: route.subfolder,
       filename: savedName,
-      relativePath: path.join("projects", project, feature, route.subfolder, savedName),
+      relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, savedName)),
     });
   } catch (e: any) {
     console.error("[upload] failed:", e);
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// 7a. Trigger a UI build — creates a PM-assigned issue with the "Build UI — ..." title.
+//     PM detects this intent, validates outputs/product-summary.md exists, then delegates
+//     to BA who in turn dispatches the UI agent (its direct report).
+app.post("/api/ui-agent/trigger", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    if (!project || !feature) return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
+    assertSafeProjectFeature(project, feature);
+
+    // Quick local check so we can fail fast with a clear error in the chat.
+    const summaryPath = path.join(WORKSPACE_PATH, "projects", project, feature, "outputs", "product-summary.md");
+    try {
+      await fs.access(summaryPath);
+    } catch {
+      return res.status(409).json({
+        error: "no_requirements",
+        message: `No requirements found for ${project}/${feature}. Run the BA flow first, or drop a product-summary.md under outputs/.`,
+      });
+    }
+
+    const title = `Build UI — ${project}/${feature}`;
+    const description = [
+      `project: ${project}`,
+      `feature: ${feature}`,
+      `intent: build_ui`,
+      ``,
+      `Inputs:`,
+      `- projects/${project}/${feature}/design/style-guides/`,
+      `- projects/${project}/${feature}/design/example-screens/`,
+      `- projects/${project}/${feature}/outputs/product-summary.md`,
+      `- projects/${project}/${feature}/outputs/stories.json`,
+    ].join("\n");
+
+    // Assigned to PM (existing pattern). PM routes to BA, BA dispatches UI.
+    const issue = await paperclip.createIssue(title, description);
+    res.json(issue);
+  } catch (e: any) {
+    console.error("[ui-agent/trigger] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// 7b. Preview registry lookup for the iframe pane.
+app.get("/api/preview/:project/:feature", async (req, res) => {
+  try {
+    const { project, feature } = req.params;
+    assertSafeProjectFeature(project, feature);
+    const registryPath = path.join(WORKSPACE_PATH, "generated-apps", "registry.json");
+    let registry: Record<string, any> = {};
+    try {
+      registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
+    } catch {
+      return res.status(404).json({ error: "no_registry" });
+    }
+    const entry = registry[`${project}-${feature}`];
+    if (!entry) return res.status(404).json({ error: "no_entry" });
+    res.json(entry);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// 7c. Thin comment relay. The frontend reads the issue tree via /api/status/<parent>
+//     and identifies the UI child issue (title starts with "Build UI"). It passes that
+//     issueId here. We just post the comment — no agent-id filtering, no env vars.
+app.post("/api/ui-agent/comment", async (req, res) => {
+  try {
+    const issueId = String(req.body?.issueId || "").trim();
+    const body = String(req.body?.body || "").trim();
+    if (!issueId || !body) {
+      return res.status(400).json({ error: "issueId and body are required" });
+    }
+    await paperclip.addComment(issueId, body);
+    res.json({ ok: true, issueId });
+  } catch (e: any) {
+    console.error("[ui-agent/comment] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 

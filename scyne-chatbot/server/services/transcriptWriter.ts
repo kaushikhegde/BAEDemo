@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { uniqueName } from "./fileRouter.js";
+import { uniqueName, requirementsDir } from "./fileRouter.js";
 
 export type TranscriptSource = "audio-upload" | "live-recording";
 
@@ -32,7 +32,7 @@ export interface WriteTranscriptResult {
  * in that folder, so the filename pattern is the only contract.
  */
 export async function writeTranscript(input: WriteTranscriptInput): Promise<WriteTranscriptResult> {
-  const dir = path.join(input.workspace, "projects", input.project, input.feature, "transcripts");
+  const dir = requirementsDir(input.workspace, input.project, input.feature, "transcripts");
   await fs.mkdir(dir, { recursive: true });
 
   const preferred = `transcript-live.md`;

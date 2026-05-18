@@ -18,6 +18,33 @@
     "confluence_space_key": "SADA",
     "confluence_page_title": "Review & Verify Evidence"
   },
+  "agents": {
+    "pm": {
+      "instructions": "agent-instructions/pm.json",
+      "id": "${PAPERCLIP_PM_AGENT_ID}"
+    },
+    "ba": {
+      "instructions": "agent-instructions/ba.json",
+      "id": "7561c779-5c3f-4e3a-9dc2-0f13eb1851ec"
+    },
+    "ui": {
+      "instructions": "agent-instructions/ui.json",
+      "id": "${PAPERCLIP_UI_AGENT_ID}",
+      "note": "Register this agent in Paperclip and set PAPERCLIP_UI_AGENT_ID in .env once issued."
+    },
+    "ux_auditor": {
+      "instructions": "agent-instructions/ux-auditor.json",
+      "id": "${PAPERCLIP_UX_AUDITOR_AGENT_ID}",
+      "note": "Register this agent in Paperclip and set PAPERCLIP_UX_AUDITOR_AGENT_ID in .env once issued."
+    }
+  },
+  "workflow": {
+    "order": ["pm", "ba", "ui", "ux_auditor"],
+    "handoffs": {
+      "ba": { "trigger": "approval_approved", "next": "ui", "input": "outputs/product-summary.md + design/" },
+      "ui": { "trigger": "comment_matches:^push to github ", "next": "ux_auditor", "input": "registry.<project>-<feature>" }
+    }
+  },
   "budget": {
     "max_tokens": 200000,
     "max_runtime_seconds": 300

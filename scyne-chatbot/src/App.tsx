@@ -10,13 +10,15 @@ import { LinksPanel } from "./components/LinksPanel";
 import { AttachmentButton } from "./components/AttachmentButton";
 import { RecordMeetingPanel } from "./components/RecordMeetingPanel";
 import { TargetPicker } from "./components/TargetPicker";
+import { PreviewPane } from "./components/PreviewPane";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 import { Textarea } from "./components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, approve } from "./api";
+import { postChat, postTrigger, getStatus, approve, hasPreview, triggerUiBuild, postUiComment } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -57,7 +59,47 @@ export default function App() {
   const [targetProject, setTargetProject] = useState<string | null>(null);
   const [targetFeature, setTargetFeature] = useState<string | null>(null);
   const [featuresRefreshKey, setFeaturesRefreshKey] = useState(0);
+  const [rightTab, setRightTab] = useState<"activity" | "ui">("activity");
+  const [previewAvailable, setPreviewAvailable] = useState(false);
+  const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string } | null>(null);
+  const autoSwitchedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // When the BA flow has reached `done` AND a Confluence URL is live, surface a one-shot
+  // CTA in the chat scroll asking the user if they want to kick off the UI build.
+  // Dedupe via localStorage so we don't re-ask on refresh.
+  useEffect(() => {
+    if (!status || !targetProject || !targetFeature || !parentIssueId) return;
+    const rootDone = status.flatIssues.length > 0 && status.flatIssues.every((i) => i.status === "done");
+    const hasConfluence = (status.links?.confluence?.length ?? 0) > 0;
+    if (!rootDone || !hasConfluence) return;
+    const dedupeKey = `scyne_ui_prompted_for_${parentIssueId}`;
+    if (typeof window !== "undefined" && window.localStorage.getItem(dedupeKey)) return;
+    setPendingUiPrompt({ project: targetProject, feature: targetFeature });
+  }, [status, targetProject, targetFeature, parentIssueId]);
+
+  // Watch for the UI preview becoming available for the current target.
+  // First time it appears, auto-switch the right pane to the UI tab.
+  useEffect(() => {
+    if (!targetProject || !targetFeature) {
+      setPreviewAvailable(false);
+      autoSwitchedRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    const check = async () => {
+      const ok = await hasPreview(targetProject, targetFeature);
+      if (cancelled) return;
+      setPreviewAvailable(ok);
+      if (ok && !autoSwitchedRef.current) {
+        autoSwitchedRef.current = true;
+        setRightTab("ui");
+      }
+    };
+    check();
+    const id = setInterval(check, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [targetProject, targetFeature]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -91,9 +133,32 @@ export default function App() {
     const nextHistory: ApiMsg[] = [...apiHistory, { role: "user", content: userText }];
     setApiHistory(nextHistory);
 
+    // When a live UI preview is up for the current target, route chat directly to the
+    // UI agent's issue as a modification comment — no LLM round-trip. We find the UI
+    // child issue from the status tree (its title starts with "Build UI —").
+    if (previewAvailable && targetProject && targetFeature) {
+      const uiChild = status?.flatIssues.find((i) => i.title.startsWith("Build UI"));
+      if (!uiChild) {
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't find the active UI build issue yet — give the workflow a few seconds and try again.` }]);
+        return;
+      }
+      const lower = userText.toLowerCase();
+      const body = lower.startsWith("modify:") || lower.startsWith("push to github") ? userText : `modify: ${userText}`;
+      setBusy(true);
+      try {
+        await postUiComment(uiChild.id, body);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Sent to the UI agent. The preview will refresh once it applies the change.` }]);
+      } catch (e: any) {
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't reach the UI agent: ${e?.message ?? e}` }]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     setBusy(true);
     try {
-      const resp = await postChat(nextHistory);
+      const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature });
       const blocks = resp.content as any[];
       let textOut = "";
       let toolUse: any = null;
@@ -106,7 +171,11 @@ export default function App() {
       }
       setApiHistory((h) => [...h, { role: "assistant", content: blocks }]);
 
-      if (toolUse?.name === "trigger_requirement_generation") {
+      if (toolUse?.name === "set_target") {
+        const args = toolUse.input as any;
+        if (args?.project) setTargetProject(args.project);
+        if (args?.feature) setTargetFeature(args.feature);
+      } else if (toolUse?.name === "trigger_requirement_generation") {
         const args = toolUse.input as any;
         if (args?.project) setTargetProject(args.project);
         if (args?.feature) setTargetFeature(args.feature);
@@ -114,6 +183,24 @@ export default function App() {
         const issue = await postTrigger(args || {});
         setParentIssueId(issue.id);
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Project Manager. Live progress on the right →` }]);
+      } else if (toolUse?.name === "trigger_ui_build") {
+        const args = toolUse.input as any;
+        const proj = args?.project, feat = args?.feature;
+        if (proj) setTargetProject(proj);
+        if (feat) setTargetFeature(feat);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the UI agent for **${proj}** / **${feat}**…` }]);
+        try {
+          const issue = await triggerUiBuild(proj, feat);
+          setParentIssueId(issue.id);
+          setRightTab("ui");
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the UI agent. The live preview will appear on the right once it scaffolds the app.` }]);
+        } catch (e: any) {
+          if (e?.code === "no_requirements") {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I can't find the requirements for **${proj}/${feat}** yet (no \`outputs/product-summary.md\`). Want me to run the BA flow first to generate them?` }]);
+          } else {
+            throw e;
+          }
+        }
       }
     } catch (e: any) {
       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Hit an error: ${e?.message ?? e}` }]);
@@ -201,46 +288,138 @@ export default function App() {
             {pendingApprovals.map((a) => (
               <ApprovalCard key={a.id} approval={a} onApprove={handleApprove} onReject={handleReject} />
             ))}
+            {pendingUiPrompt && (
+              <Card elevation={2} className="p-4 flex flex-col gap-3 bg-white/80">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">Confluence + Jira are live.</div>
+                  <div className="text-sm text-muted-foreground">
+                    Want me to build the UI for <span className="font-medium">{pendingUiPrompt.project}/{pendingUiPrompt.feature}</span> from the design folder?
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      const { project, feature } = pendingUiPrompt;
+                      const dedupeKey = `scyne_ui_prompted_for_${parentIssueId ?? "anon"}`;
+                      if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
+                      setPendingUiPrompt(null);
+                      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", text: "Yes, build the UI." }]);
+                      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the UI agent for **${project}** / **${feature}**…` }]);
+                      try {
+                        const issue = await triggerUiBuild(project, feature);
+                        setParentIssueId(issue.id);
+                        setRightTab("ui");
+                        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** assigned to the UI agent. The live preview will land on the right once it scaffolds the app.` }]);
+                      } catch (e: any) {
+                        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't start the UI agent: ${e?.message ?? e}` }]);
+                      }
+                    }}
+                  >
+                    Yes, build the UI
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const dedupeKey = `scyne_ui_prompted_for_${parentIssueId ?? "anon"}`;
+                      if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
+                      setPendingUiPrompt(null);
+                    }}
+                  >
+                    Not yet
+                  </Button>
+                </div>
+              </Card>
+            )}
           </div>
         </section>
 
-        {/* Right: live workflow status */}
+        {/* Right: tabbed view — Activity (workflow status) | UI (live preview) */}
         <aside className="lg:col-span-5 flex flex-col gap-4">
-          {showSkeletons ? (
-            <>
-              <Card elevation={1} className="p-4 space-y-2">
-                <Skeleton className="h-4 w-20 mb-3" />
-                {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-6 w-full" />)}
-              </Card>
-              <Card elevation={1} className="p-4 space-y-2">
-                <Skeleton className="h-4 w-20 mb-3" />
-                {[0, 1, 2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
-              </Card>
-            </>
-          ) : status ? (
-            <>
-              <ProgressPanel items={status.flatIssues} />
-              <ActivityTimeline items={status.activity} />
-              {resolvedApprovals.map((a) => (
-                <ApprovalCard
-                  key={a.id}
-                  approval={a}
-                  onApprove={handleApprove}
-                  onReject={handleReject}
+          <Tabs value={rightTab} onValueChange={(v) => setRightTab(v as "activity" | "ui")} className="flex flex-col gap-2">
+            <TabsList className="self-start">
+              <TabsTrigger value="activity">Activity</TabsTrigger>
+              <TabsTrigger value="ui" className="relative">
+                UI
+                {previewAvailable && rightTab !== "ui" && (
+                  <span
+                    aria-hidden
+                    className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500"
+                  />
+                )}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="activity">
+              {showSkeletons ? (
+                <>
+                  <Card elevation={1} className="p-4 space-y-2">
+                    <Skeleton className="h-4 w-20 mb-3" />
+                    {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-6 w-full" />)}
+                  </Card>
+                  <Card elevation={1} className="p-4 space-y-2">
+                    <Skeleton className="h-4 w-20 mb-3" />
+                    {[0, 1, 2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+                  </Card>
+                </>
+              ) : status ? (
+                <>
+                  <ProgressPanel items={status.flatIssues} />
+                  <ActivityTimeline items={status.activity} />
+                  {resolvedApprovals.map((a) => (
+                    <ApprovalCard
+                      key={a.id}
+                      approval={a}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                    />
+                  ))}
+                  <LinksPanel links={status.links} />
+                </>
+              ) : (
+                <Card
+                  elevation={0}
+                  className="p-8 text-center text-sm text-muted-foreground border-dashed bg-white/40"
+                >
+                  <Sparkles className="size-5 mx-auto mb-2 text-scyne-ink-500/60" />
+                  <div className="font-medium text-foreground mb-1">No active workflow</div>
+                  <div>Workflow status will appear here once you fire a run.</div>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="ui">
+              {targetProject && targetFeature ? (
+                <PreviewPane
+                  project={targetProject}
+                  feature={targetFeature}
+                  onPush={async (repoUrl) => {
+                    const uiChild = status?.flatIssues.find((i) => i.title.startsWith("Build UI"));
+                    if (!uiChild) throw new Error("No active UI build issue found in the workflow tree.");
+                    await postUiComment(uiChild.id, `push to github ${repoUrl}`);
+                  }}
                 />
-              ))}
-              <LinksPanel links={status.links} />
-            </>
-          ) : (
-            <Card
-              elevation={0}
-              className="p-8 text-center text-sm text-muted-foreground border-dashed bg-white/40"
-            >
-              <Sparkles className="size-5 mx-auto mb-2 text-scyne-ink-500/60" />
-              <div className="font-medium text-foreground mb-1">No active workflow</div>
-              <div>Workflow status will appear here once you fire a run.</div>
-            </Card>
-          )}
+              ) : (
+                <Card
+                  elevation={0}
+                  className="p-8 text-center text-sm text-muted-foreground border-dashed bg-white/40"
+                >
+                  <Sparkles className="size-5 mx-auto mb-2 text-scyne-ink-500/60" />
+                  <div className="font-medium text-foreground mb-1">No project selected</div>
+                  <div>Pick a project / feature, then ask me to build the UI.</div>
+                </Card>
+              )}
+              {targetProject && targetFeature && !previewAvailable && (
+                <Card
+                  elevation={0}
+                  className="p-4 text-xs text-muted-foreground border-dashed bg-white/40"
+                >
+                  No preview yet for <span className="font-medium">{targetProject}/{targetFeature}</span>. Once the UI agent scaffolds the app, the live preview shows up here.
+                </Card>
+              )}
+            </TabsContent>
+          </Tabs>
         </aside>
       </main>
 
