@@ -1,0 +1,36 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build artifacts
+dist/
+build/
+.cache/
+.parcel-cache/
+*.tsbuildinfo
+
+# Runtime data / generated content
+inputs/
+inputs-source/
+outputs/
+projects/
+
+# Misc
+*.log
+coverage/

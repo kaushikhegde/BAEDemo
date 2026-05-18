@@ -1,0 +1,25 @@
+{
+  "skill": "requirement-generator",
+  "source": {
+    "type": "folder",
+    "path": "./inputs-source",
+    "note": "In production this is replaced with MCP fetches (Otter for transcripts, Drive for policy docs, Figma for UI screens)."
+  },
+  "parameters": {
+    "process_l3": "2.4 Review & Verify evidence",
+    "process_l4": "2.4.1 Review evidence",
+    "starting_story_number": "2.4.1.1",
+    "parent_epic_key": "SADA-1",
+    "project_key": "SADA",
+    "confluence_space_key": "SADA"
+  },
+  "atlassian": {
+    "parent_epic_key": "SADA-1",
+    "confluence_space_key": "SADA",
+    "confluence_page_title": "Review & Verify Evidence"
+  },
+  "budget": {
+    "max_tokens": 200000,
+    "max_runtime_seconds": 300
+  }
+}
