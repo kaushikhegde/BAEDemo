@@ -199,13 +199,19 @@ The bot follows this discovery pattern:
 4. When user picks a feature — confirm and ask to proceed.
 5. When user confirms (any natural phrasing) — call `trigger_requirement_generation` with `{project, feature, ...}`.
 
-The tool schema requires `project` and `scenario` … sorry, `project` and `feature`. Defaults from `.env` fill in everything else (`process_l3`, `parent_epic_key`, etc.).
+The LLM has three tools available:
+
+- `set_target` — sets the chosen `{project, feature}` scope without firing anything. Lets the user pin a target before they're ready to run.
+- `trigger_requirement_generation` — fires the requirements flow. Defaults from `.env` fill in everything except `project` and `feature`.
+- `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to PM). The UI Engineer + UX Auditor chain runs from there.
 
 ### Frontend layout
 
 - **Left panel**: chat with the LLM. Agent comments stream in as bubbles with the author label (e.g. `BA · SCY-2`). Approval gates render inline as a card with an expandable "Review what will be pushed" preview (Stories / Product Summary / Gaps tabs).
 - **Right panel**: workflow status. Stage pill (queued → PM triaging → BA generating → awaiting approval → pushing → complete), progress list of issues, autoscrolling activity timeline, links panel for Confluence + Jira.
-- **Session persistence**: `parentIssueId` is saved to `localStorage`. Refresh resumes the workflow.
+- **Login gate**: the app shows a `Login.tsx` screen first (hardcoded demo creds `admin` / `scyne2026`; session stored in `localStorage.scyne_session`). Replace with real auth when wiring SSO.
+- **Session persistence**: `parentIssueId` is saved to `localStorage.scyne_parent_issue_id`. Refresh resumes the workflow.
+- **Right-pane tabs**: `Activity` (live workflow status) and `UI` (iframes the generated app from `/api/preview/:project/:feature`). The UI tab unlocks the moment a generated app is registered.
 - **Comments render as markdown**: `MiniMarkdown` component handles headings, bullets, bold, inline code, fenced code blocks, and links (both `[label](url)` and bare URLs).
 
 ### Defaults baked into `.env`
@@ -288,6 +294,35 @@ curl -sS -X POST http://127.0.0.1:3100/api/companies/2131f183-3822-4eee-9370-4b5
 ### Tail what an agent is doing
 
 Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-manager/runs`) in the browser — Paperclip's UI shows live transcripts of every run, with each tool call and result.
+
+## Helper scripts (`scripts/`)
+
+Two Node scripts power the UI / a11y agents:
+
+- `scripts/scaffold-app.mjs <project> <feature>` — used by the **UI Engineer**. Creates `generated-apps/<project>-<feature>/` from the Vite react-ts template, installs deps, adds Tailwind + shadcn/ui, allocates a free port (`PAPERCLIP_PORT_BASE` or 5174), launches `npm run dev` detached, and waits until the dev URL responds. Writes the entry into `generated-apps/registry.json`. Idempotent — if the app and its PID are alive, it just re-prints the registry entry.
+- `scripts/audit-a11y.mjs <project-feature-key>` — used by the **UX Auditor**. Reads the registry entry, runs `@axe-core/cli` (WCAG 2.0 A + AA) and `pa11y` (WCAG2AA standard) against the dev URL, then writes consolidated violations to `generated-apps/<key>/audit.json`. Exits 0 even when violations exist — the auditor reads the JSON to decide what to fix.
+
+The chatbot doesn't call these directly; the agents do (via the `Bash` tool in their Claude Code sessions).
+
+## Generated apps registry
+
+`generated-apps/registry.json` is the authoritative source for every running scaffolded app:
+
+```json
+{
+  "SADA-interim-benefit": {
+    "appPath": "generated-apps/SADA-interim-benefit",
+    "port": 5174,
+    "devUrl": "http://127.0.0.1:5174",
+    "branch": "ui/SADA-interim-benefit",
+    "repoUrl": "<git url or null>",
+    "pid": 12345,
+    "startedAt": "2026-05-18T14:09:00Z"
+  }
+}
+```
+
+The chatbot's `/api/preview/:project/:feature` looks up the entry and returns the dev URL. The UI Engineer and UX Auditor both treat this file as authoritative — if a description disagrees with the registry, the registry wins.
 
 ## Conventions
 

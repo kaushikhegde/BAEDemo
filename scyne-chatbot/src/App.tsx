@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, RotateCcw, Sparkles } from "lucide-react";
+import { ArrowUp, LogOut, RotateCcw, Sparkles } from "lucide-react";
 import { Header } from "./components/Header";
 import { MessageBubble } from "./components/MessageBubble";
 import { ProgressPanel } from "./components/ProgressPanel";
@@ -11,6 +11,7 @@ import { AttachmentButton } from "./components/AttachmentButton";
 import { RecordMeetingPanel } from "./components/RecordMeetingPanel";
 import { TargetPicker } from "./components/TargetPicker";
 import { PreviewPane } from "./components/PreviewPane";
+import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
@@ -26,7 +27,7 @@ function buildGreeting(resuming: boolean): UIMessage {
     role: "assistant",
     text: resuming
       ? "G'day. I'm picking up where we left off — the workflow status is live on the right →"
-      : "G'day. I'm the Scyne AI Accelerated Software Delivery. How can I help today?",
+      : "G'day. I'm Scyne AI Powered Social Insurance Delivery. How can I help today?",
   };
 }
 
@@ -39,6 +40,20 @@ const SUGGESTED_PROMPTS = [
 ];
 
 export default function App() {
+  // Gate everything behind the hardcoded demo login. Session survives refresh via localStorage.
+  const [session, setSession] = useState<LoginSession | null>(() => loadSession());
+  if (!session) {
+    return <Login onAuthenticated={(s) => setSession(s)} />;
+  }
+  return (
+    <AuthenticatedApp
+      session={session}
+      onLogout={() => { clearSession(); setSession(null); }}
+    />
+  );
+}
+
+function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogout: () => void }) {
   const [messages, setMessages] = useState<UIMessage[]>(() => [
     buildGreeting(typeof window !== "undefined" && !!window.localStorage.getItem("scyne_parent_issue_id"))
   ]);
@@ -56,8 +71,27 @@ export default function App() {
     }
   };
   const [status, setStatus] = useState<StatusSnapshot | null>(null);
-  const [targetProject, setTargetProject] = useState<string | null>(null);
-  const [targetFeature, setTargetFeature] = useState<string | null>(null);
+  // Target picker selection is persisted so iteration mode (chat → UI agent)
+  // resumes after a refresh — without this, previewAvailable polling never
+  // starts and the chat falls back to the LLM with no UI context.
+  const [targetProject, setTargetProject] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(window.localStorage.getItem("scyne_target") || "null")?.project ?? null; }
+    catch { return null; }
+  });
+  const [targetFeature, setTargetFeature] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(window.localStorage.getItem("scyne_target") || "null")?.feature ?? null; }
+    catch { return null; }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (targetProject && targetFeature) {
+      window.localStorage.setItem("scyne_target", JSON.stringify({ project: targetProject, feature: targetFeature }));
+    } else {
+      window.localStorage.removeItem("scyne_target");
+    }
+  }, [targetProject, targetFeature]);
   const [featuresRefreshKey, setFeaturesRefreshKey] = useState(0);
   const [rightTab, setRightTab] = useState<"activity" | "ui">("activity");
   const [previewAvailable, setPreviewAvailable] = useState(false);
@@ -134,20 +168,46 @@ export default function App() {
     setApiHistory(nextHistory);
 
     // When a live UI preview is up for the current target, route chat directly to the
-    // UI agent's issue as a modification comment — no LLM round-trip. We find the UI
-    // child issue from the status tree (its title starts with "Build UI —").
+    // UI agent's issue. The agent recognises three comment shapes:
+    //   - `push to github <url>`  → push branch, then dispatch UX Auditor
+    //   - `approve`               → dispatch UX Auditor against the local dev URL (no push)
+    //   - `modify: <text>`        → iterate
+    // We normalise free-form chat into one of those.
     if (previewAvailable && targetProject && targetFeature) {
-      const uiChild = status?.flatIssues.find((i) => i.title.startsWith("Build UI"));
+      // Multiple `Build UI — …` issues may exist (re-triggers). Prefer the one that's
+      // still active (not done) so comments actually wake the agent. Fall back to the
+      // most recent done issue only if nothing is active.
+      const buildUiIssues = (status?.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
+      const activeUi = buildUiIssues.filter((i) => i.status !== "done");
+      const uiChild = activeUi[activeUi.length - 1] ?? buildUiIssues[buildUiIssues.length - 1];
       if (!uiChild) {
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't find the active UI build issue yet — give the workflow a few seconds and try again.` }]);
         return;
       }
-      const lower = userText.toLowerCase();
-      const body = lower.startsWith("modify:") || lower.startsWith("push to github") ? userText : `modify: ${userText}`;
+      const lower = userText.toLowerCase().trim();
+      const APPROVE_RE = /^(approve|looks good|lgtm|ui is done|ui done|done|ship it|that's perfect|perfect|all good|that looks good|approved|run (the )?audit(or)?)\b/;
+      let body: string;
+      let assistantNote: string;
+      if (lower.startsWith("push to github") || lower.startsWith("modify:")) {
+        body = userText;
+        assistantNote = lower.startsWith("push to github")
+          ? `Pushing to GitHub and dispatching the UX Auditor…`
+          : `Sent to the UI agent. The preview will refresh once it applies the change.`;
+      } else if (APPROVE_RE.test(lower)) {
+        body = "approve";
+        assistantNote = `Approving and dispatching the UX Auditor against the local dev URL — no GitHub push.`;
+      } else {
+        body = `modify: ${userText}`;
+        assistantNote = `Sent to the UI agent. The preview will refresh once it applies the change.`;
+      }
       setBusy(true);
       try {
         await postUiComment(uiChild.id, body);
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Sent to the UI agent. The preview will refresh once it applies the change.` }]);
+        setMessages((m) => [...m, {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: `${assistantNote}\n\n_Posted to **${uiChild.identifier}** (status: ${uiChild.status})._`,
+        }]);
       } catch (e: any) {
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't reach the UI agent: ${e?.message ?? e}` }]);
       } finally {
@@ -222,6 +282,8 @@ export default function App() {
     setStatus(null);
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
+    setTargetProject(null);
+    setTargetFeature(null);
   }
 
   const pendingApprovals = status?.approvals.filter((a) => !a.status || a.status === "pending") ?? [];
@@ -250,6 +312,21 @@ export default function App() {
                 <TooltipContent>New session</TooltipContent>
               </Tooltip>
             )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    if (confirm(`Sign out of Scyne (${session.user})?`)) onLogout();
+                  }}
+                  aria-label={`Sign out (${session.user})`}
+                >
+                  <LogOut />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Sign out ({session.user})</TooltipContent>
+            </Tooltip>
           </>
         }
       />

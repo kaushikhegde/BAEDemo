@@ -104,6 +104,11 @@ export default {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        shake: {
+          "0%,100%": { transform: "translateX(0)" },
+          "20%,60%": { transform: "translateX(-6px)" },
+          "40%,80%": { transform: "translateX(6px)" },
+        },
       },
       animation: {
         "fade-in": "fade-in 200ms ease-out",
@@ -112,6 +117,7 @@ export default {
         shimmer: "shimmer 1.8s linear infinite",
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        shake: "shake 360ms cubic-bezier(.36,.07,.19,.97)",
       },
       transitionTimingFunction: {
         "out-soft": "cubic-bezier(.2,.8,.2,1)",

@@ -17,8 +17,9 @@ Both are launched together with `npm run dev` (concurrently).
 
 - **LLM**: Gemini 2.5 Flash via `@google/generative-ai` (the legacy SDK — matches the compliance-app pattern). Function calling enabled for the trigger tool.
 - **Auth**: none. Paperclip is in `local_trusted` mode; localhost calls are auto-authenticated as the board user.
-- **Persistence**: `localStorage` only. The parent issue ID survives a refresh; the chat transcript itself does not (and that's fine — agent comments replay from `/api/status` on resume).
-- **WebSockets**: only for the optional Gemini Live audio path. The main workflow uses HTTP polling (every 3 s).
+- **Persistence**: `localStorage` only — `scyne_session` (login) and `scyne_parent_issue_id` (active workflow). The chat transcript itself does not survive a refresh; agent comments replay from `/api/status` on resume.
+- **Login gate**: hardcoded demo creds (`admin` / `scyne2026`) in `src/components/Login.tsx`. Session is `{user, ts}`; expiry is a separate concern, not enforced. Replace with real auth when wiring SSO.
+- **WebSockets**: optional path for live audio. `wss.on("connection",...)` is mounted on the same HTTP server. Browser → `recordingSocketUrl()` → backend → Gemini Live → live transcription back over the same socket. The main workflow uses HTTP polling (every 3 s).
 
 ## Project structure
 
@@ -30,6 +31,10 @@ scyne-chatbot/
 ├── tailwind.config.js      (Scyne palette under `theme.extend.colors.scyne`)
 ├── components.json         (shadcn/ui aliases)
 ├── index.html
+├── public/
+│   ├── image.png            (login background candidate)
+│   ├── login-bg.svg        (fallback login background)
+│   └── pcm-worklet.js      (Web Audio worklet — captures 16 kHz PCM for live transcription)
 ├── server/                 (Express backend, tsx-watched)
 │   ├── index.ts            (all HTTP routes)
 │   ├── llm.ts              (Gemini client, system prompt builder, tool schema)
@@ -43,12 +48,13 @@ scyne-chatbot/
 └── src/                    (React frontend)
     ├── main.tsx            (entry)
     ├── App.tsx             (the only stateful component)
-    ├── api.ts              (typed fetch wrappers for every /api endpoint)
+    ├── api.ts              (typed fetch wrappers + recordingSocketUrl() for WS; upload helpers with hint types policy/transcripts/notes/ui)
     ├── types.ts            (UIMessage, StatusSnapshot, ArtifactStory, etc.)
     ├── index.css           (Tailwind base + shadcn theme tokens)
     ├── lib/utils.ts        (cn() helper for shadcn)
     └── components/
         ├── ui/             (shadcn/ui primitives — generated, don't hand-edit)
+        ├── Login.tsx            (login gate; reads/writes localStorage.scyne_session; image candidates in /public)
         ├── Header.tsx          (branded top bar, accepts `right` slot)
         ├── MessageBubble.tsx   (user/assistant/agent variants; uses MiniMarkdown)
         ├── MiniMarkdown.tsx    (headings, bullets, bold, code spans/blocks, links)
@@ -81,6 +87,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to PM. PM detects the title prefix and dispatches BA in Phase-3 mode. |
 | GET    | `/api/preview/:project/:feature`    | Resolves the dev-server URL for the generated app from `generated-apps/registry.json`. |
 | POST   | `/api/ui-agent/comment`             | Adds a follow-up comment on the UI-build issue (e.g. iteration prompts).  |
+| WS     | `ws://127.0.0.1:4000/recording`     | Browser ↔ backend audio stream. Client pushes PCM frames; backend pipes them into Gemini Live and pushes transcript chunks back. Used by `RecordMeetingPanel`. |
 
 The Paperclip client (`server/paperclip.ts`) wraps just the calls the chatbot needs. Notable methods:
 
@@ -97,6 +104,7 @@ The only stateful React component is `src/App.tsx`. All other components are pre
 
 | State                  | Type                            | Purpose                                                                 |
 | ---------------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `session`              | `LoginSession \| null`         | From `loadSession()`. If null, the app renders `<Login>` instead of the main UI.        |
 | `messages`             | `UIMessage[]`                   | What the chat panel renders. Three kinds: user, assistant (LLM), agent (PM/BA comments). |
 | `apiHistory`           | `ApiMsg[]`                      | Anthropic-shaped conversation history sent to `/api/chat`.              |
 | `draft`                | `string`                        | Composer textarea contents.                                              |
@@ -128,20 +136,40 @@ The prompt instructs a discovery flow:
 2. List projects when asked.
 3. Drill into a project when named — list its features.
 4. Confirm the chosen `<project> / <feature>` and ask if ready.
-5. On any confirmation phrasing, call `trigger_requirement_generation` with `{project, feature}` (plus any overrides).
+5. On any confirmation phrasing, call the appropriate tool.
 
-The tool schema is in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
+**Three tools are exposed to the LLM** (all defined in `server/llm.ts`):
+
+| Tool                            | When the bot calls it                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `set_target`                    | When the user picks a project + feature but isn't ready to fire yet. Pins the scope so the right-pane TargetPicker reflects it. No Paperclip side effect. |
+| `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to PM. |
+| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to PM, which dispatches BA → UI Engineer → UX Auditor. |
+
+The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
 
 ### Adding a new tool
 
 If you want the bot to invoke a new server action (say, `cancel_workflow`), the pattern is:
 
-1. Add the `FunctionDeclaration` in `server/llm.ts` next to `trigger_requirement_generation`.
+1. Add the `FunctionDeclaration` in `server/llm.ts` next to `trigger_requirement_generation`, `set_target`, and `trigger_ui_build`.
 2. Update the system prompt's "Conversation flow" so the LLM knows when to call it.
 3. Add a handler in `App.tsx` (inside the `if (toolUse?.name === ...)` branch) that POSTs to the matching new endpoint.
 4. Add the endpoint in `server/index.ts`.
 
 Don't try to inline the tool's result into the same chat turn — the LLM doesn't get a second pass currently. Surface the result as a visible assistant message in the UI thread.
+
+## Live audio (RecordMeetingPanel)
+
+Optional path. When the user opens the recorder modal:
+
+1. Browser registers `public/pcm-worklet.js` as an `AudioWorklet` and starts capturing 16 kHz mono PCM from the mic.
+2. Frontend opens a WebSocket via `recordingSocketUrl()` (`ws://127.0.0.1:4000/recording`) and streams PCM frames.
+3. Backend (`server/services/geminiLive.ts`) holds the upstream WebSocket to Gemini Live and pipes audio through.
+4. Gemini returns transcript chunks; backend writes them to disk via `transcriptWriter.ts` AND echoes them back to the browser over the same WebSocket.
+5. When the user stops, the final transcript file lands at `projects/<project>/<feature>/requirements/Transcripts/<timestamp>.md` (location chosen by `fileRouter.ts`).
+
+If you remove this feature: delete `RecordMeetingPanel.tsx`, `services/geminiLive.ts`, `services/transcriptWriter.ts`, `public/pcm-worklet.js`, and the `wss.on("connection", ...)` block at the bottom of `server/index.ts`. Drop `ws` and `@types/ws` from `package.json`.
 
 ## Defaults baked into `.env`
 
