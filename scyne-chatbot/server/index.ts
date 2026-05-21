@@ -360,8 +360,9 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 // 7a. Trigger a UI build — creates a PM-assigned issue with the "Build UI — ..." title.
-//     PM detects this intent, validates outputs/product-summary.md exists, then delegates
-//     to BA who in turn dispatches the UI agent (its direct report).
+//     PM detects this intent, validates outputs/product-summary.md exists, then dispatches
+//     the UI Engineer directly (its direct report). When the UI Engineer finishes, PM is
+//     auto-woken (issue_children_completed) and dispatches the UX Auditor — both report to PM.
 app.post("/api/ui-agent/trigger", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
@@ -393,7 +394,7 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
       `- projects/${project}/${feature}/outputs/stories.json`,
     ].join("\n");
 
-    // Assigned to PM (existing pattern). PM routes to BA, BA dispatches UI.
+    // Assigned to PM (existing pattern). PM dispatches the UI Engineer directly, then the UX Auditor.
     const issue = await paperclip.createIssue(title, description);
     res.json(issue);
   } catch (e: any) {

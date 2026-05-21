@@ -10,7 +10,7 @@ A local end-to-end workflow that takes raw discovery artefacts for a single feat
 2. A set of **Jira-ready user stories** (Atlassian Cloud REST v3 payloads).
 3. A **working Vite + React + shadcn/ui app** scaffolded from the Product Summary, with WCAG 2.0 AA auto-fixes applied.
 
-The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs four agents (PM → BA → UI Engineer → UX Auditor) on the local machine via Claude Code.
+The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs four agents on the local machine via Claude Code. The **PM** is the single orchestrator: it delegates requirements to the **BA**, and drives the **UI Engineer** then the **UX Auditor** directly (all three report to the PM).
 
 ## The four-agent flow
 
@@ -18,33 +18,42 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't 
 chatbot UI
    │  POST /api/trigger   (creates a Paperclip issue, status=todo)
    ▼
-Project Manager (PM)
+Project Manager (PM) — orchestrates all three reports
    ├─ classifies issue intent by title prefix:
-   │    "Generate requirements — …"  → REQUIREMENTS flow
-   │    "Build UI — …"               → UI flow
-   └─ creates a child issue assigned to the BA (status=todo)
+   │    "Generate requirements — …"  → REQUIREMENTS flow → BA
+   │    "Build UI — …"               → UI flow → PM drives UI Engineer, then UX Auditor
+   │
+   ├─ REQUIREMENTS flow: creates a child issue assigned to the BA (status=todo)
+   │     ▼
+   │   Business Analyst (BA) — runs in two phases
+   │      ├─ PHASE 1: reads inputs from projects/<project>/<feature>/requirements/
+   │      │          runs the `requirement-generator` skill → outputs/* (5 files)
+   │      │          attaches them as work-products, raises an approval gate
+   │      └─ PHASE 2 (after human approves): uses the `atlassian` MCP to
+   │                 create the Confluence page + Jira stories
+   │
+   └─ UI flow: PM dispatches the UI Engineer and UX Auditor directly, as
+              SIBLINGS under the Build UI issue (not a chain). PM is re-woken
+              automatically (issue_children_completed) after each child finishes.
+
+      Sub-phase A → child issue assigned to UI Engineer (status=todo)
          ▼
-Business Analyst (BA) — runs in three phases
-   ├─ PHASE 1: reads inputs from projects/<project>/<feature>/requirements/
-   │          runs the `requirement-generator` skill → outputs/* (5 files)
-   │          attaches them as work-products, raises an approval gate
-   │
-   ├─ PHASE 2 (after human approves): uses the `atlassian` MCP to
-   │          create the Confluence page + Jira stories
-   │
-   └─ PHASE 3 (when intent=build_ui or "build ui" comment received):
-         creates child issue assigned to the UI Engineer
-              ▼
-        UI Engineer
-           ├─ reads design references + BA outputs
-           ├─ scaffolds a Vite + React + shadcn/ui app into generated-apps/<project>-<feature>/
-           ├─ pushes to a user-supplied GitHub repo on branch ui/<project>-<feature>
-           └─ creates child issue assigned to the UX Auditor
-                 ▼
-              UX Auditor
-                ├─ runs WCAG 2.0 AA checks against the generated app
-                ├─ auto-fixes safe violations (contrast, alt-text, focus rings, etc.)
-                └─ commits a11y: fixes back onto the same branch
+       UI Engineer
+          ├─ reads design references + BA outputs
+          ├─ scaffolds a Vite + React + shadcn/ui app into generated-apps/<project>-<feature>/
+          ├─ on "push to github <url>": pushes to branch ui/<project>-<feature>, records branch/repoUrl in the registry
+          ├─ on "approve": leaves branch/repoUrl null in the registry (audit-only)
+          └─ marks its issue done → PM auto-woken
+
+      Sub-phase B → PM reads generated-apps/registry.json, dispatches UX Auditor (status=todo)
+         ▼
+       UX Auditor
+          ├─ runs WCAG 2.0 AA checks against the generated app
+          ├─ auto-fixes safe violations (contrast, alt-text, focus rings, etc.)
+          ├─ commits a11y: fixes onto the branch (or audit-only if branch is null)
+          └─ marks its issue done → PM auto-woken
+
+      Sub-phase C → PM posts the summary and marks the Build UI issue done
 ```
 
 The chatbot polls `/api/status/:issueId` every 3 seconds, surfaces comments as a live activity timeline, renders approval gates inline with an Approve / Reject card, and shows Confluence + Jira links the moment they appear in BA's comments.
@@ -102,15 +111,16 @@ All IDs live in `scyne-chatbot/.env`. The two below are the source of truth for 
 | Company               | `2131f183-3822-4eee-9370-4b5cafae7e29` (`Scyne`)                |
 | Project Manager (PM)  | `212a6542-4e49-41dc-94f0-7d7acbc460ba`                          |
 | Business Analyst (BA) | `7561c779-5c3f-4e3a-9dc2-0f13eb1851ec`                          |
-| UI Engineer           | _hired separately_; insert into `ba.json` after creation       |
-| UX Auditor            | _hired separately_; UI agent references it after creation     |
+| UI Engineer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (reports to PM)          |
+| UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (reports to PM)          |
+
+All four agents report to the PM (the UI Engineer and UX Auditor were moved off the BA). The PM dispatches the UI Engineer and UX Auditor directly as siblings under the Build UI issue; the BA owns requirements only.
 
 If you re-hire agents (new IDs), update:
 1. `scyne-chatbot/.env` (`PAPERCLIP_COMPANY_ID`, `PAPERCLIP_PM_AGENT_ID`).
-2. `agent-instructions/pm.json` (BA id baked into PM's instructions).
-3. `agent-instructions/ba.json` (UI Engineer id baked into BA's instructions).
-4. `agent-instructions/ui.json` (UX Auditor id baked into UI's instructions).
-5. Push the updated JSON files via `PUT /api/agents/:id/instructions-bundle/file`.
+2. `agent-instructions/pm.json` (BA, UI Engineer, and UX Auditor ids are all baked into PM's instructions — it dispatches all three).
+3. Set each new agent's `reportsTo` to the PM id via `PATCH /api/agents/:id` (body `{"reportsTo":"<PM id>"}`).
+4. Push the updated JSON files via `PUT /api/agents/:id/instructions-bundle/file`.
 
 ## Paperclip (the orchestrator)
 
