@@ -47,9 +47,13 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
       PAPERCLIP_PORT_BASE: "${PAPERCLIP_PORT_BASE:-5174}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-scyne-local-secret}"
-      # Agent model auth: API key wins; if empty, claude-code falls back to a
-      # mounted ~/.claude (see the optional bind below).
+      # Agent model auth. Use ONE of:
+      #  - ANTHROPIC_API_KEY: pay-as-you-go API key, OR
+      #  - CLAUDE_CODE_OAUTH_TOKEN: long-lived subscription token from
+      #    `claude setup-token` on the host (no API key, uses your Claude plan).
+      # Leave ANTHROPIC_API_KEY empty when using the OAuth token, or the key wins.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
     ports:
       # Bound to host loopback only — no-auth admin API must not reach the LAN.
       # Host 127.0.0.1:3100 -> socat :8300 -> server 127.0.0.1:3100.
@@ -60,9 +64,10 @@ services:
       - workspace:/workspace
       - paperclip-home:/paperclip
       - mcp-auth:/paperclip/.mcp-auth
-      # Fallback agent auth (only used when ANTHROPIC_API_KEY is empty). Uncomment
-      # and set HOST_CLAUDE_DIR in .env to reuse your host Claude subscription:
-      # - "${HOST_CLAUDE_DIR:-/dev/null}:/paperclip/.claude"
+      # NB: there is intentionally no ~/.claude bind. On macOS the Claude login
+      # lives in the Keychain (not in ~/.claude), so a bind can't carry the
+      # subscription into the container. Use CLAUDE_CODE_OAUTH_TOKEN in .env
+      # (`claude setup-token`) or ANTHROPIC_API_KEY instead.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health || exit 1"]
       interval: 5s

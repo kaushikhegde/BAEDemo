@@ -43,14 +43,20 @@ Because Paperclip generates its own UUIDs, the IDs are discovered at runtime and
 handed to the chatbot via `ids.json` — nothing is hard-coded to a previous
 install. Re-running is safe: every step looks up existing state by name.
 
-## Agent auth (two options)
+## Agent auth (set exactly one)
 
-- **API key (default):** set `ANTHROPIC_API_KEY` in `.env`. Done.
-- **Host Claude subscription (fallback):** leave `ANTHROPIC_API_KEY` empty, set
-  `HOST_CLAUDE_DIR=/Users/you/.claude` in `.env`, and uncomment the
-  `${HOST_CLAUDE_DIR}:/paperclip/.claude` bind in `docker-compose.yml`. claude-code
-  finds it because `HOME=/paperclip`. Mount read-write if you want OAuth token
-  refresh to persist (note: the entrypoint may chown it to the container user).
+- **API key:** set `ANTHROPIC_API_KEY` in `.env`. Done.
+- **Claude subscription (no API key):** on the host run `claude setup-token`,
+  paste the long-lived token into `CLAUDE_CODE_OAUTH_TOKEN` in `.env`, and leave
+  `ANTHROPIC_API_KEY` empty. The `claude_local` adapter passes the token through
+  to each agent subprocess.
+
+> Mounting `~/.claude` is **not** a working fallback on macOS: Claude Code stores
+> its login in the macOS Keychain, not in `~/.claude`, so a Linux container can't
+> read it. Use the OAuth token (or an API key) instead.
+
+If neither is set, agents fail with `Invalid API key` — that's the symptom of no
+usable credential.
 
 ## Atlassian (Jira / Confluence) — one-time OAuth
 
