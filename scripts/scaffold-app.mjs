@@ -112,7 +112,11 @@ async function main() {
   // log file via file descriptors — piped streams would close when the parent exits.
   const logFile = join(appDir, "dev.log");
   const logFd = openSync(logFile, "a");
-  const out = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+  // Bind 0.0.0.0 so the dev server is reachable through a published container
+  // port (the browser still iframes devUrl = http://127.0.0.1:<port>). Override
+  // with VITE_DEV_HOST for a host-only run.
+  const devHost = process.env.VITE_DEV_HOST || "0.0.0.0";
+  const out = spawn("npm", ["run", "dev", "--", "--host", devHost, "--port", String(port), "--strictPort"], {
     cwd: appDir,
     detached: true,
     stdio: ["ignore", logFd, logFd],

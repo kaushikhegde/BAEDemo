@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import fs from "node:fs/promises";
+import fssync from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { WebSocketServer, WebSocket as WSWebSocket } from "ws";
@@ -447,6 +448,19 @@ async function spillToTemp(buffer: Buffer, name: string): Promise<string> {
   const p = path.join(dir, name.replace(/[^A-Za-z0-9._-]/g, "_") || "audio.bin");
   await fs.writeFile(p, buffer);
   return p;
+}
+
+// Serve the built React app from the same Express process (production / Docker).
+// In local `npm run dev` there is no dist/ and Vite serves the frontend, so this
+// block no-ops. The catch-all excludes /api and /ws so routes + the WS upgrade
+// are untouched.
+const STATIC_DIR = process.env.STATIC_DIR || path.resolve(process.cwd(), "dist");
+if (fssync.existsSync(STATIC_DIR)) {
+  app.use(express.static(STATIC_DIR));
+  app.get(/^(?!\/api|\/ws).*/, (_req, res) => {
+    res.sendFile(path.join(STATIC_DIR, "index.html"));
+  });
+  console.log(`[chatbot] serving static UI from ${STATIC_DIR}`);
 }
 
 const PORT = Number(process.env.PORT) || 4000;

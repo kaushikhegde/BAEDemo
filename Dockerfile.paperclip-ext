@@ -1,0 +1,46 @@
+# Extends the locally-built Paperclip production image with:
+#   - distro Chromium + chromedriver (for the UX Auditor's pa11y / @axe-core runs)
+#   - a baked /seed of the workspace (scripts, agent-instructions, examples, .mcp.json)
+#   - an entrypoint wrapper that seeds an empty /workspace volume on first boot
+#
+# Build the base first:  docker build -t scyne/paperclip-base:local ../paperclip
+# (the `make up` wrapper does this for you).
+ARG PAPERCLIP_BASE=scyne/paperclip-base:local
+FROM ${PAPERCLIP_BASE}
+
+# apt layers run as root (the base only drops to `node` via gosu at runtime).
+USER root
+
+# Installing the distro `chromium` package lets apt resolve all of Chromium's
+# shared-library deps automatically — no need to enumerate libnss3/libgbm1/etc.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       chromium chromium-driver fonts-liberation socat \
+  && rm -rf /var/lib/apt/lists/*
+
+# Point both a11y tools at the system Chromium / chromedriver and stop them
+# downloading their own copies.
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PUPPETEER_SKIP_DOWNLOAD=true \
+    CHROME_BIN=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium \
+    CHROMEDRIVER_FILEPATH=/usr/bin/chromedriver \
+    CHROMEDRIVER_SKIP_DOWNLOAD=true
+
+# Bake the workspace seed. Build context is the requirement-generator root.
+COPY scripts            /seed/scripts
+COPY agent-instructions /seed/agent-instructions
+COPY examples           /seed/examples
+COPY projects           /seed/projects
+COPY .mcp.json          /seed/.mcp.json
+
+# Seed-then-exec wrapper. Seeds /workspace only when empty (never clobbers a
+# pre-populated mount), fixes ownership once, then hands off to the base
+# entrypoint (UID remap + gosu node + CMD).
+COPY scripts/paperclip-ext-entrypoint.sh /usr/local/bin/paperclip-ext-entrypoint.sh
+RUN chmod +x /usr/local/bin/paperclip-ext-entrypoint.sh
+
+ENTRYPOINT ["paperclip-ext-entrypoint.sh"]
+# Re-declare CMD: setting ENTRYPOINT in a child image resets the inherited CMD to
+# empty, so we must restate the base image's server command here.
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

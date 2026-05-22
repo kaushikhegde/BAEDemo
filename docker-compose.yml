@@ -1,0 +1,113 @@
+name: scyne
+
+# One stack: Postgres + Paperclip (with the agents) + a one-shot provisioner +
+# the chatbot. `make up` builds the paperclip base image first, then brings this
+# up. First boot self-provisions the Scyne company + 4 agents (see bootstrap).
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile.paperclip-ext
+      args:
+        PAPERCLIP_BASE: scyne/paperclip-base:local
+    image: scyne/paperclip-ext:local
+    env_file: .env
+    environment:
+      # local_trusted requires a loopback bind; the socat forwarder (in the
+      # entrypoint) exposes it on PAPERCLIP_PROXY_PORT for other containers.
+      HOST: "127.0.0.1"
+      PORT: "3100"
+      PAPERCLIP_PROXY_PORT: "8300"
+      # The chatbot/bootstrap reach Paperclip via the `paperclip` service name;
+      # allow that hostname through the private-hostname (DNS-rebinding) guard.
+      PAPERCLIP_ALLOWED_HOSTNAMES: "paperclip"
+      SERVE_UI: "true"
+      HOME: /paperclip
+      WORKSPACE_PATH: /workspace
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      # CRITICAL: the image defaults to `authenticated`, but every agent + the
+      # chatbot assume no-auth localhost (local-board implicit admin).
+      PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-local_trusted}"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+      PAPERCLIP_PORT_BASE: "${PAPERCLIP_PORT_BASE:-5174}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-scyne-local-secret}"
+      # Agent model auth: API key wins; if empty, claude-code falls back to a
+      # mounted ~/.claude (see the optional bind below).
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    ports:
+      # Bound to host loopback only — no-auth admin API must not reach the LAN.
+      # Host 127.0.0.1:3100 -> socat :8300 -> server 127.0.0.1:3100.
+      - "127.0.0.1:3100:8300"
+      # Generated-app dev servers (vite binds 0.0.0.0; browser iframes 127.0.0.1).
+      - "127.0.0.1:${GEN_APP_PORT_MIN:-5174}-${GEN_APP_PORT_MAX:-5199}:${GEN_APP_PORT_MIN:-5174}-${GEN_APP_PORT_MAX:-5199}"
+    volumes:
+      - workspace:/workspace
+      - paperclip-home:/paperclip
+      - mcp-auth:/paperclip/.mcp-auth
+      # Fallback agent auth (only used when ANTHROPIC_API_KEY is empty). Uncomment
+      # and set HOST_CLAUDE_DIR in .env to reuse your host Claude subscription:
+      # - "${HOST_CLAUDE_DIR:-/dev/null}:/paperclip/.claude"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  bootstrap:
+    image: scyne/paperclip-ext:local
+    command: ["node", "/seed/scripts/bootstrap.mjs"]
+    restart: "no"
+    environment:
+      PAPERCLIP_API_URL: http://paperclip:8300/api
+      WORKSPACE_PATH: /workspace
+      AGENT_INSTRUCTIONS_DIR: /seed/agent-instructions
+    volumes:
+      - workspace:/workspace
+    depends_on:
+      paperclip:
+        condition: service_healthy
+
+  chatbot:
+    build:
+      context: ./scyne-chatbot
+      dockerfile: ../Dockerfile.chatbot
+    image: scyne/chatbot:local
+    env_file: .env
+    environment:
+      PORT: "4000"
+      WORKSPACE_PATH: /workspace
+      PAPERCLIP_API_URL: http://paperclip:8300/api
+    ports:
+      # Loopback only — the chatbot is the local UI for this machine.
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - workspace:/workspace
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  paperclip-home:
+  mcp-auth:
+  workspace:

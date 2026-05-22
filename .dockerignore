@@ -1,0 +1,13 @@
+.git
+.idea
+.vscode
+.claude
+**/node_modules
+generated-apps/*/node_modules
+generated-apps/*/dev.log
+scyne-chatbot/dist
+**/*.log
+.env
+.env.*
+.DS_Store
+docs/superpowers

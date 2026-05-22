@@ -1,0 +1,24 @@
+# Scyne chatbot: builds the React app and serves it (plus the API + /ws/record)
+# from a single Express process on :4000. Build context is ./scyne-chatbot.
+FROM node:lts-trixie-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build   # tsc -p tsconfig.app.json && vite build -> dist/
+
+FROM node:lts-trixie-slim AS run
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=4000 \
+    WORKSPACE_PATH=/workspace \
+    STATIC_DIR=/app/dist \
+    PAPERCLIP_API_URL=http://paperclip:3100/api
+# node_modules includes tsx (the server runs TS directly via tsx).
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server ./server
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/tsconfig.json ./tsconfig.json
+EXPOSE 4000
+CMD ["npx", "tsx", "server/index.ts"]
