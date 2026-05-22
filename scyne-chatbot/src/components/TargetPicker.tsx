@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Target } from "lucide-react";
+import { ChevronDown, Plus, Target } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { createTarget } from "@/api";
 import {
   Popover,
   PopoverContent,
@@ -24,13 +25,46 @@ interface Props {
   project: string | null;
   feature: string | null;
   onChange: (project: string | null, feature: string | null) => void;
+  /** Called after a new project/feature is created so the parent can refresh + select it. */
+  onCreated?: (project: string, feature: string) => void;
   refreshKey?: number;
 }
 
-export function TargetPicker({ project, feature, onChange, refreshKey }: Props) {
+export function TargetPicker({ project, feature, onChange, onCreated, refreshKey }: Props) {
   const [tree, setTree] = useState<Record<string, Feature[]>>({});
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newProject, setNewProject] = useState("");
+  const [newFeature, setNewFeature] = useState("");
+  const [createErr, setCreateErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const NAME_RE = /^[A-Za-z0-9._-]+$/;
+
+  async function handleCreate() {
+    const p = newProject.trim();
+    const f = newFeature.trim();
+    if (!NAME_RE.test(p) || !NAME_RE.test(f)) {
+      setCreateErr("Use letters, numbers, dot, dash or underscore — no spaces.");
+      return;
+    }
+    setBusy(true);
+    setCreateErr(null);
+    try {
+      await createTarget(p, f);
+      onChange(p, f);
+      onCreated?.(p, f);
+      setCreating(false);
+      setNewProject("");
+      setNewFeature("");
+      setOpen(false);
+    } catch (e: any) {
+      setCreateErr(e?.message || "Failed to create");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +135,56 @@ export function TargetPicker({ project, feature, onChange, refreshKey }: Props) 
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Create a new project / feature */}
+          <div className="border-t pt-2.5">
+            {!creating ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-1.5 text-xs text-scyne-ink"
+                onClick={() => { setCreating(true); setCreateErr(null); }}
+              >
+                <Plus className="size-3.5" />
+                New project / feature
+              </Button>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  autoFocus
+                  value={newProject}
+                  onChange={(e) => setNewProject(e.target.value)}
+                  placeholder="Project (e.g. RTWSA)"
+                  className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-scyne-ink/30"
+                />
+                <input
+                  value={newFeature}
+                  onChange={(e) => setNewFeature(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !busy) handleCreate(); }}
+                  placeholder="Feature (e.g. return-to-work)"
+                  className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-scyne-ink/30"
+                />
+                {createErr && <p className="text-[11px] text-red-600">{createErr}</p>}
+                <div className="flex gap-2">
+                  <Button size="sm" className="flex-1 text-xs" onClick={handleCreate} disabled={busy}>
+                    {busy ? "Creating…" : "Create"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => { setCreating(false); setCreateErr(null); }}
+                    disabled={busy}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                <p className="text-[10.5px] text-muted-foreground">
+                  Creates the empty folder structure. Attach files with the 📎 button afterwards.
+                </p>
+              </div>
+            )}
           </div>
         </PopoverContent>
       </Popover>

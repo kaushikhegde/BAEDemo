@@ -32,6 +32,19 @@ export async function hasPreview(project: string, feature: string): Promise<bool
   return r.ok;
 }
 
+export async function createTarget(project: string, feature: string) {
+  const r = await fetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, feature }),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data?.error || `Failed to create project (HTTP ${r.status})`);
+  }
+  return r.json() as Promise<{ ok: true; project: string; feature: string; relativePath: string }>;
+}
+
 export async function triggerUiBuild(project: string, feature: string) {
   const r = await fetch("/api/ui-agent/trigger", {
     method: "POST",

@@ -360,6 +360,34 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+// 6b. Create a new project/feature — scaffolds the empty input folder structure
+//     in the shared workspace volume. Files are uploaded afterwards via /api/upload.
+app.post("/api/projects", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    if (!project || !feature) return res.status(400).json({ error: "project and feature are required" });
+    assertSafeProjectFeature(project, feature);
+
+    const base = path.join(WORKSPACE_PATH, "projects", project, feature);
+    const dirs = [
+      path.join(base, "requirements", "Policy"),
+      path.join(base, "requirements", "Transcripts"),
+      path.join(base, "requirements", "Notes"),
+      path.join(base, "requirements", "UI"),
+      path.join(base, "design", "style-guides"),
+      path.join(base, "design", "example-screens"),
+      path.join(base, "outputs"),
+    ];
+    for (const d of dirs) await fs.mkdir(d, { recursive: true });
+
+    res.json({ ok: true, project, feature, relativePath: path.relative(WORKSPACE_PATH, base) });
+  } catch (e: any) {
+    console.error("[projects] create failed:", e);
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 // 7a. Trigger a UI build — creates a PM-assigned issue with the "Build UI — ..." title.
 //     PM detects this intent, validates outputs/product-summary.md exists, then dispatches
 //     the UI Engineer directly (its direct report). When the UI Engineer finishes, PM is

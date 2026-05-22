@@ -515,6 +515,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
               feature={targetFeature}
               refreshKey={featuresRefreshKey}
               onChange={(p, f) => { setTargetProject(p); setTargetFeature(f); }}
+              onCreated={(p, f) => {
+                setTargetProject(p);
+                setTargetFeature(f);
+                setFeaturesRefreshKey((k) => k + 1);
+              }}
             />
           </div>
 
