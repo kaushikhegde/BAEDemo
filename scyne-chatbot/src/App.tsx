@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, History as HistoryIcon, LayoutDashboard, LogOut, RotateCcw, Sparkles } from "lucide-react";
+import { ArrowUp, Eye, History as HistoryIcon, LayoutDashboard, LogOut, RotateCcw, Sparkles } from "lucide-react";
 import { Header } from "./components/Header";
 import { HistoryView } from "./components/HistoryView";
 import { MessageBubble } from "./components/MessageBubble";
@@ -117,6 +117,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [view, setView] = useState<"workspace" | "history">("workspace");
   // Compact agent run summaries for the Activity panel.
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  // Whether the Agent Runs panel (beside Workflow) is shown. Remembered across refreshes.
+  const [showAgentRuns, setShowAgentRuns] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("scyne_show_agent_runs") !== "0";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") window.localStorage.setItem("scyne_show_agent_runs", showAgentRuns ? "1" : "0");
+  }, [showAgentRuns]);
   // Target picker selection is persisted so iteration mode (chat → UI agent)
   // resumes after a refresh — without this, previewAvailable polling never
   // starts and the chat falls back to the LLM with no UI context.
@@ -423,14 +431,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       />
 
       {view === "history" ? (
-        <main className="mx-auto max-w-[1440px] px-6 lg:px-8 pt-6 pb-10">
+        <main className="px-6 lg:px-8 pt-6 pb-10">
           <HistoryView />
         </main>
       ) : (
       <>
-      <main className="mx-auto max-w-[1440px] px-6 lg:px-8 pt-6 pb-44 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <main className="px-6 lg:px-8 pt-6 pb-44 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: chat */}
-        <section className="lg:col-span-7 flex flex-col gap-4">
+        <section className="lg:col-span-4 flex flex-col gap-4">
           <div
             ref={scrollRef}
             className="h-[calc(100vh-13rem)] overflow-y-auto scroll-smooth pr-2 space-y-4"
@@ -513,7 +521,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         </section>
 
         {/* Right: tabbed view — Activity (workflow status) | UI (live preview) */}
-        <aside className="lg:col-span-5 flex flex-col gap-4 lg:h-[calc(100vh-13rem)] min-h-0">
+        <aside className="lg:col-span-8 flex flex-col gap-4 lg:h-[calc(100vh-13rem)] min-h-0">
           <Tabs value={rightTab} onValueChange={(v) => setRightTab(v as "activity" | "ui")} className="flex flex-col gap-2 flex-1 min-h-0">
             <TabsList className="self-start">
               <TabsTrigger value="activity">Activity</TabsTrigger>
@@ -528,8 +536,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
               </TabsTrigger>
             </TabsList>
 
-            {/* The whole panel fills the viewport height and scrolls as one column. */}
-            <TabsContent value="activity" className="flex-1 min-h-0 overflow-y-auto pr-1">
+            {/* Panel matches the chat box height; each region scrolls its own content. */}
+            <TabsContent value="activity" className="flex-1 min-h-0 flex flex-col">
               {showSkeletons ? (
                 <>
                   <Card elevation={1} className="p-4 space-y-2">
@@ -542,24 +550,39 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   </Card>
                 </>
               ) : status ? (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 flex-1 min-h-0">
                   {statusError && (
-                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70">
+                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70 shrink-0">
                       Reconnecting to the workflow service… showing the last known status.
                     </Card>
                   )}
-                  <ProgressPanel items={status.flatIssues} />
-                  <RunsPanel runs={runs} />
+                  {/* Workflow + Agent Runs side by side, equal fixed height; each scrolls internally. */}
+                  <div className={`grid gap-4 shrink-0 h-56 ${showAgentRuns && runs.length > 0 ? "lg:grid-cols-2" : "grid-cols-1"}`}>
+                    <ProgressPanel items={status.flatIssues} />
+                    {showAgentRuns && runs.length > 0 && (
+                      <RunsPanel runs={runs} onHide={() => setShowAgentRuns(false)} />
+                    )}
+                  </div>
+                  {!showAgentRuns && runs.length > 0 && (
+                    <button
+                      onClick={() => setShowAgentRuns(true)}
+                      className="self-start inline-flex items-center gap-1 text-xs font-medium text-scyne-ink-600 hover:text-scyne-ink-700 transition-colors shrink-0"
+                    >
+                      <Eye className="size-3.5" /> Show agent runs ({runs.length})
+                    </button>
+                  )}
                   <ActivityTimeline items={status.activity} />
                   {resolvedApprovals.map((a) => (
-                    <ApprovalCard
-                      key={a.id}
-                      approval={a}
-                      onApprove={handleApprove}
-                      onRequestChanges={handleRequestChanges}
-                    />
+                    <div key={a.id} className="shrink-0">
+                      <ApprovalCard
+                        approval={a}
+                        onApprove={handleApprove}
+                        onRequestChanges={handleRequestChanges}
+                      />
+                    </div>
                   ))}
-                  <LinksPanel links={status.links} />
+                  {/* Published links live in the left chat now — no duplicate here, so
+                      the Activity list keeps its full height. */}
                 </div>
               ) : statusError && parentIssueId ? (
                 <Card
@@ -618,11 +641,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
 
       {/* Fixed composer dock — aligned under the chat column */}
       <div className="fixed inset-x-0 bottom-4 z-20 pointer-events-none">
-        <div className="mx-auto max-w-[1440px] px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card
             glass
             elevation={3}
-            className="lg:col-span-7 pointer-events-auto rounded-2xl p-3 flex flex-col gap-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background transition-shadow"
+            className="lg:col-span-4 pointer-events-auto rounded-2xl p-3 flex flex-col gap-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background transition-shadow"
           >
           {/* Target row */}
           <div className="flex items-center justify-between gap-2 px-1">

@@ -1,4 +1,4 @@
-import { Activity, Loader2 } from "lucide-react";
+import { Activity, EyeOff, Loader2 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { RunSummary } from "../api";
@@ -13,18 +13,27 @@ function dur(ms: number | null): string {
 
 const RUNNING = new Set(["queued", "running"]);
 
-export function RunsPanel({ runs }: { runs: RunSummary[] }) {
+export function RunsPanel({ runs, onHide }: { runs: RunSummary[]; onHide?: () => void }) {
   if (!runs.length) return null;
   return (
-    <Card elevation={1} className="shrink-0">
-      <CardHeader>
+    <Card elevation={1} className="h-full flex flex-col min-h-0">
+      <CardHeader className="shrink-0">
         <CardTitle>
           <Activity className="size-3.5 text-scyne-ink-500" />
           Agent runs
           <Badge tone="neutral" size="sm" className="ml-auto normal-case tracking-normal">{runs.length}</Badge>
+          {onHide && (
+            <button
+              onClick={onHide}
+              aria-label="Hide agent runs"
+              className="ml-1 text-muted-foreground hover:text-scyne-ink-700 transition-colors"
+            >
+              <EyeOff className="size-3.5" />
+            </button>
+          )}
         </CardTitle>
       </CardHeader>
-      <div className="px-4 pb-3 flex flex-col gap-1.5">
+      <div className="px-4 pb-3 flex flex-col gap-1.5 flex-1 min-h-0 overflow-y-auto">
         {runs.map((r) => {
           const live = RUNNING.has(r.status);
           return (

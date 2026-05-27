@@ -12,11 +12,10 @@ function shortTime(iso: string) {
 export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
   if (!items.length) return null;
 
-  // The whole Activity panel (the parent TabsContent) is the scroll container now,
-  // so this card grows to its natural height and scrolls along with everything else.
+  // Fills the remaining panel height; only this card's list scrolls (not the page).
   return (
-    <Card elevation={1}>
-      <CardHeader>
+    <Card elevation={1} className="flex-1 min-h-0 flex flex-col">
+      <CardHeader className="shrink-0">
         <CardTitle>
           <MessageSquare className="size-3.5 text-scyne-ink-500" />
           Activity
@@ -25,7 +24,7 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
           </Badge>
         </CardTitle>
       </CardHeader>
-      <div className="px-4 pb-4">
+      <div className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
         {items.map((c, idx) => (
           <div key={c.id}>
             {idx > 0 && <Separator className="my-3" />}

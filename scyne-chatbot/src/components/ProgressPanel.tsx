@@ -19,8 +19,8 @@ function statusTone(s: string): Tone {
 export function ProgressPanel({ items }: { items: IssueProgress[] }) {
   if (!items.length) return null;
   return (
-    <Card elevation={1}>
-      <CardHeader>
+    <Card elevation={1} className="h-full flex flex-col min-h-0">
+      <CardHeader className="shrink-0">
         <CardTitle>
           <GitBranch className="size-3.5 text-scyne-ink-500" />
           Workflow
@@ -29,7 +29,7 @@ export function ProgressPanel({ items }: { items: IssueProgress[] }) {
           </Badge>
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-0.5">
+      <CardContent className="space-y-0.5 flex-1 min-h-0 overflow-y-auto">
         {items.map((i) => (
           <div
             key={i.identifier}
