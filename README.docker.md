@@ -172,10 +172,17 @@ Only needed for the BA's Phase 2 push. Requirements generation, UI builds, and
 a11y audits all work without it. After the stack is up:
 
 ```bash
-make oauth      # prints a URL; complete it in your browser
+make oauth          # all-in-Docker stack: execs into the paperclip container
+make oauth-hosted   # host-Paperclip mode: runs mcp-remote directly on the host
 ```
 
-Tokens persist in the `mcp-auth` volume across restarts.
+Use `make oauth` for the full Docker stack (`make up`) — it execs into the
+`paperclip` container, and tokens persist in the `mcp-auth` volume.
+
+In **host-Paperclip mode** (`make client-hosted`) there is no `paperclip`
+container, so use `make oauth-hosted` instead — it runs `mcp-remote` on the host
+and caches tokens in `~/.mcp-auth/`, which the host Paperclip's BA agent shares.
+(Needs Node/npx on the host, already present from the Paperclip install.)
 
 ## Adding feature inputs
 

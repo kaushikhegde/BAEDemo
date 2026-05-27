@@ -13,7 +13,7 @@ BASE_TARBALL    ?= paperclip-base.tar.gz
 # natively on the client regardless of YOUR machine's CPU.
 TARGET_PLATFORM ?= linux/amd64
 
-.PHONY: up build base down stop clean logs ps oauth handoff client client-hosted client-hosted-down
+.PHONY: up build base down stop clean logs ps oauth oauth-hosted handoff client client-hosted client-hosted-down
 
 up: build
 	docker compose up -d
@@ -99,6 +99,13 @@ ps:
 
 # One-time Atlassian MCP OAuth login (tokens persist in the mcp-auth volume).
 # Complete the printed URL in your browser. Only needed for the BA's
-# Confluence/Jira push.
+# Confluence/Jira push. ALL-IN-DOCKER stack only (there's a `paperclip` container).
 oauth:
 	docker compose exec paperclip npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2
+
+# Same one-time Atlassian OAuth, but for HOST-PAPERCLIP mode (make client-hosted):
+# there is no paperclip container, so run mcp-remote directly on the host. Tokens
+# cache in ~/.mcp-auth/, which the host Paperclip's BA agent shares. Needs Node/npx
+# on the host (already present since the client installed Paperclip with npm).
+oauth-hosted:
+	npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2

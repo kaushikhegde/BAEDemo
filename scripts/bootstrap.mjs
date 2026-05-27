@@ -20,9 +20,22 @@ import path from "node:path";
 const BASE = (process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api").replace(/\/$/, "");
 const COMPANY_NAME = process.env.SCYNE_COMPANY_NAME || "Scyne";
 const INSTRUCTIONS_DIR = process.env.AGENT_INSTRUCTIONS_DIR || "/seed/agent-instructions";
-const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH || "/workspace/.bootstrap/ids.json";
 const WORKSPACE = process.env.WORKSPACE_PATH || "/workspace";
+// ids.json lands under WORKSPACE so the chatbot (which reads ${WORKSPACE}/.bootstrap/
+// ids.json) finds it. Must derive from WORKSPACE — hardcoding /workspace breaks the
+// host-native run, where /workspace at the filesystem root isn't writable (EACCES).
+const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH || `${WORKSPACE}/.bootstrap/ids.json`;
 const SKILLS_DIR = process.env.SKILLS_DIR || "/seed/skills";
+// The directory each agent uses as its Claude Code cwd. In the all-in-Docker stack
+// the agents run INSIDE the paperclip container, so this is the container path
+// (/workspace). In host-Paperclip mode the agents run ON THE HOST, so it must be
+// the host's absolute workspace path (AGENT_CWD = WORKSPACE_HOST_PATH) — otherwise
+// the agent tries to mkdir /workspace at the host root and hits EACCES.
+const AGENT_CWD = process.env.AGENT_CWD || WORKSPACE;
+const adapterConfig = {
+  cwd: AGENT_CWD,
+  extraArgs: ["--mcp-config", `${AGENT_CWD}/.mcp.json`],
+};
 const HEALTH_DEADLINE_MS = 120_000;
 
 // Old report UUIDs hard-coded inside agent-instructions/pm.json. We string-
@@ -157,10 +170,7 @@ async function main() {
       name: spec.name,
       role: "general",
       adapterType: "claude_local",
-      adapterConfig: {
-        cwd: WORKSPACE,
-        extraArgs: ["--mcp-config", `${WORKSPACE}/.mcp.json`],
-      },
+      adapterConfig,
       runtimeConfig: { heartbeat: { enabled: false } },
       desiredSkills: spec.skills,
     });
@@ -170,6 +180,14 @@ async function main() {
   }
 
   if (!ids.pm) throw new Error("PM agent id missing after hire");
+
+  // Converge every agent's working dir to AGENT_CWD. This fixes agents that were
+  // already hired with a stale cwd (e.g. a previous run that baked /workspace on a
+  // host where that path isn't writable). Idempotent — a no-op when already correct.
+  for (const spec of AGENTS) {
+    await api("PATCH", `/agents/${ids[spec.key]}`, { adapterConfig });
+    console.log(`[bootstrap] ${spec.name} cwd=${AGENT_CWD}`);
+  }
 
   // Wire reportsTo = PM for the three reports (idempotent).
   for (const spec of AGENTS) {
