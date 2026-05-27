@@ -28,6 +28,53 @@ Then open:
 
 After the first `make up`, `docker compose up -d` / `make down` work on their own.
 
+## Client handoff (no Paperclip source needed)
+
+The stack is built `FROM` a locally-built Paperclip base image (`scyne/paperclip-base:local`).
+A client who only has *this* repo doesn't have the Paperclip source at `../paperclip`,
+so `make up` / `docker compose up --build` fail at the base image
+(`scyne/paperclip-base:local: manifest unknown`). Hand them a prebuilt base instead.
+
+**On your machine** (you have `../paperclip`):
+
+```bash
+make handoff                 # cross-builds the base + writes paperclip-base.tar.gz
+```
+
+Give the client this repo **plus** `paperclip-base.tar.gz`.
+
+**On the client's machine** (one command):
+
+```bash
+make client                  # loads the base image (once) then builds + starts the stack
+```
+
+`make client` never touches `../paperclip` and needs no registry. It's idempotent —
+if the base image is already loaded it skips straight to `docker compose up`.
+
+### Ubuntu / Linux clients
+
+- **Install prerequisites first** (fresh Ubuntu has neither Docker nor `make`):
+
+  ```bash
+  sudo apt update
+  sudo apt install -y docker.io docker-compose-plugin make
+  sudo usermod -aG docker $USER   # then log out/in so `docker` runs without sudo
+  ```
+
+- **Architecture must match.** `make handoff` cross-builds for `linux/amd64` by
+  default — correct for almost all Intel/AMD Ubuntu servers and desktops. If the
+  client runs **ARM** (AWS Graviton, Ampere, Raspberry Pi), build for it instead:
+
+  ```bash
+  make handoff TARGET_PLATFORM=linux/arm64
+  ```
+
+  Check the client's arch with `uname -m` on their box: `x86_64` → `linux/amd64`,
+  `aarch64` → `linux/arm64`. A mismatch surfaces as `exec format error` at runtime.
+
+- Don't commit `paperclip-base.tar.gz` to git — it's hundreds of MB.
+
 ## What first boot does (automatic)
 
 ```

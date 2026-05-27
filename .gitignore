@@ -35,3 +35,6 @@ generated-apps/
 # Misc
 *.log
 coverage/
+
+# Client handoff base-image tarball (hundreds of MB — never commit)
+paperclip-base.tar.gz
