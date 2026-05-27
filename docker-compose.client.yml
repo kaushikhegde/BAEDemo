@@ -36,10 +36,14 @@ services:
       PAPERCLIP_API_URL: "${PAPERCLIP_API_URL:-http://127.0.0.1:3100/api}"
       WORKSPACE_PATH: /workspace
       AGENT_INSTRUCTIONS_DIR: /seed/agent-instructions
+      SKILLS_DIR: /seed/skills
       SCYNE_COMPANY_NAME: "${SCYNE_COMPANY_NAME:-Scyne}"
     volumes:
       - ./scripts:/seed/scripts:ro
       - ./agent-instructions:/seed/agent-instructions:ro
+      # Skill SKILL.md files — bootstrap registers these as company skills so the
+      # BA's `requirement-generator` hire isn't rejected by a fresh host Paperclip.
+      - ./skills:/seed/skills:ro
       # The shared workspace — must match the host Paperclip's WORKSPACE_PATH.
       - "${WORKSPACE_HOST_PATH:-.}:/workspace"
 

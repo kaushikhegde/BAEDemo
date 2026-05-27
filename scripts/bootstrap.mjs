@@ -22,6 +22,7 @@ const COMPANY_NAME = process.env.SCYNE_COMPANY_NAME || "Scyne";
 const INSTRUCTIONS_DIR = process.env.AGENT_INSTRUCTIONS_DIR || "/seed/agent-instructions";
 const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH || "/workspace/.bootstrap/ids.json";
 const WORKSPACE = process.env.WORKSPACE_PATH || "/workspace";
+const SKILLS_DIR = process.env.SKILLS_DIR || "/seed/skills";
 const HEALTH_DEADLINE_MS = 120_000;
 
 // Old report UUIDs hard-coded inside agent-instructions/pm.json. We string-
@@ -94,6 +95,43 @@ async function readBundle(file) {
   return parsed;
 }
 
+// Agents are hired with `desiredSkills` (e.g. the BA needs `requirement-generator`).
+// Paperclip rejects the hire (422 "unknown references") unless that skill is a
+// registered company skill. The all-in-Docker image syncs skills from disk, but a
+// natively-installed (host) Paperclip has none — so we register them here from the
+// SKILL.md files shipped in this repo. Idempotent: skips any skill already present.
+async function ensureCompanySkills(companyId) {
+  const needed = [...new Set(AGENTS.flatMap((a) => a.skills))];
+  if (needed.length === 0) return;
+
+  const existing = await api("GET", `/companies/${companyId}/skills`);
+  const have = new Set(
+    (Array.isArray(existing) ? existing : existing.items || existing.skills || [])
+      .map((s) => s.slug)
+      .filter(Boolean),
+  );
+
+  for (const slug of needed) {
+    if (have.has(slug)) {
+      console.log(`[bootstrap] company skill '${slug}' already present`);
+      continue;
+    }
+    const skillPath = path.join(SKILLS_DIR, slug, "SKILL.md");
+    let markdown;
+    try {
+      markdown = await fs.readFile(skillPath, "utf8");
+    } catch {
+      console.warn(
+        `[bootstrap] WARN: skill '${slug}' missing and no SKILL.md at ${skillPath} — ` +
+        `the hire that needs it will fail. Mount the skill or install it in Paperclip.`,
+      );
+      continue;
+    }
+    await api("POST", `/companies/${companyId}/skills`, { name: slug, slug, markdown });
+    console.log(`[bootstrap] registered company skill '${slug}' from ${skillPath}`);
+  }
+}
+
 async function main() {
   await waitForHealth();
   const companyId = await getOrCreateCompany();
@@ -101,6 +139,9 @@ async function main() {
   // Hires land `idle` (and auto-fire) only when board approval is off.
   await api("PATCH", `/companies/${companyId}`, { requireBoardApprovalForNewAgents: false });
   console.log("[bootstrap] board approval for new agents disabled");
+
+  // Register any skills the agents reference before hiring (else the hire 422s).
+  await ensureCompanySkills(companyId);
 
   // First pass: ensure each agent exists; collect ids by key.
   const ids = {};

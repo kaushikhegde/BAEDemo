@@ -33,6 +33,8 @@ COPY agent-instructions /seed/agent-instructions
 COPY examples           /seed/examples
 COPY projects           /seed/projects
 COPY .mcp.json          /seed/.mcp.json
+# Skill SKILL.md files — bootstrap registers these as company skills.
+COPY skills             /seed/skills
 
 # Seed-then-exec wrapper. Seeds /workspace only when empty (never clobbers a
 # pre-populated mount), fixes ownership once, then hands off to the base
