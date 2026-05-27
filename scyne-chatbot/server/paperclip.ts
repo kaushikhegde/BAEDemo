@@ -62,6 +62,14 @@ export const paperclip = {
     return call<any>("GET", `/companies/${COMPANY}/issues`).catch(() => [] as any[]);
   },
 
+  // Agent run timeline — used for the compact run-summary lines in Activity.
+  listIssueRuns(issueId: string) {
+    return call<any>("GET", `/issues/${issueId}/runs`).catch(() => [] as any[]);
+  },
+  listAgents() {
+    return call<any>("GET", `/companies/${COMPANY}/agents`).catch(() => [] as any[]);
+  },
+
   getApprovals(issueId: string) {
     return call("GET", `/issues/${issueId}/approvals`);
   },

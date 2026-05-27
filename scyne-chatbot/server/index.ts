@@ -58,14 +58,20 @@ app.post("/api/trigger", async (req, res) => {
     const feature_name = overrides.feature_name || process.env.DEFAULT_FEATURE_NAME || "Untitled Feature";
     const project = overrides.project || "SADA";
     const feature = overrides.feature || "interim-benefit";
+    // Default the Jira project + Confluence space keys to the PROJECT name, not a
+    // fixed .env value — so picking "RTWSA" pushes to RTWSA, not SADA. The .env
+    // DEFAULT_* keys (and the parent epic) only apply when they belong to THIS
+    // project (the original SADA demo). The BA verifies these exist before pushing.
+    const projectKey = String(project).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SADA";
+    const envIsThisProject = (process.env.DEFAULT_JIRA_PROJECT_KEY || "").toUpperCase() === projectKey;
     const params: RequirementParams = {
       process_l3: overrides.process_l3 || process.env.DEFAULT_PROCESS_L3,
       process_l4: overrides.process_l4 || process.env.DEFAULT_PROCESS_L4,
       starting_story_number: overrides.starting_story_number || process.env.DEFAULT_STARTING_STORY_NUMBER,
-      parent_epic_key: overrides.parent_epic_key || process.env.DEFAULT_PARENT_EPIC_KEY,
-      jira_project_key: overrides.jira_project_key || process.env.DEFAULT_JIRA_PROJECT_KEY,
-      confluence_space_key: overrides.confluence_space_key || process.env.DEFAULT_CONFLUENCE_SPACE_KEY,
-      confluence_page_title: overrides.confluence_page_title || process.env.DEFAULT_CONFLUENCE_PAGE_TITLE,
+      parent_epic_key: overrides.parent_epic_key || (envIsThisProject ? process.env.DEFAULT_PARENT_EPIC_KEY : ""),
+      jira_project_key: overrides.jira_project_key || projectKey,
+      confluence_space_key: overrides.confluence_space_key || projectKey,
+      confluence_page_title: overrides.confluence_page_title || (envIsThisProject ? process.env.DEFAULT_CONFLUENCE_PAGE_TITLE : feature_name),
     };
     const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
 
@@ -101,7 +107,7 @@ app.post("/api/trigger", async (req, res) => {
       `- Process L3: ${params.process_l3}`,
       `- Process L4: ${params.process_l4}`,
       `- Starting story number: ${params.starting_story_number}`,
-      `- Parent epic key: ${params.parent_epic_key}`,
+      `- Parent epic key: ${params.parent_epic_key || "(none — create stories without a parent epic)"}`,
       `- Jira project key: ${params.jira_project_key}`,
       `- Confluence space key: ${params.confluence_space_key}`,
       `- Confluence page title: ${params.confluence_page_title}`,
@@ -288,6 +294,53 @@ app.get("/api/history", async (_req, res) => {
     res.json(entries);
   } catch (e: any) {
     console.error("[history] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Compact agent run-summary lines for the Activity panel: every run across the
+// parent + its descendant issues, with agent name, status, duration and tool count.
+const asArray = (raw: any): any[] => (Array.isArray(raw) ? raw : (raw?.items || raw?.runs || raw?.events || []));
+app.get("/api/runs/:issueId", async (req, res) => {
+  try {
+    const rootId = req.params.issueId;
+    // Collect parent + descendant issue ids (light recursive children walk).
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    const walk = async (id: string) => {
+      if (seen.has(id)) return;
+      seen.add(id); ids.push(id);
+      const kids = await paperclip.listChildren(id);
+      for (const k of asArray(kids)) if (k?.id) await walk(k.id);
+    };
+    await walk(rootId);
+
+    // Agent id → friendly name.
+    const agents = asArray(await paperclip.listAgents());
+    const agentName = new Map<string, string>(agents.map((a: any) => [a.id, a.name]));
+
+    // All runs across those issues. (Tool-call counts aren't emitted as run events
+    // for the claude_local adapter — they live in the run log — so we keep this
+    // light: agent + status + duration only, no per-run event fetches.)
+    const runLists = await Promise.all(ids.map((id) => paperclip.listIssueRuns(id)));
+    const rawRuns: any[] = runLists.flatMap(asArray);
+    const runs = rawRuns.map((r: any) => {
+      const started = r.startedAt ? new Date(r.startedAt).getTime() : null;
+      const finished = r.finishedAt ? new Date(r.finishedAt).getTime() : null;
+      const durationMs = started ? (finished ?? Date.now()) - started : null;
+      return {
+        runId: r.runId || r.id,
+        agent: agentName.get(r.agentId) || "Agent",
+        status: r.status,
+        startedAt: r.startedAt ?? r.createdAt ?? null,
+        durationMs,
+      };
+    });
+    // Oldest first so they read like a timeline.
+    runs.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    res.json(runs);
+  } catch (e: any) {
+    console.error("[runs] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

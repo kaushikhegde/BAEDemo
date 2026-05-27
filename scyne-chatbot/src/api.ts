@@ -114,6 +114,20 @@ export async function getHistory(): Promise<HistoryEntry[]> {
   return r.json();
 }
 
+export interface RunSummary {
+  runId: string;
+  agent: string;
+  status: string;
+  startedAt: string | null;
+  durationMs: number | null;
+}
+
+export async function getRuns(issueId: string): Promise<RunSummary[]> {
+  const r = await fetch(`/api/runs/${issueId}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export type UploadHint = "policy" | "transcripts" | "notes" | "ui";
 
 export interface UploadFileSuccess {

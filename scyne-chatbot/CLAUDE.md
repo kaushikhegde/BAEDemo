@@ -83,6 +83,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
 | POST   | `/api/request-changes/:approvalId`  | Reviewer feedback loop: marks the gate `revision_requested` (feedback → `decisionNote`), comments it on the issue, and flips the issue to `todo` to re-fire the BA's regenerate branch. Body `{issueId, feedback}`. |
 | GET    | `/api/history`                      | All completed "Generate requirements" runs across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
+| GET    | `/api/runs/:issueId`                | Compact agent run summaries (agent · status · duration) for the parent + descendant issues. Used by `RunsPanel` in the Activity panel. No tool counts (claude_local tool calls live in the run log, not run events). |
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
 | GET    | `/api/artifacts`                    | Reads `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` from disk. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |

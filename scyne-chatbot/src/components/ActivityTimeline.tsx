@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,16 +10,13 @@ function shortTime(iso: string) {
 }
 
 export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [items.length]);
-
   if (!items.length) return null;
 
+  // The whole Activity panel (the parent TabsContent) is the scroll container now,
+  // so this card grows to its natural height and scrolls along with everything else.
   return (
-    <Card elevation={1} className="flex flex-col flex-1 min-h-0">
-      <CardHeader className="shrink-0">
+    <Card elevation={1}>
+      <CardHeader>
         <CardTitle>
           <MessageSquare className="size-3.5 text-scyne-ink-500" />
           Activity
@@ -29,10 +25,7 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
           </Badge>
         </CardTitle>
       </CardHeader>
-      <div
-        ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 scroll-smooth"
-      >
+      <div className="px-4 pb-4">
         {items.map((c, idx) => (
           <div key={c.id}>
             {idx > 0 && <Separator className="my-3" />}

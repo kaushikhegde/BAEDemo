@@ -8,6 +8,7 @@ import { ApprovalCard } from "./components/ApprovalCard";
 import { StagePill } from "./components/StagePill";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { LinksPanel } from "./components/LinksPanel";
+import { RunsPanel } from "./components/RunsPanel";
 import { AttachmentButton } from "./components/AttachmentButton";
 import { RecordMeetingPanel } from "./components/RecordMeetingPanel";
 import { TargetPicker } from "./components/TargetPicker";
@@ -20,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, approve, requestChanges, hasPreview, triggerUiBuild, postUiComment } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -114,6 +115,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [statusError, setStatusError] = useState<string | null>(null);
   // Top-level view: the live workspace (chat + workflow) vs the History page.
   const [view, setView] = useState<"workspace" | "history">("workspace");
+  // Compact agent run summaries for the Activity panel.
+  const [runs, setRuns] = useState<RunSummary[]>([]);
   // Target picker selection is persisted so iteration mode (chat → UI agent)
   // resumes after a refresh — without this, previewAvailable polling never
   // starts and the chat falls back to the LLM with no UI context.
@@ -205,6 +208,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (cancelled) return;
         setStatus(s);
         setStatusError(null);
+        // Best-effort: refresh the compact agent run summaries alongside status.
+        getRuns(parentIssueId).then((r) => { if (!cancelled) setRuns(r); }).catch(() => {});
       } catch (e: any) {
         if (cancelled) return;
         // Keep the last good status on screen if we had one; otherwise this lets
@@ -340,6 +345,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setParentIssueId(null);
     setStatus(null);
     setStatusError(null);
+    setRuns([]);
     clearChatPersistence();
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
@@ -456,6 +462,9 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             {pendingApprovals.map((a) => (
               <ApprovalCard key={a.id} approval={a} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
             ))}
+            {status && (status.links.confluence.length > 0 || status.links.jira.length > 0) && (
+              <LinksPanel links={status.links} />
+            )}
             {pendingUiPrompt && (
               <Card elevation={2} className="p-4 flex flex-col gap-3 bg-white/80">
                 <div>
@@ -519,7 +528,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="activity" className="flex-1 min-h-0 flex flex-col">
+            {/* The whole panel fills the viewport height and scrolls as one column. */}
+            <TabsContent value="activity" className="flex-1 min-h-0 overflow-y-auto pr-1">
               {showSkeletons ? (
                 <>
                   <Card elevation={1} className="p-4 space-y-2">
@@ -532,24 +542,24 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   </Card>
                 </>
               ) : status ? (
-                <div className="flex flex-col gap-4 flex-1 min-h-0">
+                <div className="flex flex-col gap-4">
                   {statusError && (
-                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70 shrink-0">
+                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70">
                       Reconnecting to the workflow service… showing the last known status.
                     </Card>
                   )}
-                  <div className="shrink-0"><ProgressPanel items={status.flatIssues} /></div>
+                  <ProgressPanel items={status.flatIssues} />
+                  <RunsPanel runs={runs} />
                   <ActivityTimeline items={status.activity} />
                   {resolvedApprovals.map((a) => (
-                    <div key={a.id} className="shrink-0">
-                      <ApprovalCard
-                        approval={a}
-                        onApprove={handleApprove}
-                        onRequestChanges={handleRequestChanges}
-                      />
-                    </div>
+                    <ApprovalCard
+                      key={a.id}
+                      approval={a}
+                      onApprove={handleApprove}
+                      onRequestChanges={handleRequestChanges}
+                    />
                   ))}
-                  <div className="shrink-0"><LinksPanel links={status.links} /></div>
+                  <LinksPanel links={status.links} />
                 </div>
               ) : statusError && parentIssueId ? (
                 <Card

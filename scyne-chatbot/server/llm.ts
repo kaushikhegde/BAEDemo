@@ -98,10 +98,7 @@ ${targetBlock}${uiBlock}
 - Process L3: ${process.env.DEFAULT_PROCESS_L3}
 - Process L4: ${process.env.DEFAULT_PROCESS_L4}
 - Starting story number: ${process.env.DEFAULT_STARTING_STORY_NUMBER}
-- Parent epic: ${process.env.DEFAULT_PARENT_EPIC_KEY}
-- Jira project: ${process.env.DEFAULT_JIRA_PROJECT_KEY}
-- Confluence space: ${process.env.DEFAULT_CONFLUENCE_SPACE_KEY}
-- Confluence page title: ${process.env.DEFAULT_CONFLUENCE_PAGE_TITLE}
+- Jira project key + Confluence space key: **default to the project name** (e.g. project "RTWSA" → Jira/Confluence key "RTWSA"). They are NOT fixed to SADA. Only override if the user explicitly names a different Jira project or Confluence space. The BA verifies the project/space exists before pushing and stops if it doesn't (it cannot create them).
 
 ## Conversation flow — important
 

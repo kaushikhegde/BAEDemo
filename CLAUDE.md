@@ -192,6 +192,7 @@ open http://127.0.0.1:5173
 | POST   | `/api/reject/:approvalId`         | Rejects an approval gate                                                  |
 | POST   | `/api/request-changes/:approvalId`| Reviewer feedback → marks the gate `revision_requested`, comments the feedback, re-fires the BA (issue → `todo`) to regenerate |
 | GET    | `/api/history`                    | All completed requirements runs with their Confluence + Jira links (History view) |
+| GET    | `/api/runs/:issueId`              | Compact agent run summaries (agent · status · duration) for the run tree (Activity panel) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
 | GET    | `/api/artifacts`                  | Reads `outputs/*` from disk for the approval-card preview                 |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |
@@ -240,6 +241,8 @@ DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
 ```
 
 These mean a user can simply say "process SADA / interim-benefit" without specifying any parameters.
+
+**Per-project push targets (not fixed to SADA):** `/api/trigger` defaults the **Jira project key** and **Confluence space key** to the *project name* (e.g. project `RTWSA` → keys `RTWSA`), not the `.env` SADA values. The `.env` `DEFAULT_JIRA_PROJECT_KEY` / `DEFAULT_PARENT_EPIC_KEY` / `DEFAULT_CONFLUENCE_PAGE_TITLE` only apply when the chosen project equals `DEFAULT_JIRA_PROJECT_KEY` (the SADA demo); for any other project the parent epic is omitted and the page title defaults to the feature name. The BA's Phase 2 **verifies the Jira project + Confluence space exist** (`getVisibleJiraProjects` / `getConfluenceSpaces`) and blocks with a clear message if not — it cannot create projects/spaces (the Atlassian MCP has no such tool). The PM keeps the parent `Generate requirements` issue `in_progress` while the BA runs (it does **not** mark it `blocked`).
 
 ## The Atlassian MCP
 
