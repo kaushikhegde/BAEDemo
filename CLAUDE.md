@@ -99,7 +99,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── .env                (live config — do not commit)
 │   ├── .env.example
 │   └── package.json
-└── (paperclip clone lives at ~/Projects/buzzinga/paperclip — sibling, not nested)
+└── (Paperclip is installed separately on the host, outside this repo — location varies per machine)
 ```
 
 ## IDs and configuration
@@ -124,12 +124,12 @@ If you re-hire agents (new IDs), update:
 
 ## Paperclip (the orchestrator)
 
-- Clone lives at `~/Projects/buzzinga/paperclip`.
+- Paperclip is cloned/installed separately on the host (location varies per machine — e.g. a sibling directory). It is **not** part of this repo; don't assume any absolute path to it.
 - Runs locally at `http://127.0.0.1:3100` in `local_trusted (private)` deployment mode.
 - API base: `http://127.0.0.1:3100/api`.
 - **No authentication is required for any local API call.** Every request from localhost is automatically treated as the `local-board` user with admin rights. Do NOT add `Authorization` headers. Do NOT look for `PAPERCLIP_API_KEY`. This is the most common source of confusion — agent instructions all start with a reminder about this.
-- The `requirement-generator` skill is installed at `~/Projects/buzzinga/paperclip/skills/requirement-generator/SKILL.md`. Paperclip auto-syncs all skills under `skills/` into every hired agent's `desiredSkills` list.
-- Start Paperclip with `cd ~/Projects/buzzinga/paperclip && pnpm dev`. Embedded PostgreSQL boots automatically.
+- The `requirement-generator` skill is a **registered company skill** — reference it by name (`requirement-generator`), never by filesystem path. Its source ships in this repo at `./skills/requirement-generator/SKILL.md` (project-relative); the bootstrap registers it with Paperclip, which materialises it into each agent's skills home automatically. Do NOT go looking for it under any Paperclip clone path.
+- Start Paperclip per its own README (commonly `pnpm dev` in the Paperclip clone). Embedded PostgreSQL boots automatically.
 
 ### Key Paperclip endpoints used by the chatbot
 
@@ -156,7 +156,7 @@ If you re-hire agents (new IDs), update:
 
 ## The Skill
 
-`~/Projects/buzzinga/paperclip/skills/requirement-generator/SKILL.md` — the BA loads this in Phase 1. It defines:
+The `requirement-generator` skill (source: `./skills/requirement-generator/SKILL.md` in this repo, registered with Paperclip by the bootstrap) — the BA invokes it **by name** in Phase 1. It defines:
 
 - Input layout: `./projects/<project>/<feature>/requirements/{Policy,Transcripts,Notes,UI}/`.
 - Output schema: 5 files in `./outputs/`.
@@ -164,7 +164,7 @@ If you re-hire agents (new IDs), update:
 - 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11.
 - Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc` — the BA matches these for house style.
 
-To edit the skill: change the file in the paperclip clone (no API push needed; Paperclip re-reads from disk on the next agent run).
+To edit the skill: change `./skills/requirement-generator/SKILL.md` in this repo, then re-run the bootstrap so Paperclip re-registers the updated content.
 
 ## The chatbot (`scyne-chatbot/`)
 
@@ -254,7 +254,7 @@ Project-scope, configured in `.mcp.json` at the workspace root:
 }
 ```
 
-The BA's adapter is configured with `extraArgs: ["--mcp-config", "/Users/.../requirement-generator/.mcp.json"]` so Claude Code in the BA's headless subprocess loads this MCP. (Without `--mcp-config`, project-scope MCPs require interactive trust approval which can't happen in `--print` mode.)
+The BA's adapter is configured with `extraArgs: ["--mcp-config", "<AGENT_CWD>/.mcp.json"]` where `<AGENT_CWD>` is the agent's working directory (this repo's root on the host). The bootstrap sets this automatically from `AGENT_CWD`, so it's never a fixed absolute path. This lets Claude Code in the BA's headless subprocess load this MCP. (Without `--mcp-config`, project-scope MCPs require interactive trust approval which can't happen in `--print` mode.)
 
 OAuth tokens for `mcp-remote` are cached in `~/.mcp-auth/` at user scope. The same user runs Claude Code interactively and inside the BA's subprocess, so tokens are shared.
 
