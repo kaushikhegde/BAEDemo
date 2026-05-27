@@ -56,7 +56,16 @@ function formatFeatures(tree: Record<string, { name: string; counts: Record<stri
     .join("\n");
 }
 
-function buildSystemPrompt(featuresBlock: string, target?: { project: string | null; feature: string | null } | null): string {
+type UiContext = { active: boolean; project?: string | null; feature?: string | null } | null;
+
+function buildSystemPrompt(
+  featuresBlock: string,
+  target?: { project: string | null; feature: string | null } | null,
+  uiContext?: UiContext,
+): string {
+  const uiBlock = uiContext?.active
+    ? `\n## A live UI preview is ACTIVE for ${uiContext.project}/${uiContext.feature}\n\nThe right pane is showing a running, editable UI build. For EACH user message decide the intent:\n- **A question or request for information** ("what does this screen do?", "why is it laid out this way?", "is it responsive?", "what's left to do?") → just answer in text. Do NOT touch the build.\n- **A change to the UI** ("make the header navy", "add a back button", "move the table up", "use bigger fonts") → call \`comment_on_ui_build\` with kind="modify" and a clear \`instruction\`.\n- **Approval** ("looks good", "ship it", "approve", "that's perfect") → call \`comment_on_ui_build\` with kind="approve".\n- **Push to GitHub** ("push to github <url>", "publish it to <repo>") → call \`comment_on_ui_build\` with kind="push" and \`repo_url\`.\n\nWhen unsure whether it's a question or a change, prefer answering in text and ask a one-line clarifying question. Never silently turn a question into a modify instruction.\n`
+    : "";
   const targetBlock = target?.project && target?.feature
     ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
     : "";
@@ -81,7 +90,7 @@ Available projects and features on disk right now:
 ${featuresBlock}
 
 This list is refreshed every time we talk, so trust it as the current truth.
-${targetBlock}
+${targetBlock}${uiBlock}
 
 ## Defaults used unless the user overrides
 
@@ -175,6 +184,24 @@ const triggerTool: Tool = {
         required: ["project", "feature"],
       },
     },
+    {
+      name: "comment_on_ui_build",
+      description: "Post an instruction to the live UI build (only call this when a UI preview is ACTIVE, per the system prompt). Use it ONLY when the user wants to change the generated UI, approve it, or push it to GitHub. Do NOT call it for questions, requests for information, or chit-chat — answer those in text instead.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          kind: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: ["modify", "approve", "push"],
+            description: "modify = a visual/behaviour change request; approve = the user is happy with the UI; push = push the app to a GitHub repo.",
+          },
+          instruction: { type: SchemaType.STRING, description: "For kind=modify, the change to make, phrased as a clear instruction. For approve/push, a short echo of the user's intent." },
+          repo_url: { type: SchemaType.STRING, description: "For kind=push only: the GitHub repo URL to push to." },
+        },
+        required: ["kind", "instruction"],
+      },
+    },
   ],
 };
 
@@ -224,9 +251,10 @@ function normalize(response: any) {
 export async function chat(
   messages: AnthropicMsg[],
   target?: { project: string | null; feature: string | null } | null,
+  uiContext?: UiContext,
 ) {
   const tree = await listAvailable();
-  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target);
+  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext);
 
   const history = toGeminiHistory(messages);
   const lastUser = history.pop();

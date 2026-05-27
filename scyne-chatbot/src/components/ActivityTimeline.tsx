@@ -19,8 +19,8 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
   if (!items.length) return null;
 
   return (
-    <Card elevation={1}>
-      <CardHeader>
+    <Card elevation={1} className="flex flex-col flex-1 min-h-0">
+      <CardHeader className="shrink-0">
         <CardTitle>
           <MessageSquare className="size-3.5 text-scyne-ink-500" />
           Activity
@@ -31,7 +31,7 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
       </CardHeader>
       <div
         ref={scrollRef}
-        className="max-h-96 overflow-y-auto px-4 pb-4 scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 scroll-smooth"
       >
         {items.map((c, idx) => (
           <div key={c.id}>

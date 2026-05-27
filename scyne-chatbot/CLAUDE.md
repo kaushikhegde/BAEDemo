@@ -77,10 +77,12 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | Method | Path                                | Purpose                                                                   |
 | ------ | ----------------------------------- | ------------------------------------------------------------------------- |
 | POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
-| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to PM with `status:"todo"`. Body merges with `.env` defaults. |
+| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to PM with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if Policy/Transcripts/UI are empty. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate as approved (Paperclip wakes the BA → Phase 2). |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
+| POST   | `/api/request-changes/:approvalId`  | Reviewer feedback loop: marks the gate `revision_requested` (feedback → `decisionNote`), comments it on the issue, and flips the issue to `todo` to re-fire the BA's regenerate branch. Body `{issueId, feedback}`. |
+| GET    | `/api/history`                      | All completed "Generate requirements" runs across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
 | GET    | `/api/artifacts`                    | Reads `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` from disk. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
@@ -138,13 +140,14 @@ The prompt instructs a discovery flow:
 4. Confirm the chosen `<project> / <feature>` and ask if ready.
 5. On any confirmation phrasing, call the appropriate tool.
 
-**Three tools are exposed to the LLM** (all defined in `server/llm.ts`):
+**Four tools are exposed to the LLM** (all defined in `server/llm.ts`):
 
 | Tool                            | When the bot calls it                                                                           |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `set_target`                    | When the user picks a project + feature but isn't ready to fire yet. Pins the scope so the right-pane TargetPicker reflects it. No Paperclip side effect. |
 | `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to PM. |
 | `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to PM, which dispatches the UI Engineer then the UX Auditor directly (both report to PM). |
+| `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. Replaces the old frontend regex gate that hijacked all chat. |
 
 The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
 

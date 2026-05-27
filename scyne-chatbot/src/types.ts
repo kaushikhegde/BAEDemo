@@ -20,7 +20,8 @@ export interface ApprovalCardData {
   issueIdentifier: string;
   title: string;
   description?: string;
-  status?: "pending" | "approved" | "rejected" | null;
+  status?: "pending" | "approved" | "rejected" | "revision_requested" | null;
+  decisionNote?: string | null;
 }
 export interface ActivityItem {
   id: string;

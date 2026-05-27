@@ -190,6 +190,8 @@ open http://127.0.0.1:5173
 | GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links    |
 | POST   | `/api/approve/:approvalId`        | Resolves an approval gate as approved                                     |
 | POST   | `/api/reject/:approvalId`         | Rejects an approval gate                                                  |
+| POST   | `/api/request-changes/:approvalId`| Reviewer feedback → marks the gate `revision_requested`, comments the feedback, re-fires the BA (issue → `todo`) to regenerate |
+| GET    | `/api/history`                    | All completed requirements runs with their Confluence + Jira links (History view) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
 | GET    | `/api/artifacts`                  | Reads `outputs/*` from disk for the approval-card preview                 |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |

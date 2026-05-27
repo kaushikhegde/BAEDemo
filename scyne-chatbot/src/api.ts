@@ -1,11 +1,12 @@
 export async function postChat(
   messages: { role: "user" | "assistant"; content: any }[],
   target?: { project: string | null; feature: string | null },
+  uiContext?: { active: boolean; project: string | null; feature: string | null },
 ) {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, target }),
+    body: JSON.stringify({ messages, target, uiContext }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -17,7 +18,13 @@ export async function postTrigger(overrides: Record<string, string> = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(overrides),
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body?.message || body?.error || `Trigger failed (${r.status})`);
+    (err as any).code = body?.error;
+    (err as any).emptyFolders = body?.emptyFolders;
+    throw err;
+  }
   return r.json();
 }
 
@@ -76,6 +83,33 @@ export async function approve(approvalId: string, note?: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ note }),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// Send reviewer feedback back to the BA: marks the gate revision_requested and
+// re-fires the BA's issue so it regenerates and raises a fresh gate.
+export async function requestChanges(approvalId: string, issueId: string, feedback: string) {
+  const r = await fetch(`/api/request-changes/${approvalId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ issueId, feedback }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export interface HistoryEntry {
+  id: string;
+  identifier: string;
+  title: string;
+  status: string;
+  completedAt: string | null;
+  links: { confluence: string[]; jira: string[] };
+}
+
+export async function getHistory(): Promise<HistoryEntry[]> {
+  const r = await fetch("/api/history");
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

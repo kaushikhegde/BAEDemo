@@ -57,6 +57,11 @@ export const paperclip = {
     return call<any[]>("GET", `/companies/${COMPANY}/issues?parentId=${parentId}`).catch(() => [] as any[]);
   },
 
+  // All issues in the company (no parentId filter). Used by the History view.
+  listCompanyIssues() {
+    return call<any>("GET", `/companies/${COMPANY}/issues`).catch(() => [] as any[]);
+  },
+
   getApprovals(issueId: string) {
     return call("GET", `/issues/${issueId}/approvals`);
   },
@@ -67,6 +72,17 @@ export const paperclip = {
 
   rejectGate(approvalId: string, note?: string) {
     return call("POST", `/approvals/${approvalId}/reject`, { decisionNote: note ?? "Rejected via Scyne chatbot." });
+  },
+
+  // Send the gate back for changes (keeps it "live", records the feedback as decisionNote).
+  requestRevision(approvalId: string, note: string) {
+    return call("POST", `/approvals/${approvalId}/request-revision`, { decisionNote: note });
+  },
+
+  // Flip an issue's status. Setting it to "todo" re-fires the assignee agent
+  // (Paperclip does NOT auto-wake on reject/revision, so this is the re-trigger).
+  setIssueStatus(issueId: string, status: string) {
+    return call("PATCH", `/issues/${issueId}`, { status });
   },
 
   getComments(issueId: string) {

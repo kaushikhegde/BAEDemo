@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, LogOut, RotateCcw, Sparkles } from "lucide-react";
+import { ArrowUp, History as HistoryIcon, LayoutDashboard, LogOut, RotateCcw, Sparkles } from "lucide-react";
 import { Header } from "./components/Header";
+import { HistoryView } from "./components/HistoryView";
 import { MessageBubble } from "./components/MessageBubble";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { ApprovalCard } from "./components/ApprovalCard";
@@ -19,7 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, approve, hasPreview, triggerUiBuild, postUiComment } from "./api";
+import { postChat, postTrigger, getStatus, approve, requestChanges, hasPreview, triggerUiBuild, postUiComment } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -111,6 +112,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   // auto-retry note instead of sitting on skeletons forever (e.g. when the
   // backend or Paperclip isn't reachable right after a refresh).
   const [statusError, setStatusError] = useState<string | null>(null);
+  // Top-level view: the live workspace (chat + workflow) vs the History page.
+  const [view, setView] = useState<"workspace" | "history">("workspace");
   // Target picker selection is persisted so iteration mode (chat → UI agent)
   // resumes after a refresh — without this, previewAvailable polling never
   // starts and the chat falls back to the LLM with no UI context.
@@ -224,58 +227,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     const nextHistory: ApiMsg[] = [...apiHistory, { role: "user", content: userText }];
     setApiHistory(nextHistory);
 
-    // When a live UI preview is up for the current target, route chat directly to the
-    // UI agent's issue. The agent recognises three comment shapes:
-    //   - `push to github <url>`  → push branch, then dispatch UX Auditor
-    //   - `approve`               → dispatch UX Auditor against the local dev URL (no push)
-    //   - `modify: <text>`        → iterate
-    // We normalise free-form chat into one of those.
-    if (previewAvailable && targetProject && targetFeature) {
-      // Multiple `Build UI — …` issues may exist (re-triggers). Prefer the one that's
-      // still active (not done) so comments actually wake the agent. Fall back to the
-      // most recent done issue only if nothing is active.
-      const buildUiIssues = (status?.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
-      const activeUi = buildUiIssues.filter((i) => i.status !== "done");
-      const uiChild = activeUi[activeUi.length - 1] ?? buildUiIssues[buildUiIssues.length - 1];
-      if (!uiChild) {
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't find the active UI build issue yet — give the workflow a few seconds and try again.` }]);
-        return;
-      }
-      const lower = userText.toLowerCase().trim();
-      const APPROVE_RE = /^(approve|looks good|lgtm|ui is done|ui done|done|ship it|that's perfect|perfect|all good|that looks good|approved|run (the )?audit(or)?)\b/;
-      let body: string;
-      let assistantNote: string;
-      if (lower.startsWith("push to github") || lower.startsWith("modify:")) {
-        body = userText;
-        assistantNote = lower.startsWith("push to github")
-          ? `Pushing to GitHub and dispatching the UX Auditor…`
-          : `Sent to the UI agent. The preview will refresh once it applies the change.`;
-      } else if (APPROVE_RE.test(lower)) {
-        body = "approve";
-        assistantNote = `Approving and dispatching the UX Auditor against the local dev URL — no GitHub push.`;
-      } else {
-        body = `modify: ${userText}`;
-        assistantNote = `Sent to the UI agent. The preview will refresh once it applies the change.`;
-      }
-      setBusy(true);
-      try {
-        await postUiComment(uiChild.id, body);
-        setMessages((m) => [...m, {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: `${assistantNote}\n\n_Posted to **${uiChild.identifier}** (status: ${uiChild.status})._`,
-        }]);
-      } catch (e: any) {
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't reach the UI agent: ${e?.message ?? e}` }]);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-
     setBusy(true);
     try {
-      const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature });
+      // The LLM decides intent. When a UI preview is live we tell it so (uiContext),
+      // and it will call `comment_on_ui_build` for change/approve/push requests while
+      // answering questions normally — no blunt "everything goes to the ticket" gate.
+      const uiContext = previewAvailable && targetProject && targetFeature
+        ? { active: true, project: targetProject, feature: targetFeature }
+        : undefined;
+      const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature }, uiContext);
       const blocks = resp.content as any[];
       let textOut = "";
       let toolUse: any = null;
@@ -297,9 +257,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (args?.project) setTargetProject(args.project);
         if (args?.feature) setTargetFeature(args.feature);
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Firing the workflow now for **${args.project}** / **${args.feature}**…` }]);
-        const issue = await postTrigger(args || {});
-        setParentIssueId(issue.id);
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Project Manager. Live progress on the right →` }]);
+        try {
+          const issue = await postTrigger(args || {});
+          setParentIssueId(issue.id);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Project Manager. Live progress on the right →` }]);
+        } catch (e: any) {
+          if (e?.code === "missing_inputs") {
+            const folders = Array.isArray(e.emptyFolders) ? e.emptyFolders.join(", ") : "some required folders";
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I can't start that yet — these input folders are empty for **${args.project}/${args.feature}**: **${folders}**. Upload at least one file to each (use the 📎 attach button below), then say "go".` }]);
+          } else {
+            throw e;
+          }
+        }
       } else if (toolUse?.name === "trigger_ui_build") {
         const args = toolUse.input as any;
         const proj = args?.project, feat = args?.feature;
@@ -318,6 +287,32 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             throw e;
           }
         }
+      } else if (toolUse?.name === "comment_on_ui_build") {
+        // LLM classified this message as a UI change/approve/push. Resolve the active
+        // Build UI issue and post the normalised comment shape the UI Engineer expects.
+        const args = toolUse.input as any;
+        const kind = String(args?.kind || "modify");
+        const instruction = String(args?.instruction || userText);
+        const repoUrl = String(args?.repo_url || "");
+        const buildUiIssues = (status?.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
+        const activeUi = buildUiIssues.filter((i) => i.status !== "done");
+        const uiChild = activeUi[activeUi.length - 1] ?? buildUiIssues[buildUiIssues.length - 1];
+        if (!uiChild) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I couldn't find the active UI build issue yet — give it a few seconds and try again.` }]);
+        } else {
+          const body = kind === "approve" ? "approve"
+            : kind === "push" ? `push to github ${repoUrl}`.trim()
+            : `modify: ${instruction}`;
+          const note = kind === "approve" ? `Approving and dispatching the UX Auditor against the local dev URL.`
+            : kind === "push" ? `Pushing to GitHub and dispatching the UX Auditor…`
+            : `Sent to the UI agent — the preview refreshes once it applies the change.`;
+          try {
+            await postUiComment(uiChild.id, body);
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `${note}\n\n_Posted to **${uiChild.identifier}**._` }]);
+          } catch (e: any) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't reach the UI agent: ${e?.message ?? e}` }]);
+          }
+        }
       }
     } catch (e: any) {
       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Hit an error: ${e?.message ?? e}` }]);
@@ -329,8 +324,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   async function handleApprove(id: string) {
     await approve(id);
   }
-  async function handleReject(id: string) {
-    await fetch(`/api/reject/${id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  // Reviewer wasn't happy: send their notes to the BA, which regenerates and raises
+  // a fresh gate. We optimistically surface it in the chat so the loop is visible.
+  async function handleRequestChanges(id: string, issueId: string, feedback: string) {
+    await requestChanges(id, issueId, feedback);
+    setMessages((m) => [...m, {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      text: `Sent your changes to the analyst:\n\n> ${feedback}\n\nThey’ll regenerate the requirements and raise a fresh approval here.`,
+    }]);
   }
 
   function resetSession() {
@@ -345,7 +347,9 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setTargetFeature(null);
   }
 
-  const pendingApprovals = status?.approvals.filter((a) => !a.status || a.status === "pending") ?? [];
+  // "live" gates: awaiting the human (pending) or being regenerated after feedback
+  // (revision_requested). Both render in the chat area so the loop stays visible.
+  const pendingApprovals = status?.approvals.filter((a) => !a.status || a.status === "pending" || a.status === "revision_requested") ?? [];
   const resolvedApprovals = status?.approvals.filter((a) => a.status === "approved" || a.status === "rejected") ?? [];
   const showSuggestions = messages.length === 1 && !parentIssueId && !busy;
   // Skeletons only on the very first load (no status yet, no error). Once a poll
@@ -357,8 +361,21 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       <Header
         right={
           <>
-            {status && <StagePill stage={status.stage} />}
-            {parentIssueId && (
+            {view === "workspace" && status && <StagePill stage={status.stage} />}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setView((v) => (v === "history" ? "workspace" : "history"))}
+                  aria-label={view === "history" ? "Back to workspace" : "View completed tasks"}
+                >
+                  {view === "history" ? <LayoutDashboard /> : <HistoryIcon />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{view === "history" ? "Back to workspace" : "Completed tasks"}</TooltipContent>
+            </Tooltip>
+            {view === "workspace" && parentIssueId && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -392,6 +409,12 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         }
       />
 
+      {view === "history" ? (
+        <main className="mx-auto max-w-[1440px] px-6 lg:px-8 pt-6 pb-10">
+          <HistoryView />
+        </main>
+      ) : (
+      <>
       <main className="mx-auto max-w-[1440px] px-6 lg:px-8 pt-6 pb-44 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: chat */}
         <section className="lg:col-span-7 flex flex-col gap-4">
@@ -424,7 +447,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             )}
             {messages.map((m) => <MessageBubble key={m.id} m={m} />)}
             {pendingApprovals.map((a) => (
-              <ApprovalCard key={a.id} approval={a} onApprove={handleApprove} onReject={handleReject} />
+              <ApprovalCard key={a.id} approval={a} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
             ))}
             {pendingUiPrompt && (
               <Card elevation={2} className="p-4 flex flex-col gap-3 bg-white/80">
@@ -474,8 +497,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         </section>
 
         {/* Right: tabbed view — Activity (workflow status) | UI (live preview) */}
-        <aside className="lg:col-span-5 flex flex-col gap-4">
-          <Tabs value={rightTab} onValueChange={(v) => setRightTab(v as "activity" | "ui")} className="flex flex-col gap-2">
+        <aside className="lg:col-span-5 flex flex-col gap-4 lg:h-[calc(100vh-13rem)] min-h-0">
+          <Tabs value={rightTab} onValueChange={(v) => setRightTab(v as "activity" | "ui")} className="flex flex-col gap-2 flex-1 min-h-0">
             <TabsList className="self-start">
               <TabsTrigger value="activity">Activity</TabsTrigger>
               <TabsTrigger value="ui" className="relative">
@@ -489,37 +512,38 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="activity">
+            <TabsContent value="activity" className="flex-1 min-h-0 flex flex-col">
               {showSkeletons ? (
                 <>
                   <Card elevation={1} className="p-4 space-y-2">
                     <Skeleton className="h-4 w-20 mb-3" />
                     {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-6 w-full" />)}
                   </Card>
-                  <Card elevation={1} className="p-4 space-y-2">
+                  <Card elevation={1} className="p-4 space-y-2 mt-4">
                     <Skeleton className="h-4 w-20 mb-3" />
                     {[0, 1, 2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
                   </Card>
                 </>
               ) : status ? (
-                <>
+                <div className="flex flex-col gap-4 flex-1 min-h-0">
                   {statusError && (
-                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70">
+                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70 shrink-0">
                       Reconnecting to the workflow service… showing the last known status.
                     </Card>
                   )}
-                  <ProgressPanel items={status.flatIssues} />
+                  <div className="shrink-0"><ProgressPanel items={status.flatIssues} /></div>
                   <ActivityTimeline items={status.activity} />
                   {resolvedApprovals.map((a) => (
-                    <ApprovalCard
-                      key={a.id}
-                      approval={a}
-                      onApprove={handleApprove}
-                      onReject={handleReject}
-                    />
+                    <div key={a.id} className="shrink-0">
+                      <ApprovalCard
+                        approval={a}
+                        onApprove={handleApprove}
+                        onRequestChanges={handleRequestChanges}
+                      />
+                    </div>
                   ))}
-                  <LinksPanel links={status.links} />
-                </>
+                  <div className="shrink-0"><LinksPanel links={status.links} /></div>
+                </div>
               ) : statusError && parentIssueId ? (
                 <Card
                   elevation={0}
@@ -663,6 +687,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           </Card>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
