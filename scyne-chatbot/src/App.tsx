@@ -348,8 +348,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   }
 
   // "live" gates: awaiting the human (pending) or being regenerated after feedback
-  // (revision_requested). Both render in the chat area so the loop stays visible.
-  const pendingApprovals = status?.approvals.filter((a) => !a.status || a.status === "pending" || a.status === "revision_requested") ?? [];
+  // (revision_requested). Show the "Regenerating…" card only while there's no fresh
+  // pending gate yet for that issue — once the BA raises the new gate, drop the stale one.
+  const allApprovals = status?.approvals ?? [];
+  const issuesWithPending = new Set(allApprovals.filter((a) => !a.status || a.status === "pending").map((a) => a.issueId));
+  const pendingApprovals = allApprovals.filter((a) => {
+    if (!a.status || a.status === "pending") return true;
+    if (a.status === "revision_requested") return !issuesWithPending.has(a.issueId);
+    return false;
+  });
   const resolvedApprovals = status?.approvals.filter((a) => a.status === "approved" || a.status === "rejected") ?? [];
   const showSuggestions = messages.length === 1 && !parentIssueId && !busy;
   // Skeletons only on the very first load (no status yet, no error). Once a poll
