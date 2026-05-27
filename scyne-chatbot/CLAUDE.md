@@ -17,7 +17,7 @@ Both are launched together with `npm run dev` (concurrently).
 
 - **LLM**: Gemini 2.5 Flash via `@google/generative-ai` (the legacy SDK — matches the compliance-app pattern). Function calling enabled for the trigger tool.
 - **Auth**: none. Paperclip is in `local_trusted` mode; localhost calls are auto-authenticated as the board user.
-- **Persistence**: `localStorage` only — `scyne_session` (login) and `scyne_parent_issue_id` (active workflow). The chat transcript itself does not survive a refresh; agent comments replay from `/api/status` on resume.
+- **Persistence**: `localStorage` only — `scyne_session` (login), `scyne_parent_issue_id` (active workflow), and the chat transcript: `scyne_chat_messages` (rendered bubbles) + `scyne_chat_history` (LLM history). On refresh the chat is restored from those keys and the right-hand workflow panel rehydrates from `/api/status`. "New session" and logout clear the chat keys (`clearChatPersistence`).
 - **Login gate**: hardcoded demo creds (`admin` / `scyne2026`) in `src/components/Login.tsx`. Session is `{user, ts}`; expiry is a separate concern, not enforced. Replace with real auth when wiring SSO.
 - **WebSockets**: optional path for live audio. `wss.on("connection",...)` is mounted on the same HTTP server. Browser → `recordingSocketUrl()` → backend → Gemini Live → live transcription back over the same socket. The main workflow uses HTTP polling (every 3 s).
 
@@ -124,7 +124,7 @@ Three effects drive the UX:
 2. **Status polling**: starts when `parentIssueId` is set; polls `/api/status/:id` every 3 s; fans new comments into the chat as `agent` messages.
 3. **UI preview check**: polls `/api/preview/:project/:feature` once the BA reports a UI build is underway; flips `previewAvailable` so the right tab unlocks.
 
-Persistence rule: only `parentIssueId` is saved to `localStorage`. On refresh, the polling effect re-runs and replays all comments — that's the "rehydration" of the chat.
+Persistence rule: `parentIssueId`, the chat transcript (`messages` → `scyne_chat_messages`, `apiHistory` → `scyne_chat_history`), and the target are saved to `localStorage`. On refresh the chat bubbles + LLM history are restored from those keys (see `loadMessages`/`loadHistory`) and the polling effect re-runs to rehydrate the right-hand workflow panel from `/api/status`. If a poll fails, `statusError` drives an error/retry card instead of leaving the panel on skeletons forever.
 
 ## The Gemini conversation (`server/llm.ts`)
 

@@ -39,6 +39,44 @@ const SUGGESTED_PROMPTS = [
   "What features are in flight?",
 ];
 
+// Chat transcript persistence. Only `parentIssueId` used to survive a refresh, so
+// the conversation vanished on reload ("chat empties"). Persist the rendered
+// messages + the LLM history so a refresh resumes the conversation, not just the
+// right-hand workflow panel (which already rehydrates from /api/status).
+const MESSAGES_KEY = "scyne_chat_messages";
+const HISTORY_KEY = "scyne_chat_history";
+
+function loadMessages(): UIMessage[] {
+  if (typeof window === "undefined") return [buildGreeting(false)];
+  const resuming = !!window.localStorage.getItem("scyne_parent_issue_id");
+  try {
+    const raw = window.localStorage.getItem(MESSAGES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as UIMessage[];
+    }
+  } catch { /* corrupt store — fall back to a fresh greeting */ }
+  return [buildGreeting(resuming)];
+}
+
+function loadHistory(): ApiMsg[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as ApiMsg[];
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+function clearChatPersistence() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(MESSAGES_KEY);
+  window.localStorage.removeItem(HISTORY_KEY);
+}
+
 export default function App() {
   // Gate everything behind the hardcoded demo login. Session survives refresh via localStorage.
   const [session, setSession] = useState<LoginSession | null>(() => loadSession());
@@ -48,16 +86,14 @@ export default function App() {
   return (
     <AuthenticatedApp
       session={session}
-      onLogout={() => { clearSession(); setSession(null); }}
+      onLogout={() => { clearSession(); clearChatPersistence(); setSession(null); }}
     />
   );
 }
 
 function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogout: () => void }) {
-  const [messages, setMessages] = useState<UIMessage[]>(() => [
-    buildGreeting(typeof window !== "undefined" && !!window.localStorage.getItem("scyne_parent_issue_id"))
-  ]);
-  const [apiHistory, setApiHistory] = useState<ApiMsg[]>([]);
+  const [messages, setMessages] = useState<UIMessage[]>(() => loadMessages());
+  const [apiHistory, setApiHistory] = useState<ApiMsg[]>(() => loadHistory());
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [parentIssueId, setParentIssueIdRaw] = useState<string | null>(
@@ -71,6 +107,10 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     }
   };
   const [status, setStatus] = useState<StatusSnapshot | null>(null);
+  // Tracks a failing /api/status poll so the right panel can show an error +
+  // auto-retry note instead of sitting on skeletons forever (e.g. when the
+  // backend or Paperclip isn't reachable right after a refresh).
+  const [statusError, setStatusError] = useState<string | null>(null);
   // Target picker selection is persisted so iteration mode (chat → UI agent)
   // resumes after a refresh — without this, previewAvailable polling never
   // starts and the chat falls back to the LLM with no UI context.
@@ -139,6 +179,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, status]);
 
+  // Persist the chat transcript + LLM history so a refresh resumes the
+  // conversation. The right-hand workflow panel rehydrates separately from
+  // /api/status via the polling effect below.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try { window.localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages)); } catch { /* quota */ }
+  }, [messages]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(apiHistory)); } catch { /* quota */ }
+  }, [apiHistory]);
+
   // Polling: once we have a parent issue, poll status every 3s.
   // Agent comments stream into the right Activity panel only (deduped from chat).
   useEffect(() => {
@@ -149,7 +201,12 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         const s: StatusSnapshot = await getStatus(parentIssueId);
         if (cancelled) return;
         setStatus(s);
-      } catch (e) {
+        setStatusError(null);
+      } catch (e: any) {
+        if (cancelled) return;
+        // Keep the last good status on screen if we had one; otherwise this lets
+        // the panel show an error instead of skeletons forever. Polling retries.
+        setStatusError(e?.message ? String(e.message).slice(0, 200) : "Couldn't reach the workflow service.");
         console.error(e);
       }
     };
@@ -280,6 +337,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     if (!confirm("Start a fresh conversation? This will detach the current workflow.")) return;
     setParentIssueId(null);
     setStatus(null);
+    setStatusError(null);
+    clearChatPersistence();
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
     setTargetProject(null);
@@ -289,7 +348,9 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const pendingApprovals = status?.approvals.filter((a) => !a.status || a.status === "pending") ?? [];
   const resolvedApprovals = status?.approvals.filter((a) => a.status === "approved" || a.status === "rejected") ?? [];
   const showSuggestions = messages.length === 1 && !parentIssueId && !busy;
-  const showSkeletons = !!parentIssueId && !status;
+  // Skeletons only on the very first load (no status yet, no error). Once a poll
+  // has errored we show the error card instead so the panel never gets stuck.
+  const showSkeletons = !!parentIssueId && !status && !statusError;
 
   return (
     <div className="min-h-full">
@@ -442,6 +503,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                 </>
               ) : status ? (
                 <>
+                  {statusError && (
+                    <Card elevation={0} className="p-3 text-xs text-amber-700 border-amber-200 bg-amber-50/70">
+                      Reconnecting to the workflow service… showing the last known status.
+                    </Card>
+                  )}
                   <ProgressPanel items={status.flatIssues} />
                   <ActivityTimeline items={status.activity} />
                   {resolvedApprovals.map((a) => (
@@ -454,6 +520,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   ))}
                   <LinksPanel links={status.links} />
                 </>
+              ) : statusError && parentIssueId ? (
+                <Card
+                  elevation={0}
+                  className="p-8 text-center text-sm text-muted-foreground border-dashed border-amber-300 bg-amber-50/40"
+                >
+                  <Sparkles className="size-5 mx-auto mb-2 text-amber-500/70" />
+                  <div className="font-medium text-foreground mb-1">Can’t reach the workflow service</div>
+                  <div>Your run is safe — this panel will reconnect automatically. Check that Paperclip and the chatbot backend are running.</div>
+                </Card>
               ) : (
                 <Card
                   elevation={0}

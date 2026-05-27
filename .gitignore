@@ -32,6 +32,12 @@ outputs/
 projects/
 generated-apps/
 
+# Per-machine bootstrap output — written by `npm run bootstrap` against the LOCAL
+# Paperclip. Holds this machine's company + agent IDs. MUST NOT be committed: the
+# chatbot prefers ids.json over .env, so a stray copy would override the client's
+# freshly-bootstrapped IDs and break their run.
+.bootstrap/
+
 # Misc
 *.log
 coverage/
