@@ -75,6 +75,67 @@ if the base image is already loaded it skips straight to `docker compose up`.
 
 - Don't commit `paperclip-base.tar.gz` to git — it's hundreds of MB.
 
+## Host-Paperclip mode (client installs Paperclip natively)
+
+Use this when the client **won't** run Paperclip in Docker — they install and run
+it themselves on the host, and only want the chatbot + first-boot provisioning in
+a container, talking to the host Paperclip. **No base image and no tarball are
+needed** in this mode — `bootstrap` runs on a stock `node` image and the chatbot
+image is self-contained.
+
+Compose file: [`docker-compose.client.yml`](docker-compose.client.yml). It runs
+only two services — a one-shot `bootstrap` and the `chatbot` — both with
+`network_mode: host`.
+
+> **Why host networking?** The containers reach the host Paperclip at
+> `127.0.0.1:3100`, and their requests arrive from **loopback**, so Paperclip's
+> `local_trusted` mode still treats them as the no-auth `local-board` admin.
+> `host.docker.internal` would arrive from the Docker bridge IP and would **not**
+> get admin — so host networking is required. (Linux-only; fine for an Ubuntu
+> client.)
+
+### Client prerequisites
+
+1. **Paperclip running natively** on the host at `127.0.0.1:3100` in
+   `local_trusted` / `private` mode (the standard `pnpm dev`), with the
+   `requirement-generator` skill installed under its `skills/` directory.
+2. **A shared workspace directory.** Whatever the host Paperclip uses as
+   `WORKSPACE_PATH` must match `WORKSPACE_HOST_PATH` in `.env` — the chatbot
+   bind-mounts it to read the agents' `outputs/` and the bootstrap-written
+   `.bootstrap/ids.json`. Pointing both at this repo's root is the simplest
+   choice (it already has `projects/`, `scripts/`, `examples/`, `.mcp.json`).
+3. Docker + Compose v2 + `make` (see the Ubuntu prerequisites above).
+
+### Setup
+
+```bash
+cp .env.example .env
+# edit .env:
+#   GEMINI_API_KEY=...                                  (chatbot)
+#   ANTHROPIC_API_KEY=...  or  CLAUDE_CODE_OAUTH_TOKEN=... (agents — set on the
+#                                                          HOST Paperclip too)
+#   WORKSPACE_HOST_PATH=/absolute/path/to/this/repo     (== host Paperclip WORKSPACE_PATH)
+#   PAPERCLIP_API_URL=http://127.0.0.1:3100/api         (default; usually fine)
+
+# 1. Start the host Paperclip first (in the paperclip clone): pnpm dev
+# 2. Then bring up the chatbot + provisioning:
+make client-hosted
+```
+
+Open the chatbot at **http://localhost:4000**. `bootstrap` creates the Scyne
+company + 4 agents in the host Paperclip and writes `ids.json`; the chatbot reads
+those IDs and is ready. Re-running `make client-hosted` is safe (idempotent).
+
+Tear down (leaves the host Paperclip untouched):
+
+```bash
+make client-hosted-down
+```
+
+> In this mode the **agents run on the host** (Paperclip spawns their Claude Code
+> subprocesses there), so Node, npm, and Chromium for the UX Auditor must be on
+> the host — not in any container. The Docker side is just the chatbot UI.
+
 ## What first boot does (automatic)
 
 ```

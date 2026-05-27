@@ -1,0 +1,63 @@
+name: scyne-client
+
+# Host-Paperclip deployment.
+#
+# Use this when the client runs Paperclip NATIVELY on the host (with its own DB)
+# and only wants the chatbot + first-boot provisioning in Docker. Nothing here
+# depends on the Paperclip base image or its source — no tarball needed.
+#
+#   make client-hosted        # build + start (bootstrap then chatbot)
+#
+# Both services use `network_mode: host` so they reach the host Paperclip at
+# 127.0.0.1:3100 AND their requests arrive from loopback — which keeps
+# Paperclip's local_trusted no-auth admin (local-board) working. host.docker.internal
+# would arrive from the Docker bridge IP and would NOT be granted admin, so host
+# networking is required here (Linux only — fine for the client's Ubuntu host).
+#
+# Prerequisites on the client:
+#   1. Paperclip installed + running on the host at 127.0.0.1:3100 in
+#      local_trusted / private mode (the standard `pnpm dev`), with the
+#      `requirement-generator` skill installed under its skills/ dir.
+#   2. Host Paperclip's WORKSPACE_PATH set to the SAME directory as
+#      WORKSPACE_HOST_PATH below (so the chatbot reads the outputs the agents
+#      write, and the bootstrap-written ids.json reaches the chatbot).
+
+services:
+  # One-shot provisioning against the host Paperclip: creates the Scyne company,
+  # hires the 4 agents, wires reportsTo=PM, pushes instruction bundles, and
+  # writes <workspace>/.bootstrap/ids.json. Pure Node (fetch + fs) — no Paperclip
+  # image required. Idempotent: re-running converges by name.
+  bootstrap:
+    image: node:lts-trixie-slim
+    command: ["node", "/seed/scripts/bootstrap.mjs"]
+    restart: "no"
+    network_mode: host
+    environment:
+      PAPERCLIP_API_URL: "${PAPERCLIP_API_URL:-http://127.0.0.1:3100/api}"
+      WORKSPACE_PATH: /workspace
+      AGENT_INSTRUCTIONS_DIR: /seed/agent-instructions
+      SCYNE_COMPANY_NAME: "${SCYNE_COMPANY_NAME:-Scyne}"
+    volumes:
+      - ./scripts:/seed/scripts:ro
+      - ./agent-instructions:/seed/agent-instructions:ro
+      # The shared workspace — must match the host Paperclip's WORKSPACE_PATH.
+      - "${WORKSPACE_HOST_PATH:-.}:/workspace"
+
+  chatbot:
+    build:
+      context: ./scyne-chatbot
+      dockerfile: ../Dockerfile.chatbot
+    image: scyne/chatbot:local
+    env_file: .env
+    network_mode: host
+    environment:
+      PORT: "4000"
+      WORKSPACE_PATH: /workspace
+      PAPERCLIP_API_URL: "${PAPERCLIP_API_URL:-http://127.0.0.1:3100/api}"
+    # NB: with network_mode: host, `ports:` is ignored — the chatbot binds 4000
+    # directly on the host. Reach it at http://localhost:4000.
+    volumes:
+      - "${WORKSPACE_HOST_PATH:-.}:/workspace"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully

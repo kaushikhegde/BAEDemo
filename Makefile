@@ -13,7 +13,7 @@ BASE_TARBALL    ?= paperclip-base.tar.gz
 # natively on the client regardless of YOUR machine's CPU.
 TARGET_PLATFORM ?= linux/amd64
 
-.PHONY: up build base down stop clean logs ps oauth handoff client
+.PHONY: up build base down stop clean logs ps oauth handoff client client-hosted client-hosted-down
 
 up: build
 	docker compose up -d
@@ -65,6 +65,21 @@ client:
 	@echo ""
 	@echo "Stack starting. Chatbot: http://localhost:4000   Paperclip: http://localhost:3100"
 	@echo "Watch provisioning:  make logs"
+
+# === Host-Paperclip mode ====================================================
+#
+# For a client running Paperclip NATIVELY on the host. Only the chatbot +
+# bootstrap run in Docker, pointed at the host Paperclip (127.0.0.1:3100).
+# No base image or tarball needed. The host Paperclip must be running first,
+# and its WORKSPACE_PATH must equal WORKSPACE_HOST_PATH (set in .env).
+client-hosted:
+	docker compose -f docker-compose.client.yml up --build --detach
+	@echo ""
+	@echo "Chatbot: http://localhost:4000  (talking to host Paperclip at 127.0.0.1:3100)"
+	@echo "Watch:   docker compose -f docker-compose.client.yml logs -f"
+
+client-hosted-down:
+	docker compose -f docker-compose.client.yml down
 
 down:
 	docker compose down
