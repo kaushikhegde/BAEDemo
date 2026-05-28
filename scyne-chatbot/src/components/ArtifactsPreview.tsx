@@ -41,13 +41,23 @@ function StoryCard({ s }: { s: ArtifactStory }) {
   );
 }
 
-export function ArtifactsPreview() {
+export function ArtifactsPreview({ project, feature }: { project: string | null; feature: string | null }) {
   const [data, setData] = useState<Artifacts | null>(null);
   const [tab, setTab] = useState<"stories" | "summary" | "gaps">("stories");
 
   useEffect(() => {
-    fetch("/api/artifacts").then((r) => r.json()).then(setData).catch(() => {});
-  }, []);
+    if (!project || !feature) { setData(null); return; }
+    const url = `/api/artifacts?project=${encodeURIComponent(project)}&feature=${encodeURIComponent(feature)}`;
+    fetch(url).then((r) => r.json()).then(setData).catch(() => {});
+  }, [project, feature]);
+
+  if (!project || !feature) {
+    return (
+      <div className="mt-3 text-sm text-muted-foreground italic">
+        Pick a project/feature in the target picker to preview the artifacts.
+      </div>
+    );
+  }
 
   if (!data) {
     return (

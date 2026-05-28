@@ -412,12 +412,19 @@ app.get("/api/features", async (_req, res) => {
 
 
 // 6. Artefacts — read the BA's generated outputs from disk so the UI can preview before approval
-app.get("/api/artifacts", async (_req, res) => {
+app.get("/api/artifacts", async (req, res) => {
   try {
+    const project = String(req.query.project || "").trim();
+    const feature = String(req.query.feature || "").trim();
+    if (!project || !feature) {
+      return res.status(400).json({ error: "missing_target", message: "project and feature query params are required" });
+    }
+    assertSafeProjectFeature(project, feature);
+
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
     const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
-    const outputs = path.join(ws, "outputs");
+    const outputs = path.join(ws, "projects", project, feature, "outputs");
     const read = async (f: string) => {
       try { return await fs.readFile(path.join(outputs, f), "utf8"); } catch { return null; }
     };

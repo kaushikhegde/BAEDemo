@@ -480,7 +480,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             )}
             {messages.map((m) => <MessageBubble key={m.id} m={m} />)}
             {pendingApprovals.map((a) => (
-              <ApprovalCard key={a.id} approval={a} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
+              <ApprovalCard key={a.id} approval={a} project={targetProject} feature={targetFeature} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
             ))}
             {status && (status.links.confluence.length > 0 || status.links.jira.length > 0) && (
               <LinksPanel links={status.links} />
@@ -588,6 +588,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                     <div key={a.id} className="shrink-0">
                       <ApprovalCard
                         approval={a}
+                        project={targetProject}
+                        feature={targetFeature}
                         onApprove={handleApprove}
                         onRequestChanges={handleRequestChanges}
                       />

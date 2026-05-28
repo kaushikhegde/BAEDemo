@@ -7,8 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import type { ApprovalCardData } from "../types";
 import { ArtifactsPreview } from "./ArtifactsPreview";
 
-export function ApprovalCard({ approval, onApprove, onRequestChanges }: {
+export function ApprovalCard({ approval, project, feature, onApprove, onRequestChanges }: {
   approval: ApprovalCardData;
+  project: string | null;
+  feature: string | null;
   onApprove: (id: string) => Promise<void>;
   onRequestChanges: (id: string, issueId: string, feedback: string) => Promise<void>;
 }) {
@@ -79,7 +81,7 @@ export function ApprovalCard({ approval, onApprove, onRequestChanges }: {
           />
           {expanded ? "Hide what will be pushed" : "Review what will be pushed"}
         </button>
-        {expanded && <ArtifactsPreview />}
+        {expanded && <ArtifactsPreview project={project} feature={feature} />}
 
         {showFeedback && (
           <div className="space-y-2 rounded-lg border border-scyne-line bg-white/60 p-3 animate-slide-up">
