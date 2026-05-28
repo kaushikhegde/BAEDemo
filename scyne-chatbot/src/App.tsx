@@ -263,8 +263,19 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
 
       if (toolUse?.name === "set_target") {
         const args = toolUse.input as any;
-        if (args?.project) setTargetProject(args.project);
-        if (args?.feature) setTargetFeature(args.feature);
+        const proj = args?.project ? String(args.project) : null;
+        const feat = args?.feature ? String(args.feature) : null;
+        if (proj) setTargetProject(proj);
+        // Picking a new project without a feature should clear the stale feature
+        // so the picker doesn't show e.g. "SADA / return-to-work" mid-flow.
+        setTargetFeature(feat);
+        // If Gemini emitted only the tool call with no accompanying text, the
+        // chat would go silent — synthesise a short confirmation so the user
+        // sees their selection landed.
+        if (!textOut && proj) {
+          const label = feat ? `**${proj} / ${feat}**` : `**${proj}**`;
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Target set to ${label}.` }]);
+        }
       } else if (toolUse?.name === "trigger_requirement_generation") {
         const args = toolUse.input as any;
         if (args?.project) setTargetProject(args.project);

@@ -111,9 +111,11 @@ You orchestrate two workflows from the same chat:
 
 1. **Greet briefly.** Just say hi. Do NOT list projects, features, or defaults upfront. Wait for the user to ask.
 2. **When the user asks about projects** — respond with the project names, one per line. Ask which one.
-3. **When the user picks a project** — respond with the features under that project, one per line. Ask which feature.
-4. **When the user picks a feature** — confirm in one line ("OK, I'll process *SADA / interim-benefit*"). Note any defaults. Ask if they're ready.
+3. **When the user picks a project** (or names one in passing, e.g. "use SADA") — call \`set_target\` with just that project (omit \`feature\`) AND respond in text with the features under that project, one per line. Ask which feature.
+4. **When the user picks a feature** (or names a project + feature together, e.g. "use SADA / interim-benefit") — call \`set_target\` with the chosen project + feature AND confirm in one line of text ("OK, I'll process *SADA / interim-benefit*"). Note any defaults. Ask if they're ready.
 5. **When the user confirms** (any natural phrasing — "go", "fire it", "yes", "run it", "generate") — call \`trigger_requirement_generation\` with the chosen project + feature.
+
+**Rule:** every turn where the user names a project (with or without a feature) MUST include a \`set_target\` call so the UI picker stays in sync. The only exception is when you're firing a trigger tool in the same turn — those already update the picker.
 
 ### UI build path
 
@@ -126,9 +128,9 @@ If the user asks both at once ("generate requirements and build the UI for SADA/
 
 ### Target picker sync
 
-The user can pick a project + feature either from the UI's target picker OR by typing it in chat (e.g. "use SADA / interim-benefit", "switch to SADA / interim-benefit"). If they name a target in chat without committing to an action, call \`set_target\` so the UI picker reflects their selection. Don't call \`set_target\` if you're about to call a trigger tool in the same turn — the trigger tools update the picker themselves.
+The user can also switch targets mid-conversation ("switch to RTWSA / return-to-work"). Treat that the same as the rule in steps 3–4: call \`set_target\` with whatever they named, then respond in text.
 
-When you call either tool, ALWAYS include \`project\` and \`feature\`. Omit fields that should use defaults.
+When you call any trigger tool, ALWAYS include \`project\` and \`feature\`. Omit fields that should use defaults.
 
 After firing, the application surfaces progress. Don't add commentary unless the user asks something new.
 
@@ -159,14 +161,14 @@ const triggerTool: Tool = {
     },
     {
       name: "set_target",
-      description: "Update the target project + feature in the UI's target picker WITHOUT firing any workflow. Call this when the user names a project + feature in chat (e.g. 'use SADA / interim-benefit', 'switch to SADA / interim-benefit') but hasn't yet committed to generating requirements or building the UI. The UI picker will reflect the change; subsequent action tools (trigger_requirement_generation, trigger_ui_build) can then assume this target.",
+      description: "Update the target project + feature in the UI's target picker WITHOUT firing any workflow. Call this every time the user names a project (with or without a feature) so the picker stays in sync with the conversation. Pass `feature` when the user has named one; omit it if only the project is known so far.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
           project: { type: SchemaType.STRING, description: "Project folder name. Required." },
-          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Optional — omit if only the project is known so far." },
         },
-        required: ["project", "feature"],
+        required: ["project"],
       },
     },
     {
