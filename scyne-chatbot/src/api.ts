@@ -133,6 +133,21 @@ export async function getRuns(issueId: string): Promise<RunSummary[]> {
   return r.json();
 }
 
+// Live Transcript -----------------------------------------------------------
+import type { AgentRunsSnapshot, TranscriptTail } from "./types";
+
+export async function getAgentRuns(issueId: string): Promise<AgentRunsSnapshot> {
+  const r = await fetch(`/api/runs/${issueId}/agent-runs`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getTranscriptTail(runId: string, offset: number): Promise<TranscriptTail> {
+  const r = await fetch(`/api/runs/${runId}/transcript?offset=${offset}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export type UploadHint = "policy" | "transcripts" | "notes" | "ui";
 
 export interface UploadFileSuccess {

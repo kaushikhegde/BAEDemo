@@ -2,19 +2,30 @@ import { readFileSync } from "node:fs";
 
 const BASE = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api";
 
-// IDs come from env, but the Docker stack provisions agents at runtime (Paperclip
-// generates its own UUIDs), so prefer the bootstrap-written ids.json when present.
-let COMPANY = process.env.PAPERCLIP_COMPANY_ID || "";
-let DELIVERY_LEAD_AGENT = process.env.PAPERCLIP_DELIVERY_LEAD_AGENT_ID || "";
+// Single source of truth for company + agent IDs is .bootstrap/ids.json, written
+// by scripts/bootstrap.mjs after hiring agents. We deliberately do NOT fall back
+// to .env values — a stale .env after a DB wipe is the exact bug this avoids.
+// If ids.json is missing, instruct the user to run bootstrap rather than silently
+// pointing at non-existent UUIDs.
+const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH
+  || `${process.env.WORKSPACE_PATH || "/workspace"}/.bootstrap/ids.json`;
+let COMPANY = "";
+let DELIVERY_LEAD_AGENT = "";
 try {
-  const idsPath = process.env.BOOTSTRAP_IDS_PATH
-    || `${process.env.WORKSPACE_PATH || "/workspace"}/.bootstrap/ids.json`;
-  const ids = JSON.parse(readFileSync(idsPath, "utf8"));
-  if (ids.companyId) COMPANY = ids.companyId;
-  if (ids.deliveryLeadAgentId) DELIVERY_LEAD_AGENT = ids.deliveryLeadAgentId;
-  console.log(`[paperclip] using ids from ${idsPath}: company=${COMPANY} deliveryLead=${DELIVERY_LEAD_AGENT}`);
-} catch {
-  /* no ids.json (non-Docker dev) — fall back to env */
+  const ids = JSON.parse(readFileSync(IDS_PATH, "utf8"));
+  COMPANY = ids.companyId || "";
+  DELIVERY_LEAD_AGENT = ids.deliveryLeadAgentId || "";
+  if (!COMPANY || !DELIVERY_LEAD_AGENT) {
+    throw new Error(`ids.json present but missing companyId/deliveryLeadAgentId`);
+  }
+  console.log(`[paperclip] using ids from ${IDS_PATH}: company=${COMPANY} deliveryLead=${DELIVERY_LEAD_AGENT}`);
+} catch (e: any) {
+  console.error(
+    `[paperclip] FATAL: cannot read ${IDS_PATH} (${e?.message ?? e}).\n` +
+    `Run \`npm run bootstrap\` to hire agents and produce this file.`,
+  );
+  // Don't crash the dev server — the chatbot can boot and serve the UI;
+  // requests that need these IDs will fail with a clear message at call time.
 }
 
 async function call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
@@ -68,6 +79,21 @@ export const paperclip = {
   },
   listAgents() {
     return call<any>("GET", `/companies/${COMPANY}/agents`).catch(() => [] as any[]);
+  },
+
+  // Fetch a chunk of a heartbeat-run's raw stdout log starting at byte offset.
+  // Returns Paperclip's shape: { content: string, nextOffset: number }.
+  // The Live Transcript pane polls this every 3s with the previous nextOffset.
+  getRunLog(runId: string, offset = 0, limitBytes = 65536) {
+    return call<{ content: string; nextOffset: number }>(
+      "GET",
+      `/heartbeat-runs/${runId}/log?offset=${offset}&limitBytes=${limitBytes}`,
+    ).catch(() => ({ content: "", nextOffset: offset }));
+  },
+
+  // One heartbeat-run's metadata (status, startedAt/finishedAt, agentId).
+  getRun(runId: string) {
+    return call<any>("GET", `/heartbeat-runs/${runId}`).catch(() => null);
   },
 
   // Paperclip 2026.525+ renamed approvals to "interactions". We fetch the new

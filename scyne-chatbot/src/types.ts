@@ -50,3 +50,34 @@ export interface Artifacts {
   storiesMd: string | null;
   gaps: string | null;
 }
+
+// Live Transcript types ------------------------------------------------------
+
+export type TranscriptEvent =
+  | { ts: string; kind: "assistant"; text: string }
+  | { ts: string; kind: "tool_use"; tool: string; preview: string }
+  | { ts: string; kind: "tool_result"; preview: string }
+  | { ts: string; kind: "skill"; name: string }
+  | { ts: string; kind: "framing"; text: string };
+
+export interface AgentRun {
+  runId: string;
+  agentId: string;
+  agentName: string;
+  issueId: string;
+  issueIdentifier: string;
+  status: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface AgentRunsSnapshot {
+  runs: AgentRun[];
+  activeRunId: string | null;
+}
+
+export interface TranscriptTail {
+  events: TranscriptEvent[];
+  nextOffset: number;
+  runStatus: string;
+}

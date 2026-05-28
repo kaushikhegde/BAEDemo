@@ -12,6 +12,7 @@ import { paperclip } from "./paperclip.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { ensureAtlassianTargets, provisioningConfigured } from "./services/atlassianProvision.js";
+import { filterRunLog, type TranscriptEvent } from "./services/runTranscript.js";
 import { writeTranscript } from "./services/transcriptWriter.js";
 import { transcribeAudioFile } from "./services/geminiFiles.js";
 import { MeetingSession } from "./services/geminiLive.js";
@@ -95,6 +96,25 @@ app.post("/api/trigger", async (req, res) => {
         emptyFolders,
         message: `Can't generate requirements for ${project}/${feature} yet — these input folders are empty: ${emptyFolders.join(", ")}. Upload at least one file to each (use the attach button), then try again.`,
       });
+    }
+
+    // Clear stale outputs from a prior run. The BA's Phase 1 vs Phase 2 branch
+    // logic keys off "no work-products yet" — leftover files in outputs/ confuse
+    // the agent's decision and can send it into a re-detect loop. We wipe the
+    // CONTENTS of outputs/ (not the folder itself, so the BA doesn't have to
+    // recreate it). Pure files only — never touch subdirectories or the parent.
+    const outputsDir = path.join(ws, "projects", project, feature, "outputs");
+    try {
+      await fs.mkdir(outputsDir, { recursive: true });
+      const stale = await fs.readdir(outputsDir, { withFileTypes: true });
+      await Promise.all(
+        stale
+          .filter((e) => e.isFile() && !e.name.startsWith("."))
+          .map((e) => fs.rm(path.join(outputsDir, e.name), { force: true })),
+      );
+      console.log(`[trigger] cleared ${stale.length} stale output(s) from ${outputsDir}`);
+    } catch (e: any) {
+      console.warn(`[trigger] couldn't clear outputs ${outputsDir}: ${e?.message ?? e}`);
     }
 
     const description = [
@@ -425,6 +445,90 @@ app.get("/api/runs/:issueId", async (req, res) => {
     res.json(runs);
   } catch (e: any) {
     console.error("[runs] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Live Transcript: list every agent run across the issue tree, mark which is
+// currently in-flight. The frontend dropdown uses this; "Auto" picks
+// `activeRunId`. Mirrors /api/runs/:issueId but includes the run's `runId`
+// (heartbeat-run id) which the transcript endpoint needs.
+app.get("/api/runs/:issueId/agent-runs", async (req, res) => {
+  try {
+    const rootId = req.params.issueId;
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    const walk = async (id: string) => {
+      if (seen.has(id)) return;
+      seen.add(id); ids.push(id);
+      const kids = await paperclip.listChildren(id);
+      for (const k of asArray(kids)) if (k?.id) await walk(k.id);
+    };
+    await walk(rootId);
+
+    const [agents, ...runLists] = await Promise.all([
+      paperclip.listAgents(),
+      ...ids.map((id) => paperclip.listIssueRuns(id).then((r) => ({ id, runs: asArray(r) }))),
+    ]);
+    const agentName = new Map<string, string>(asArray(agents).map((a: any) => [a.id, a.name]));
+
+    // Also need the issue identifier (e.g. SCY-2) per id — fetch from the cached tree.
+    const tree = await paperclip.getIssueTree(rootId);
+    const idToIdent = new Map<string, string>();
+    (function collect(n: any) {
+      if (n?.id) idToIdent.set(n.id, n.identifier ?? n.id);
+      for (const c of n.children ?? []) collect(c);
+    })(tree);
+
+    const flat: any[] = [];
+    for (const list of runLists as any[]) {
+      const issueId: string = list.id;
+      for (const r of list.runs) {
+        flat.push({
+          runId: r.runId || r.id,
+          agentId: r.agentId,
+          agentName: agentName.get(r.agentId) || "Agent",
+          issueId,
+          issueIdentifier: idToIdent.get(issueId) || "?",
+          status: r.status, // "running" | "succeeded" | "failed" | "cancelled" | etc.
+          startedAt: r.startedAt ?? r.createdAt ?? null,
+          finishedAt: r.finishedAt ?? null,
+        });
+      }
+    }
+    flat.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    const activeRun = flat.find((r) => r.status === "running");
+    res.json({ runs: flat, activeRunId: activeRun?.runId ?? null });
+  } catch (e: any) {
+    console.error("[agent-runs] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Live Transcript: tail one run's log, filter to client-safe events, scrub
+// secrets, return {events, nextOffset, runStatus}. Frontend polls every 3s
+// with the previous nextOffset and appends new events.
+app.get("/api/runs/:runId/transcript", async (req, res) => {
+  try {
+    const runId = req.params.runId;
+    const offset = Math.max(0, parseInt(String(req.query.offset || "0"), 10) || 0);
+    const [log, run] = await Promise.all([
+      paperclip.getRunLog(runId, offset),
+      paperclip.getRun(runId),
+    ]);
+    const { events, consumed } = filterRunLog(log.content || "");
+    // We trust Paperclip's nextOffset when it advances past what we consumed,
+    // but never go BACKWARDS — if our consumed (bytes parsed cleanly) is less
+    // than nextOffset, use ours so the partial trailing line is re-fetched.
+    const reportedNext = typeof log.nextOffset === "number" ? log.nextOffset : offset + (log.content?.length || 0);
+    const safeNextOffset = offset + consumed;
+    res.json({
+      events,
+      nextOffset: Math.min(reportedNext, safeNextOffset || reportedNext),
+      runStatus: run?.status ?? "unknown",
+    });
+  } catch (e: any) {
+    console.error("[transcript] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

@@ -7,6 +7,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { StagePill } from "./components/StagePill";
 import { ActivityTimeline } from "./components/ActivityTimeline";
+import { LiveTranscript } from "./components/LiveTranscript";
 import { LinksPanel } from "./components/LinksPanel";
 import { RunsPanel } from "./components/RunsPanel";
 import { AttachmentButton } from "./components/AttachmentButton";
@@ -148,6 +149,17 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   }, [targetProject, targetFeature]);
   const [featuresRefreshKey, setFeaturesRefreshKey] = useState(0);
   const [rightTab, setRightTab] = useState<"activity" | "ui">("activity");
+  // Activity panel inner toggle: comments timeline vs live agent transcript.
+  // Persisted so a refresh keeps whichever view the user was on.
+  const [activityView, setActivityView] = useState<"comments" | "transcript">(() => {
+    try {
+      const v = window.localStorage.getItem("scyne_activity_view");
+      return v === "transcript" ? "transcript" : "comments";
+    } catch { return "comments"; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("scyne_activity_view", activityView); } catch {}
+  }, [activityView]);
   const [previewAvailable, setPreviewAvailable] = useState(false);
   const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string } | null>(null);
   const autoSwitchedRef = useRef(false);
@@ -594,7 +606,34 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                       <Eye className="size-3.5" /> Show agent runs ({runs.length})
                     </button>
                   )}
-                  <ActivityTimeline items={status.activity} />
+                  {/* Activity view toggle: comments timeline vs live transcript */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setActivityView("comments")}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                        activityView === "comments"
+                          ? "bg-scyne-ink-100 text-scyne-ink-700"
+                          : "text-scyne-ink-500 hover:text-scyne-ink-700 hover:bg-scyne-ink-50"
+                      }`}
+                    >
+                      Activity
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActivityView("transcript")}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                        activityView === "transcript"
+                          ? "bg-scyne-ink-100 text-scyne-ink-700"
+                          : "text-scyne-ink-500 hover:text-scyne-ink-700 hover:bg-scyne-ink-50"
+                      }`}
+                    >
+                      Live Transcript
+                    </button>
+                  </div>
+                  {activityView === "comments"
+                    ? <ActivityTimeline items={status.activity} />
+                    : <LiveTranscript parentIssueId={parentIssueId} />}
                   {resolvedApprovals.map((a) => (
                     <div key={a.id} className="shrink-0">
                       <ApprovalCard
