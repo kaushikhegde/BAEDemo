@@ -70,21 +70,47 @@ export const paperclip = {
     return call<any>("GET", `/companies/${COMPANY}/agents`).catch(() => [] as any[]);
   },
 
-  getApprovals(issueId: string) {
-    return call("GET", `/issues/${issueId}/approvals`);
+  // Paperclip 2026.525+ renamed approvals to "interactions". We fetch the new
+  // shape and normalise into the legacy approval shape downstream code expects.
+  // Mapping:
+  //   interaction.id                → approval.id
+  //   interaction.payload.prompt    → approval.payload.title  (the human-facing text)
+  //   interaction.status "accepted" → approval.status "approved"   (other statuses pass through)
+  //   interaction.resolvedAt        → approval.decidedAt
+  //   interaction.result?.reason    → approval.decisionNote
+  // Extra carry-fields (__interaction, __kind) let callers route resolution correctly.
+  async getInteractions(issueId: string): Promise<any[]> {
+    const raw = await call<any[]>("GET", `/issues/${issueId}/interactions`).catch(() => [] as any[]);
+    return (Array.isArray(raw) ? raw : []).map((it) => ({
+      id: it.id,
+      payload: {
+        title: it.payload?.prompt ?? it.title ?? "Approval requested",
+        summary: it.payload?.summary ?? it.summary ?? "",
+      },
+      status: it.status === "accepted" ? "approved" : it.status,
+      createdAt: it.createdAt,
+      decidedAt: it.resolvedAt ?? null,
+      decisionNote: it.result?.reason ?? null,
+      // Carry the originals so resolution + debugging works:
+      __interaction: true,
+      __kind: it.kind,
+      __issueId: it.issueId,
+      __raw: it,
+    }));
   },
 
-  approveGate(approvalId: string, note?: string) {
-    return call("POST", `/approvals/${approvalId}/approve`, { decisionNote: note ?? "Approved via Scyne chatbot." });
+  // Accept (approve) an interaction. Requires both the issue id and interaction id —
+  // the /interactions/:id endpoint is nested under the issue.
+  acceptInteraction(issueId: string, interactionId: string) {
+    return call("POST", `/issues/${issueId}/interactions/${interactionId}/accept`, {});
   },
 
-  rejectGate(approvalId: string, note?: string) {
-    return call("POST", `/approvals/${approvalId}/reject`, { decisionNote: note ?? "Rejected via Scyne chatbot." });
-  },
-
-  // Send the gate back for changes (keeps it "live", records the feedback as decisionNote).
-  requestRevision(approvalId: string, note: string) {
-    return call("POST", `/approvals/${approvalId}/request-revision`, { decisionNote: note });
+  // Reject an interaction with an optional reason (used for both hard-reject and
+  // request-changes — request-changes ALSO posts a comment + flips status to todo).
+  rejectInteraction(issueId: string, interactionId: string, reason?: string) {
+    return call("POST", `/issues/${issueId}/interactions/${interactionId}/reject`, {
+      ...(reason ? { reason } : {}),
+    });
   },
 
   // Flip an issue's status. Setting it to "todo" re-fires the assignee agent
@@ -105,13 +131,15 @@ export const paperclip = {
     return call("GET", `/issues/${issueId}/work-products`);
   },
 
-  // Recursive: parent → children → grandchildren etc. Now also folds in comments + approvals + work-products.
+  // Recursive: parent → children → grandchildren etc. Folds in comments + interactions (normalised
+  // into approval shape for back-compat) + work-products. The `approvals` field on each node is
+  // populated from /interactions — the legacy /approvals endpoint is empty on Paperclip 2026.525+.
   async getIssueTree(rootId: string): Promise<any> {
     const [root, children, comments, approvals, workProducts] = await Promise.all([
       this.getIssue(rootId),
       this.listChildren(rootId),
       this.getComments(rootId).catch(() => []),
-      this.getApprovals(rootId).catch(() => []),
+      this.getInteractions(rootId).catch(() => []),
       this.getWorkProducts(rootId).catch(() => []),
     ]);
     const childTrees = await Promise.all((children as any[]).map((c) => this.getIssueTree(c.id)));

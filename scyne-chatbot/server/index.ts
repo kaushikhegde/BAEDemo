@@ -218,13 +218,33 @@ app.get("/api/status/:issueId", async (req, res) => {
   }
 });
 
-// 4. Approve — proxy approval decision. If Atlassian provisioning is configured,
-//    auto-create the Jira project + Confluence space (the MCP can't) BEFORE resolving
-//    the gate, so the BA's Phase-2 push lands in targets that now exist.
+// Walk the issue tree from `rootId` and find which issue owns the interaction.
+// Used by approve/reject — Paperclip's interaction endpoints are nested under
+// the issue, but the frontend only sends the root parentIssueId.
+async function findInteractionIssueId(rootId: string, interactionId: string): Promise<string | null> {
+  const tree = await paperclip.getIssueTree(rootId);
+  function walk(node: any): string | null {
+    if ((node.approvals ?? []).some((a: any) => a.id === interactionId)) return node.id;
+    for (const c of node.children ?? []) {
+      const r = walk(c);
+      if (r) return r;
+    }
+    return null;
+  }
+  return walk(tree);
+}
+
+// 4. Approve — accept the underlying Paperclip interaction. If Atlassian provisioning
+//    is configured, auto-create the Jira project + Confluence space (the MCP can't)
+//    BEFORE resolving the gate, so the BA's Phase-2 push lands in targets that exist.
 app.post("/api/approve/:approvalId", async (req, res) => {
   try {
+    const approvalId = req.params.approvalId;
     const parentIssueId = String(req.body?.parentIssueId || "").trim();
-    if (parentIssueId && provisioningConfigured()) {
+    if (!parentIssueId) {
+      return res.status(400).json({ error: "parentIssueId is required to locate the interaction" });
+    }
+    if (provisioningConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
         const desc = String(issue?.description || "");
@@ -248,7 +268,11 @@ app.post("/api/approve/:approvalId", async (req, res) => {
         return res.status(502).json({ error: "provision_failed", message: e?.message ?? String(e) });
       }
     }
-    const r = await paperclip.approveGate(req.params.approvalId, req.body?.note);
+    const interactionIssueId = await findInteractionIssueId(parentIssueId, approvalId);
+    if (!interactionIssueId) {
+      return res.status(404).json({ error: "interaction_not_found", message: `Interaction ${approvalId} not found under issue ${parentIssueId}` });
+    }
+    const r = await paperclip.acceptInteraction(interactionIssueId, approvalId);
     res.json(r);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -257,17 +281,27 @@ app.post("/api/approve/:approvalId", async (req, res) => {
 
 app.post("/api/reject/:approvalId", async (req, res) => {
   try {
-    const r = await paperclip.rejectGate(req.params.approvalId, req.body?.note);
+    const approvalId = req.params.approvalId;
+    const parentIssueId = String(req.body?.parentIssueId || "").trim();
+    if (!parentIssueId) {
+      return res.status(400).json({ error: "parentIssueId is required to locate the interaction" });
+    }
+    const interactionIssueId = await findInteractionIssueId(parentIssueId, approvalId);
+    if (!interactionIssueId) {
+      return res.status(404).json({ error: "interaction_not_found" });
+    }
+    const r = await paperclip.rejectInteraction(interactionIssueId, approvalId, req.body?.note);
     res.json(r);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-// Request changes — the reviewer wasn't happy. Mark the gate revision_requested with
-// the feedback, drop the feedback as a comment (so the BA reads it + it's in the
-// timeline), then re-fire the BA by flipping its issue back to `todo`. The BA's
-// regenerate branch picks up the feedback, rewrites outputs, and raises a fresh gate.
+// Request changes — the reviewer wasn't happy. Reject the interaction with the
+// feedback (so it shows as resolved on Paperclip's side), drop the feedback as a
+// comment so the BA reads it + it appears in the timeline, then re-fire the BA by
+// flipping its issue back to `todo`. The BA's regenerate branch picks up the
+// "Revision requested by reviewer:" comment marker, rewrites outputs, raises fresh.
 app.post("/api/request-changes/:approvalId", async (req, res) => {
   try {
     const approvalId = req.params.approvalId;
@@ -276,7 +310,7 @@ app.post("/api/request-changes/:approvalId", async (req, res) => {
     if (!issueId || !feedback) {
       return res.status(400).json({ error: "issueId and feedback are required" });
     }
-    await paperclip.requestRevision(approvalId, feedback);
+    await paperclip.rejectInteraction(issueId, approvalId, feedback);
     await paperclip.addComment(issueId, `**Revision requested by reviewer:**\n\n${feedback}`);
     await paperclip.setIssueStatus(issueId, "todo");
     res.json({ ok: true, approvalId, issueId });

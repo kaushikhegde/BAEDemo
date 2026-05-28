@@ -3,12 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local (non-Docker) orchestration scripts for the Scyne requirements generator stack. Start Paperclip yourself first (its own README, e.g. `pnpm dev` in the Paperclip clone) at http://127.0.0.1:3100, then run these.",
+  "description": "Local orchestration for the Scyne requirements generator stack. Runs the npm-published Paperclip (paperclipai) embedded — no external clone needed.",
   "scripts": {
-    "setup": "cd scyne-chatbot && npm install",
+    "setup": "npm install && cd scyne-chatbot && npm install",
+    "paperclip": "paperclipai run --bind loopback",
     "bootstrap": "WORKSPACE_PATH=\"$PWD\" AGENT_CWD=\"$PWD\" AGENT_INSTRUCTIONS_DIR=\"$PWD/agent-instructions\" SKILLS_DIR=\"$PWD/skills\" node scripts/bootstrap.mjs",
     "chatbot": "cd scyne-chatbot && npm run dev",
-    "dev": "npm run bootstrap && npm run chatbot",
+    "dev": "concurrently -n paperclip,app -c blue,green \"npm:paperclip\" \"npm run bootstrap && npm run chatbot\"",
     "oauth": "npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "paperclipai": "2026.525.0"
   }
 }

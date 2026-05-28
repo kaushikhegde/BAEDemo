@@ -207,7 +207,10 @@ async function main() {
         capabilities: PLACEHOLDER_CAPABILITIES,
         adapterType: "claude_local",
         adapterConfig,
-        runtimeConfig: { heartbeat: { enabled: false } },
+        // Paperclip 2026.525+ requires heartbeat enabled for queued wakes
+        // (incl. interaction-accept continuations) to drain. Old advice was to
+        // keep this disabled — that no longer works.
+        runtimeConfig: { heartbeat: { enabled: true, intervalSeconds: 30, maxConcurrentRuns: 20 } },
         desiredSkills: spec.skills ?? [],
       });
       // Hire responses vary in shape; resolve the id defensively.
@@ -218,6 +221,8 @@ async function main() {
     // PATCH every agent (existing or fresh) back to spec. This is the convergence
     // step: renames, re-titling, icon swaps, re-parenting, and stale-cwd fixes
     // all happen here, idempotently — bodies match current state on a no-op run.
+    // runtimeConfig is included so existing pre-2026.525 hires get migrated to
+    // heartbeat-enabled on the next bootstrap.
     const reportsTo = spec.reportsToKey ? ids[spec.reportsToKey] : null;
     await api("PATCH", `/agents/${ids[spec.key]}`, {
       adapterConfig,
@@ -225,6 +230,7 @@ async function main() {
       title: spec.title,
       icon: spec.icon,
       reportsTo,
+      runtimeConfig: { heartbeat: { enabled: true, intervalSeconds: 30, maxConcurrentRuns: 20 } },
     });
     console.log(`[bootstrap] ${spec.name} title='${spec.title}' reportsTo=${reportsTo ?? "(none)"}`);
   }

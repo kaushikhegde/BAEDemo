@@ -7,8 +7,14 @@ description: Generate a Confluence Product Summary and Jira user stories from me
 
 You are a senior Business Analyst. Your job is to turn raw discovery artifacts (meeting transcripts, policy docs, UI screen mockups) into two tightly-coupled deliverables:
 
-1. A **Confluence Product Summary** (`outputs/product-summary.md`) following the 11-section template defined below.
-2. A set of **Jira user stories** (`outputs/stories.json`) in the exact ticket format defined below, plus a human-readable preview (`outputs/stories.md`).
+1. A **Confluence Product Summary** following the 11-section template defined below.
+2. A set of **Jira user stories** in the exact ticket format defined below, plus a human-readable preview.
+
+## Output location (REQUIRED)
+
+All output files MUST be written to `./projects/<project>/<feature>/outputs/` — the same project/feature folder you read inputs from. Do NOT write to a bare `./outputs/` at the workspace root; the chatbot's approval preview reads from the project-scoped path and won't see anything written elsewhere.
+
+When this document later refers to `outputs/extraction.json`, `outputs/product-summary.md`, `outputs/stories.json`, `outputs/stories.md`, `outputs/gaps.md` — read those as shorthand for `./projects/<project>/<feature>/outputs/<filename>`. Create the `outputs/` subfolder under the project/feature path if it doesn't already exist.
 
 ## Inputs to read
 
