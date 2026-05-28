@@ -214,7 +214,15 @@ async function main() {
         // Paperclip 2026.525+ requires heartbeat enabled for queued wakes
         // (incl. interaction-accept continuations) to drain. Old advice was to
         // keep this disabled — that no longer works.
-        runtimeConfig: { heartbeat: { enabled: true, intervalSeconds: 30, maxConcurrentRuns: 20 } },
+        // maxConcurrentRuns:1 serialises runs — without it, concurrent heartbeat
+        // wakes race the "check for existing child" idempotency guard and create
+        // duplicate child issues. Interval bumped to 120s to reduce idle cost.
+        // Heartbeat OFF: tested 2026-05-28 — wake-on-event (status:todo, comment,
+        // explicit /agents/:id/wakeup) fires reliably without heartbeat. Leaving
+        // it on burns Claude tokens on idle no-op runs and triggers race conditions.
+        // The chatbot explicitly calls wakeAgent after interaction-accept to cover
+        // the one case where Paperclip's queued continuation doesn't auto-fire.
+        runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
         desiredSkills: spec.skills ?? [],
       });
       // Hire responses vary in shape; resolve the id defensively.
@@ -234,7 +242,7 @@ async function main() {
       title: spec.title,
       icon: spec.icon,
       reportsTo,
-      runtimeConfig: { heartbeat: { enabled: true, intervalSeconds: 30, maxConcurrentRuns: 20 } },
+      runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
     });
     console.log(`[bootstrap] ${spec.name} title='${spec.title}' reportsTo=${reportsTo ?? "(none)"}`);
   }

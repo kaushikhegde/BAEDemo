@@ -273,6 +273,18 @@ app.post("/api/approve/:approvalId", async (req, res) => {
       return res.status(404).json({ error: "interaction_not_found", message: `Interaction ${approvalId} not found under issue ${parentIssueId}` });
     }
     const r = await paperclip.acceptInteraction(interactionIssueId, approvalId);
+    // Paperclip's auto-wake-on-accept is unreliable in 2026.525 — we explicitly
+    // wake the issue's assignee (typically the BA) so Phase 2 fires immediately,
+    // without depending on heartbeat polling or queue drain.
+    try {
+      const issue: any = await paperclip.getIssue(interactionIssueId);
+      const assignee = issue?.assigneeAgentId;
+      if (assignee) {
+        await paperclip.wakeAgent(assignee, `Interaction ${approvalId} accepted via Scyne chatbot.`);
+      }
+    } catch (wakeErr: any) {
+      console.warn("[approve] wakeAgent after accept failed (non-fatal):", wakeErr?.message ?? wakeErr);
+    }
     res.json(r);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -313,6 +325,16 @@ app.post("/api/request-changes/:approvalId", async (req, res) => {
     await paperclip.rejectInteraction(issueId, approvalId, feedback);
     await paperclip.addComment(issueId, `**Revision requested by reviewer:**\n\n${feedback}`);
     await paperclip.setIssueStatus(issueId, "todo");
+    // Explicitly wake the assignee — auto-wake-on-status-change is unreliable in 2026.525.
+    try {
+      const issue: any = await paperclip.getIssue(issueId);
+      const assignee = issue?.assigneeAgentId;
+      if (assignee) {
+        await paperclip.wakeAgent(assignee, `Revision requested by reviewer on ${approvalId}.`);
+      }
+    } catch (wakeErr: any) {
+      console.warn("[request-changes] wakeAgent after re-fire failed (non-fatal):", wakeErr?.message ?? wakeErr);
+    }
     res.json({ ok: true, approvalId, issueId });
   } catch (e: any) {
     console.error("[request-changes] failed:", e);

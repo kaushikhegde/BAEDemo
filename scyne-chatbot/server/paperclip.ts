@@ -105,6 +105,17 @@ export const paperclip = {
     return call("POST", `/issues/${issueId}/interactions/${interactionId}/accept`, {});
   },
 
+  // Force an agent run. Paperclip's auto-wake on interaction-accept is unreliable
+  // in 2026.525; the chatbot calls this explicitly after acceptInteraction so the
+  // BA picks up Phase 2 immediately without depending on heartbeat or queue drain.
+  // forceFreshSession bypasses any cached Claude session state.
+  wakeAgent(agentId: string, reason: string) {
+    return call("POST", `/agents/${agentId}/wakeup`, {
+      reason,
+      forceFreshSession: true,
+    });
+  },
+
   // Reject an interaction with an optional reason (used for both hard-reject and
   // request-changes — request-changes ALSO posts a comment + flips status to todo).
   rejectInteraction(issueId: string, interactionId: string, reason?: string) {
