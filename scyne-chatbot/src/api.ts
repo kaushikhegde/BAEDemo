@@ -77,13 +77,18 @@ export async function postUiComment(issueId: string, body: string) {
   return r.json();
 }
 
-export async function approve(approvalId: string, note?: string) {
+export async function approve(approvalId: string, parentIssueId?: string, note?: string) {
   const r = await fetch(`/api/approve/${approvalId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify({ parentIssueId, note }),
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body?.message || body?.error || `Approve failed (${r.status})`);
+    (err as any).code = body?.error;
+    throw err;
+  }
   return r.json();
 }
 

@@ -335,7 +335,19 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   }
 
   async function handleApprove(id: string) {
-    await approve(id);
+    try {
+      // Pass the parent issue so the server can auto-create the Jira project +
+      // Confluence space (if configured) before resolving the gate.
+      await approve(id, parentIssueId ?? undefined);
+    } catch (e: any) {
+      setMessages((m) => [...m, {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        text: e?.code === "provision_failed"
+          ? `I held off approving — couldn't prepare the Atlassian targets:\n\n> ${e.message}\n\nFix the project/space (or its permissions) and approve again.`
+          : `Approval failed: ${e?.message ?? e}`,
+      }]);
+    }
   }
   // Reviewer wasn't happy: send their notes to the BA, which regenerates and raises
   // a fresh gate. We optimistically surface it in the chat so the loop is visible.

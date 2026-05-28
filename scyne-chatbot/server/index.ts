@@ -11,6 +11,7 @@ import { chat } from "./llm.js";
 import { paperclip } from "./paperclip.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
+import { ensureAtlassianTargets, provisioningConfigured } from "./services/atlassianProvision.js";
 import { writeTranscript } from "./services/transcriptWriter.js";
 import { transcribeAudioFile } from "./services/geminiFiles.js";
 import { MeetingSession } from "./services/geminiLive.js";
@@ -217,9 +218,36 @@ app.get("/api/status/:issueId", async (req, res) => {
   }
 });
 
-// 4. Approve — proxy approval decision
+// 4. Approve — proxy approval decision. If Atlassian provisioning is configured,
+//    auto-create the Jira project + Confluence space (the MCP can't) BEFORE resolving
+//    the gate, so the BA's Phase-2 push lands in targets that now exist.
 app.post("/api/approve/:approvalId", async (req, res) => {
   try {
+    const parentIssueId = String(req.body?.parentIssueId || "").trim();
+    if (parentIssueId && provisioningConfigured()) {
+      try {
+        const issue: any = await paperclip.getIssue(parentIssueId);
+        const desc = String(issue?.description || "");
+        const grab = (label: string) =>
+          (desc.match(new RegExp(`-\\s*${label}:\\s*(.+)`)) || [])[1]?.trim() || "";
+        const project = grab("Project");
+        const jiraKey = grab("Jira project key");
+        const confKey = grab("Confluence space key");
+        const pageTitle = grab("Confluence page title");
+        if (jiraKey && confKey) {
+          const result = await ensureAtlassianTargets({
+            jiraKey,
+            jiraName: project || jiraKey,
+            confluenceKey: confKey,
+            confluenceName: pageTitle || project || confKey,
+          });
+          console.log("[approve] ensureAtlassianTargets:", JSON.stringify(result));
+        }
+      } catch (e: any) {
+        // Don't resolve the gate if we couldn't prepare the targets — surface it.
+        return res.status(502).json({ error: "provision_failed", message: e?.message ?? String(e) });
+      }
+    }
     const r = await paperclip.approveGate(req.params.approvalId, req.body?.note);
     res.json(r);
   } catch (e: any) {
