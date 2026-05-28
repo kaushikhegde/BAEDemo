@@ -184,6 +184,24 @@ const triggerTool: Tool = {
       },
     },
     {
+      name: "control_dev_server",
+      description: "Start or stop the local dev server for a scaffolded UI app. Use when the user says things like 'stop the UI', 'kill the preview', 'shut down the server', 'start the UI', 'bring the preview back up', 'restart it'. For 'restart', call this tool twice in a row (stop then start) — or call it once with action=start, since start is idempotent against an already-running server. Always pass project + feature; default to the currently active target if the user doesn't name them.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          action: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: ["start", "stop"],
+            description: "start = launch the dev server (idempotent — no-op if already running); stop = kill the dev server's pid.",
+          },
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["action", "project", "feature"],
+      },
+    },
+    {
       name: "comment_on_ui_build",
       description: "Post an instruction to the live UI build (only call this when a UI preview is ACTIVE, per the system prompt). Use it ONLY when the user wants to change the generated UI, approve it, or push it to GitHub. Do NOT call it for questions, requests for information, or chit-chat — answer those in text instead.",
       parameters: {

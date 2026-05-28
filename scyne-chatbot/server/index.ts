@@ -636,11 +636,29 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     const feature = String(req.body?.feature || "").trim();
-    const hint = (req.body?.hint as Hint) || undefined;
+    const rawHint = String(req.body?.hint || "").trim();
     if (!project || !feature) return res.status(400).json({ error: "project and feature are required" });
     assertSafeProjectFeature(project, feature);
     if (!req.file) return res.status(400).json({ error: "file is required (field name: 'file')" });
 
+    // Design uploads bypass the requirements router — they land directly under
+    // projects/<p>/<f>/design/{style-guides|example-screens}/. The Developer reads
+    // from there; the BA ignores design/ entirely.
+    if (rawHint === "style-guide" || rawHint === "example-screen") {
+      const sub = rawHint === "style-guide" ? "style-guides" : "example-screens";
+      const targetDir = path.join(WORKSPACE_PATH, "projects", project, feature, "design", sub);
+      await fs.mkdir(targetDir, { recursive: true });
+      const savedName = await uniqueName(targetDir, req.file.originalname);
+      await fs.writeFile(path.join(targetDir, savedName), req.file.buffer);
+      return res.json({
+        kind: "file",
+        subfolder: `design/${sub}`,
+        filename: savedName,
+        relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, savedName)),
+      });
+    }
+
+    const hint = (rawHint as Hint) || undefined;
     const route = routeFile(req.file.originalname, hint);
 
     // Ambiguous .docx/.pdf — caller must resupply with hint.
@@ -782,6 +800,50 @@ app.get("/api/preview/:project/:feature", async (req, res) => {
     if (!entry) return res.status(404).json({ error: "no_entry" });
     res.json(entry);
   } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// 7d. Start/stop the dev server for a scaffolded app. The LLM has tools that call
+//     these so the user can say "stop the UI" / "start the UI" in chat. Both shell
+//     out to the helper scripts so the same idempotency lives in one place.
+async function runHelper(script: string, args: string[]): Promise<{ ok: boolean; entry: any; stdout: string; stderr: string; code: number | null }> {
+  const { spawn } = await import("node:child_process");
+  return new Promise((resolve) => {
+    const child = spawn("node", [path.join(WORKSPACE_PATH, "scripts", script), ...args], {
+      cwd: WORKSPACE_PATH,
+    });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("close", (code) => {
+      let entry: any = null;
+      // Both scripts print the registry entry as JSON on stdout. Parse leniently —
+      // if there's noise (npm install output etc), grab the last JSON object.
+      const m = stdout.match(/\{[\s\S]*\}\s*$/);
+      if (m) { try { entry = JSON.parse(m[0]); } catch {} }
+      resolve({ ok: code === 0, entry, stdout, stderr, code });
+    });
+  });
+}
+
+app.post("/api/preview/:project/:feature/:action", async (req, res) => {
+  try {
+    const { project, feature, action } = req.params;
+    assertSafeProjectFeature(project, feature);
+    if (action !== "start" && action !== "stop") {
+      return res.status(400).json({ error: "bad_action", message: "action must be start or stop" });
+    }
+    const result = await runHelper(action === "start" ? "scaffold-app.mjs" : "stop-app.mjs", [project, feature]);
+    if (!result.ok) {
+      return res.status(500).json({
+        error: `${action}_failed`,
+        message: result.stderr?.trim() || `${action} script exited with ${result.code}`,
+      });
+    }
+    res.json({ ok: true, action, entry: result.entry });
+  } catch (e: any) {
+    console.error("[preview/action] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

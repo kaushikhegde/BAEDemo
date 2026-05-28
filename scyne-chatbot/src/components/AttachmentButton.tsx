@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { FileText, Image as ImageIcon, Mic, Paperclip, StickyNote, UploadCloud } from "lucide-react";
+import { FileText, Image as ImageIcon, Mic, Paperclip, Palette, Layout, StickyNote, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,6 +54,23 @@ const ZONES: Zone[] = [
     blurb: "Anything else",
     accept: ".docx,.pdf,.doc,.txt,.md",
     icon: <StickyNote className="size-5" />,
+  },
+  // Design uploads land under projects/<p>/<f>/design/. The Developer (UI agent)
+  // reads from here for visual direction; the BA ignores design/ entirely, so
+  // these don't pollute the requirements flow.
+  {
+    hint: "style-guide",
+    label: "Style guide",
+    blurb: "Palette, typography, brand tokens",
+    accept: ".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.doc,.txt,.md",
+    icon: <Palette className="size-5" />,
+  },
+  {
+    hint: "example-screen",
+    label: "Example screen",
+    blurb: "Visual reference for the UI agent",
+    accept: ".png,.jpg,.jpeg,.gif,.webp",
+    icon: <Layout className="size-5" />,
   },
 ];
 

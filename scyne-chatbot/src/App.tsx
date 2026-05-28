@@ -325,6 +325,28 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             throw e;
           }
         }
+      } else if (toolUse?.name === "control_dev_server") {
+        const args = toolUse.input as any;
+        const action = args?.action === "stop" ? "stop" : "start";
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        if (!proj || !feat) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I need a project + feature to ${action} the dev server — pick one with the target picker, or tell me which.` }]);
+        } else {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: action === "start" ? `Starting the preview for **${proj}/${feat}**… (idempotent — no-op if already running).` : `Stopping the preview for **${proj}/${feat}**…` }]);
+          try {
+            const r = await fetch(`/api/preview/${encodeURIComponent(proj)}/${encodeURIComponent(feat)}/${action}`, { method: "POST" });
+            const body = await r.json();
+            if (!r.ok) throw new Error(body?.message || body?.error || `HTTP ${r.status}`);
+            const entry = body?.entry || {};
+            const summary = action === "start"
+              ? `Preview is up at **${entry.devUrl ?? "unknown URL"}** (pid ${entry.pid ?? "?"}, port ${entry.port ?? "?"}).`
+              : `Preview stopped. The registry entry is preserved — say "start the UI" to bring it back up on the same port.`;
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: summary }]);
+          } catch (e: any) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't ${action} the dev server: ${e?.message ?? e}` }]);
+          }
+        }
       } else if (toolUse?.name === "comment_on_ui_build") {
         // LLM classified this message as a UI change/approve/push. Resolve the active
         // Build UI issue and post the normalised comment shape the Developer expects.
@@ -408,7 +430,12 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     if (a.status === "revision_requested") return !issuesWithPending.has(a.issueId);
     return false;
   });
-  const resolvedApprovals = status?.approvals.filter((a) => a.status === "approved" || a.status === "rejected") ?? [];
+  // We only render approval cards that still need attention here. `approved`
+  // and `rejected` carry no new info post-resolution (the StagePill below the
+  // chat already reflects the new workflow state, and the chat shows the user's
+  // own click). Keeping those badges pinned at the bottom of the activity panel
+  // visually overlapped the Live Transcript / Activity feed — drop them.
+  const resolvedApprovals = status?.approvals.filter((a) => a.status === "revision_requested") ?? [];
   const showSuggestions = messages.length === 1 && !parentIssueId && !busy;
   // Skeletons only on the very first load (no status yet, no error). Once a poll
   // has errored we show the error card instead so the panel never gets stuck.
@@ -478,7 +505,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         <section className="lg:col-span-4 flex flex-col gap-4">
           <div
             ref={scrollRef}
-            className="h-[calc(100vh-13rem)] overflow-y-auto scroll-smooth pr-2 space-y-4"
+            className="h-[calc(100vh-16rem)] overflow-y-auto scroll-smooth pr-2 space-y-4"
           >
             {showSuggestions && (
               <div className="flex items-start gap-3 mb-2">
