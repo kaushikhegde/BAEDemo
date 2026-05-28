@@ -5,14 +5,18 @@
 //   1. waits for the Paperclip API,
 //   2. finds or creates the `Scyne` company,
 //   3. disables board approval for new hires (so agents fire automatically),
-//   4. hires the 4 agents (PM / BA / UI / UX) if they don't already exist,
-//   5. wires reportsTo = PM for the three reports,
-//   6. rewrites PM's instructions with the freshly-hired report IDs,
-//   7. pushes every agent's AGENTS.md instruction bundle,
-//   8. writes /workspace/.bootstrap/ids.json for the chatbot to read.
+//   4. provisions the 19-agent Scyne org (CEO → Delivery Lead/Bid Manager → …)
+//      — hires anything missing by name, PATCHes everything back to spec
+//      (title, icon, reportsTo, adapterConfig) on every run,
+//   5. rewrites the Delivery Lead's instructions with the freshly-hired report IDs,
+//   6. pushes the four shipped AGENTS.md bundles (Delivery Lead / BA / Developer
+//      / UX Auditor); new org placeholders get no bundle on this pass,
+//   7. writes <WORKSPACE>/.bootstrap/ids.json — top-level fields stay
+//      backward-compatible; a new `org` map exposes every role by spec key.
 //
 // Safe to run repeatedly: every step looks up existing state by name and
-// converges, so a container restart re-runs it harmlessly.
+// converges, so a container restart re-runs it harmlessly. Agents present in
+// Paperclip but absent from the spec are left alone (no surprise deletions).
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -39,21 +43,47 @@ const adapterConfig = {
 const HEALTH_DEADLINE_MS = 120_000;
 
 // Old report UUIDs hard-coded inside agent-instructions/pm.json. We string-
-// replace these with the real hired IDs before pushing PM's bundle.
+// replace these with the real hired IDs before pushing the Delivery Lead's bundle.
 const OLD_IDS = {
   ba: "7561c779-5c3f-4e3a-9dc2-0f13eb1851ec",
   ui: "f19feb64-3ccd-42b2-b0b7-f9dfe7273a94",
   ux: "43a9e518-99c5-4916-8b91-3ff89e0c00ba",
 };
 
-// The four agents. `key` maps to OLD_IDS / the ids.json fields; `file` is the
-// AGENTS.md bundle under INSTRUCTIONS_DIR.
+// The 19-agent Scyne org. `key` is the in-script identifier (also exposed under
+// ids.json's `org` map); `name` is the Paperclip display name and the lookup
+// key for "does this agent already exist?". `title` / `icon` / `reportsToKey`
+// are applied via PATCH on every run so re-titling, icon swaps, and re-parenting
+// converge idempotently. `file` is the AGENTS.md bundle under
+// INSTRUCTIONS_DIR — only set for agents whose instructions ship in this repo.
+// `skills` is forwarded as `desiredSkills` on hire. Spec order is topologically
+// sorted (CEO → leads → ICs) so `reportsToKey` always resolves before use.
+//
+// Note: the source org chart shows "Pricing Specalist" — kept as
+// "Pricing Specialist" (correct spelling) since the source is clearly a typo.
 const AGENTS = [
-  { key: "pm", name: "Project Manager", file: "pm.json", reportsToPm: false, skills: [] },
-  { key: "ba", name: "Business Analyst", file: "ba.json", reportsToPm: true, skills: ["requirement-generator"] },
-  { key: "ui", name: "UI Engineer", file: "ui.json", reportsToPm: true, skills: [] },
-  { key: "ux", name: "UX Auditor", file: "ux-auditor.json", reportsToPm: true, skills: [] },
+  { key: "ceo",              name: "CEO",                       title: "Chief Executive",         icon: "crown",          reportsToKey: null },
+  { key: "pm",               name: "Delivery Lead",             title: "Delivery Lead",           icon: "rocket",         reportsToKey: "ceo",          file: "pm.json",         skills: [] },
+  { key: "bidManager",       name: "Bid Manager",               title: "Bid Manager",             icon: "gem",            reportsToKey: "ceo" },
+  { key: "archLead",         name: "Architecture Lead",         title: "Architecture Lead",       icon: "circuit-board",  reportsToKey: "pm" },
+  { key: "businessLead",     name: "Business Lead",             title: "Business Lead",           icon: "lightbulb",      reportsToKey: "pm" },
+  { key: "changeLead",       name: "Change Lead",               title: "Change Lead",             icon: "sparkles",       reportsToKey: "pm" },
+  { key: "dataLead",         name: "Data Lead",                 title: "Data Lead",               icon: "database",       reportsToKey: "pm" },
+  { key: "ux",               name: "UX Auditor",                title: "UX Auditor",              icon: "shield",         reportsToKey: "archLead",     file: "ux-auditor.json", skills: [] },
+  { key: "architect",        name: "Architect",                 title: "Architect",               icon: "hammer",         reportsToKey: "archLead" },
+  { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },
+  { key: "uxDesigner",       name: "UX Designer",               title: "UX Designer",             icon: "wand",           reportsToKey: "archLead" },
+  { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] },
+  { key: "qaTester",         name: "QA Tester",                 title: "QA Tester",               icon: "bug",            reportsToKey: "businessLead" },
+  { key: "contentWriter",    name: "Content Writer",            title: "Content Writer",          icon: "message-square", reportsToKey: "changeLead" },
+  { key: "dataMigDev",       name: "Data Migration Developer",  title: "Data Migration Developer",icon: "git-branch",     reportsToKey: "dataLead" },
+  { key: "solutionDesigner", name: "Solution Designer",         title: "Solution Designer",       icon: "puzzle",         reportsToKey: "bidManager" },
+  { key: "creativeDesigner", name: "Creative Designer",         title: "Creative Designer",       icon: "star",           reportsToKey: "bidManager" },
+  { key: "docFormatter",     name: "Document Formatter",        title: "Document Formatter",      icon: "file-code",      reportsToKey: "bidManager" },
+  { key: "pricingSpec",      name: "Pricing Specialist",        title: "Pricing Specialist",      icon: "target",         reportsToKey: "bidManager" },
 ];
+
+const PLACEHOLDER_CAPABILITIES = "Placeholder Scyne org role — to be expanded.";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -114,7 +144,7 @@ async function readBundle(file) {
 // natively-installed (host) Paperclip has none — so we register them here from the
 // SKILL.md files shipped in this repo. Idempotent: skips any skill already present.
 async function ensureCompanySkills(companyId) {
-  const needed = [...new Set(AGENTS.flatMap((a) => a.skills))];
+  const needed = [...new Set(AGENTS.flatMap((a) => a.skills ?? []))];
   if (needed.length === 0) return;
 
   const existing = await api("GET", `/companies/${companyId}/skills`);
@@ -156,48 +186,55 @@ async function main() {
   // Register any skills the agents reference before hiring (else the hire 422s).
   await ensureCompanySkills(companyId);
 
-  // First pass: ensure each agent exists; collect ids by key.
+  // Single ordered pass: ensure each agent exists, then PATCH it to spec. Spec
+  // order is topologically sorted (CEO → leads → ICs) so `ids[reportsToKey]` is
+  // always available when we need it.
   const ids = {};
-  let existing = await listAgents(companyId);
+  const existing = await listAgents(companyId);
   for (const spec of AGENTS) {
     const found = existing.find((a) => a.name === spec.name);
     if (found) {
       ids[spec.key] = found.id;
       console.log(`[bootstrap] agent '${spec.name}' exists: ${found.id}`);
-      continue;
+    } else {
+      const reportsTo = spec.reportsToKey ? ids[spec.reportsToKey] : null;
+      const hire = await api("POST", `/companies/${companyId}/agent-hires`, {
+        name: spec.name,
+        role: "general",
+        title: spec.title,
+        icon: spec.icon,
+        reportsTo,
+        capabilities: PLACEHOLDER_CAPABILITIES,
+        adapterType: "claude_local",
+        adapterConfig,
+        runtimeConfig: { heartbeat: { enabled: false } },
+        desiredSkills: spec.skills ?? [],
+      });
+      // Hire responses vary in shape; resolve the id defensively.
+      ids[spec.key] = hire.id || hire.agentId || (hire.agent && hire.agent.id);
+      console.log(`[bootstrap] hired '${spec.name}': ${ids[spec.key]}`);
     }
-    const hire = await api("POST", `/companies/${companyId}/agent-hires`, {
-      name: spec.name,
-      role: "general",
-      adapterType: "claude_local",
+
+    // PATCH every agent (existing or fresh) back to spec. This is the convergence
+    // step: renames, re-titling, icon swaps, re-parenting, and stale-cwd fixes
+    // all happen here, idempotently — bodies match current state on a no-op run.
+    const reportsTo = spec.reportsToKey ? ids[spec.reportsToKey] : null;
+    await api("PATCH", `/agents/${ids[spec.key]}`, {
       adapterConfig,
-      runtimeConfig: { heartbeat: { enabled: false } },
-      desiredSkills: spec.skills,
+      name: spec.name,
+      title: spec.title,
+      icon: spec.icon,
+      reportsTo,
     });
-    // Hire responses vary in shape; resolve the id defensively.
-    ids[spec.key] = hire.id || hire.agentId || (hire.agent && hire.agent.id);
-    console.log(`[bootstrap] hired '${spec.name}': ${ids[spec.key]}`);
+    console.log(`[bootstrap] ${spec.name} title='${spec.title}' reportsTo=${reportsTo ?? "(none)"}`);
   }
 
-  if (!ids.pm) throw new Error("PM agent id missing after hire");
+  if (!ids.pm) throw new Error("Delivery Lead agent id missing after hire");
 
-  // Converge every agent's working dir to AGENT_CWD. This fixes agents that were
-  // already hired with a stale cwd (e.g. a previous run that baked /workspace on a
-  // host where that path isn't writable). Idempotent — a no-op when already correct.
+  // Push instruction bundles. The Delivery Lead's content gets the real report IDs swapped in.
+  // Agents without a `file` (the new org placeholders) get no bundle on this pass.
   for (const spec of AGENTS) {
-    await api("PATCH", `/agents/${ids[spec.key]}`, { adapterConfig });
-    console.log(`[bootstrap] ${spec.name} cwd=${AGENT_CWD}`);
-  }
-
-  // Wire reportsTo = PM for the three reports (idempotent).
-  for (const spec of AGENTS) {
-    if (!spec.reportsToPm) continue;
-    await api("PATCH", `/agents/${ids[spec.key]}`, { reportsTo: ids.pm });
-    console.log(`[bootstrap] ${spec.name} reportsTo PM`);
-  }
-
-  // Push instruction bundles. PM's content gets the real report IDs swapped in.
-  for (const spec of AGENTS) {
+    if (!spec.file) continue;
     const bundle = await readBundle(spec.file);
     let content = bundle.content;
     if (spec.key === "pm") {
@@ -213,13 +250,13 @@ async function main() {
     console.log(`[bootstrap] pushed instructions for '${spec.name}'`);
   }
 
-  // Hand the resolved ids to the chatbot.
+  // Hand the resolved ids to the chatbot. `deliveryLeadAgentId` is the only
+  // top-level convenience field (the chatbot routes parent issues to the
+  // Delivery Lead); everything else is reachable via the `org` map.
   const out = {
     companyId,
-    pmAgentId: ids.pm,
-    baAgentId: ids.ba,
-    uiAgentId: ids.ui,
-    uxAgentId: ids.ux,
+    deliveryLeadAgentId: ids.pm,
+    org: Object.fromEntries(AGENTS.map((a) => [a.key, ids[a.key]])),
   };
   await fs.mkdir(path.dirname(IDS_PATH), { recursive: true });
   await fs.writeFile(IDS_PATH, JSON.stringify(out, null, 2));

@@ -5,14 +5,14 @@ const BASE = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api";
 // IDs come from env, but the Docker stack provisions agents at runtime (Paperclip
 // generates its own UUIDs), so prefer the bootstrap-written ids.json when present.
 let COMPANY = process.env.PAPERCLIP_COMPANY_ID || "";
-let PM_AGENT = process.env.PAPERCLIP_PM_AGENT_ID || "";
+let DELIVERY_LEAD_AGENT = process.env.PAPERCLIP_DELIVERY_LEAD_AGENT_ID || "";
 try {
   const idsPath = process.env.BOOTSTRAP_IDS_PATH
     || `${process.env.WORKSPACE_PATH || "/workspace"}/.bootstrap/ids.json`;
   const ids = JSON.parse(readFileSync(idsPath, "utf8"));
   if (ids.companyId) COMPANY = ids.companyId;
-  if (ids.pmAgentId) PM_AGENT = ids.pmAgentId;
-  console.log(`[paperclip] using ids from ${idsPath}: company=${COMPANY} pm=${PM_AGENT}`);
+  if (ids.deliveryLeadAgentId) DELIVERY_LEAD_AGENT = ids.deliveryLeadAgentId;
+  console.log(`[paperclip] using ids from ${idsPath}: company=${COMPANY} deliveryLead=${DELIVERY_LEAD_AGENT}`);
 } catch {
   /* no ids.json (non-Docker dev) — fall back to env */
 }
@@ -37,7 +37,7 @@ export const paperclip = {
     return call("POST", `/companies/${COMPANY}/issues`, {
       title,
       description,
-      assigneeAgentId: PM_AGENT,
+      assigneeAgentId: DELIVERY_LEAD_AGENT,
       status: "todo",
       priority: "medium",
     });

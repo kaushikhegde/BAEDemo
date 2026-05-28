@@ -21,7 +21,7 @@
   "agents": {
     "pm": {
       "instructions": "agent-instructions/pm.json",
-      "id": "${PAPERCLIP_PM_AGENT_ID}"
+      "id": "${PAPERCLIP_DELIVERY_LEAD_AGENT_ID}"
     },
     "ba": {
       "instructions": "agent-instructions/ba.json",

@@ -273,7 +273,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         try {
           const issue = await postTrigger(args || {});
           setParentIssueId(issue.id);
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Project Manager. Live progress on the right →` }]);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Delivery Lead. Live progress on the right →` }]);
         } catch (e: any) {
           if (e?.code === "missing_inputs") {
             const folders = Array.isArray(e.emptyFolders) ? e.emptyFolders.join(", ") : "some required folders";
@@ -302,7 +302,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         }
       } else if (toolUse?.name === "comment_on_ui_build") {
         // LLM classified this message as a UI change/approve/push. Resolve the active
-        // Build UI issue and post the normalised comment shape the UI Engineer expects.
+        // Build UI issue and post the normalised comment shape the Developer expects.
         const args = toolUse.input as any;
         const kind = String(args?.kind || "modify");
         const instruction = String(args?.instruction || userText);

@@ -77,7 +77,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | Method | Path                                | Purpose                                                                   |
 | ------ | ----------------------------------- | ------------------------------------------------------------------------- |
 | POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
-| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to PM with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if Policy/Transcripts/UI are empty. |
+| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if Policy/Transcripts/UI are empty. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate as approved (Paperclip wakes the BA → Phase 2). |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
@@ -87,14 +87,14 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
 | GET    | `/api/artifacts`                    | Reads `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` from disk. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
-| POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to PM. PM detects the title prefix and dispatches the UI Engineer directly, then the UX Auditor once the build completes. |
+| POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to the Delivery Lead. Delivery Lead detects the title prefix and dispatches the Developer directly, then the UX Auditor once the build completes. |
 | GET    | `/api/preview/:project/:feature`    | Resolves the dev-server URL for the generated app from `generated-apps/registry.json`. |
 | POST   | `/api/ui-agent/comment`             | Adds a follow-up comment on the UI-build issue (e.g. iteration prompts).  |
 | WS     | `ws://127.0.0.1:4000/recording`     | Browser ↔ backend audio stream. Client pushes PCM frames; backend pipes them into Gemini Live and pushes transcript chunks back. Used by `RecordMeetingPanel`. |
 
 The Paperclip client (`server/paperclip.ts`) wraps just the calls the chatbot needs. Notable methods:
 
-- `createIssue(title, description)` — always `status: "todo"`, always `assigneeAgentId: PM`.
+- `createIssue(title, description)` — always `status: "todo"`, always `assigneeAgentId: deliveryLead`.
 - `listChildren(parentId)` — uses `GET /companies/:companyId/issues?parentId=…` (there is **no** `/issues/:id/children`).
 - `getIssueTree(rootId)` — recursive; folds in comments, approvals, work-products at each node.
 - `approveGate(id, note)` / `rejectGate(id, note)`.
@@ -108,7 +108,7 @@ The only stateful React component is `src/App.tsx`. All other components are pre
 | State                  | Type                            | Purpose                                                                 |
 | ---------------------- | ------------------------------- | ----------------------------------------------------------------------- |
 | `session`              | `LoginSession \| null`         | From `loadSession()`. If null, the app renders `<Login>` instead of the main UI.        |
-| `messages`             | `UIMessage[]`                   | What the chat panel renders. Three kinds: user, assistant (LLM), agent (PM/BA comments). |
+| `messages`             | `UIMessage[]`                   | What the chat panel renders. Three kinds: user, assistant (LLM), agent (Delivery Lead/BA comments). |
 | `apiHistory`           | `ApiMsg[]`                      | Anthropic-shaped conversation history sent to `/api/chat`.              |
 | `draft`                | `string`                        | Composer textarea contents.                                              |
 | `busy`                 | `boolean`                       | Composer disabled while a chat round-trip is in flight.                  |
@@ -146,8 +146,8 @@ The prompt instructs a discovery flow:
 | Tool                            | When the bot calls it                                                                           |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `set_target`                    | When the user picks a project + feature but isn't ready to fire yet. Pins the scope so the right-pane TargetPicker reflects it. No Paperclip side effect. |
-| `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to PM. |
-| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to PM, which dispatches the UI Engineer then the UX Auditor directly (both report to PM). |
+| `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to the Delivery Lead. |
+| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly (both report to the Delivery Lead). |
 | `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. Replaces the old frontend regex gate that hijacked all chat. |
 
 The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
@@ -185,7 +185,7 @@ GEMINI_LIVE_MODEL=models/gemini-2.5-flash-native-audio-latest  # optional
 
 PAPERCLIP_API_URL=http://127.0.0.1:3100/api
 PAPERCLIP_COMPANY_ID=2131f183-3822-4eee-9370-4b5cafae7e29
-PAPERCLIP_PM_AGENT_ID=212a6542-4e49-41dc-94f0-7d7acbc460ba
+PAPERCLIP_DELIVERY_LEAD_AGENT_ID=212a6542-4e49-41dc-94f0-7d7acbc460ba
 
 WORKSPACE_PATH=/Users/<you>/Projects/buzzinga/requirement-generator
 
@@ -201,7 +201,7 @@ DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
 PORT=4000
 ```
 
-If you re-hire agents or move the workspace, only `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_PM_AGENT_ID`, and `WORKSPACE_PATH` need updating here. The BA's ID is *not* in `.env` — it's baked into PM's AGENTS.md (in `../agent-instructions/pm.json`) and into BA's response routes.
+If you re-hire agents or move the workspace, only `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_DELIVERY_LEAD_AGENT_ID`, and `WORKSPACE_PATH` need updating here. The BA's ID is *not* in `.env` — it's baked into Delivery Lead's AGENTS.md (in `../agent-instructions/pm.json`) and into BA's response routes.
 
 ## Branding
 
@@ -244,9 +244,9 @@ mkdir -p projects/<project>/<feature>/outputs
 Drop input files in the four `requirements/*` subfolders. The bot picks it up on the next `/api/features` poll — no code change.
 
 ### Move an agent ID
-1. Update `.env` (`PAPERCLIP_PM_AGENT_ID`).
+1. Update `.env` (`PAPERCLIP_DELIVERY_LEAD_AGENT_ID`).
 2. Update the BA ID inside `../agent-instructions/pm.json`.
-3. Update the UI Engineer ID inside `../agent-instructions/ba.json`.
+3. Update the Developer ID inside `../agent-instructions/ba.json`.
 4. Re-push each with `PUT /api/agents/:id/instructions-bundle/file` (see `../CLAUDE.md` for curl examples).
 5. Restart the chatbot.
 

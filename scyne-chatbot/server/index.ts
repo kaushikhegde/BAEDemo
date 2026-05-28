@@ -200,7 +200,7 @@ app.get("/api/status/:issueId", async (req, res) => {
     else if (anyPending) stage = { key: "awaiting_approval", label: "Awaiting your approval" };
     else if (children.some((c) => c.status === "in_progress" || c.status === "in_review")) stage = { key: "ba_generating", label: "BA generating artifacts" };
     else if (children.length > 0) stage = { key: "delegated", label: "Delegated to BA" };
-    else if (parent?.status === "in_progress") stage = { key: "pm_triaging", label: "PM triaging the request" };
+    else if (parent?.status === "in_progress") stage = { key: "delivery_lead_triaging", label: "Delivery Lead triaging the request" };
     else stage = { key: "queued", label: "Queued" };
 
     res.json({
@@ -555,10 +555,10 @@ app.post("/api/projects", async (req, res) => {
   }
 });
 
-// 7a. Trigger a UI build — creates a PM-assigned issue with the "Build UI — ..." title.
-//     PM detects this intent, validates outputs/product-summary.md exists, then dispatches
-//     the UI Engineer directly (its direct report). When the UI Engineer finishes, PM is
-//     auto-woken (issue_children_completed) and dispatches the UX Auditor — both report to PM.
+// 7a. Trigger a UI build — creates a Delivery-Lead-assigned issue with the "Build UI — ..." title.
+//     The Delivery Lead detects this intent, validates outputs/product-summary.md exists, then
+//     dispatches the Developer directly (its direct report). When the Developer finishes, the
+//     Delivery Lead is auto-woken (issue_children_completed) and dispatches the UX Auditor.
 app.post("/api/ui-agent/trigger", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
@@ -590,7 +590,7 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
       `- projects/${project}/${feature}/outputs/stories.json`,
     ].join("\n");
 
-    // Assigned to PM (existing pattern). PM dispatches the UI Engineer directly, then the UX Auditor.
+    // Assigned to the Delivery Lead (existing pattern). The Delivery Lead dispatches the Developer directly, then the UX Auditor.
     const issue = await paperclip.createIssue(title, description);
     res.json(issue);
   } catch (e: any) {

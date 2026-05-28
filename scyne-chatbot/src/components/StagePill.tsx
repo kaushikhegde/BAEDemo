@@ -6,7 +6,7 @@ type Tone = React.ComponentProps<typeof Badge>["tone"];
 
 const MAP: Record<string, { tone: Tone; pulse: boolean; icon: React.ReactNode | null }> = {
   queued: { tone: "neutral", pulse: false, icon: null },
-  pm_triaging: { tone: "progress", pulse: true, icon: <Loader2 className="animate-spin" /> },
+  delivery_lead_triaging: { tone: "progress", pulse: true, icon: <Loader2 className="animate-spin" /> },
   delegated: { tone: "progress", pulse: true, icon: <Loader2 className="animate-spin" /> },
   ba_generating: { tone: "progress", pulse: true, icon: <Loader2 className="animate-spin" /> },
   pushing: { tone: "progress", pulse: true, icon: <Loader2 className="animate-spin" /> },

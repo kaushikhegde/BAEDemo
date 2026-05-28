@@ -141,8 +141,8 @@ make client-hosted-down
 ```
 db healthy → paperclip (migrates DB, serves :3100 in local_trusted)
            → bootstrap (one-shot): creates company "Scyne", disables hire
-             approval, hires PM/BA/UI/UX, wires reportsTo=PM, rewrites PM's
-             instructions with the real agent IDs, pushes all bundles, writes
+             approval, provisions the 19-agent Scyne org, rewrites the Delivery
+             Lead's instructions with the real agent IDs, pushes all bundles, writes
              /workspace/.bootstrap/ids.json
            → chatbot (reads ids.json, serves UI+API on :4000)
 ```
@@ -204,8 +204,8 @@ docker compose exec chatbot cat /workspace/.bootstrap/ids.json
 curl -s localhost:3100/api/companies | jq
 ```
 
-Then in the chatbot: trigger a requirements run (PM → BA → outputs + approval
-gate), approve it, then trigger a UI build (UI Engineer scaffolds + previews on
+Then in the chatbot: trigger a requirements run (Delivery Lead → BA → outputs + approval
+gate), approve it, then trigger a UI build (Developer scaffolds + previews on
 :5174, UX Auditor runs the a11y audit).
 
 ## Notes & rough edges
