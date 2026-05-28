@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +11,22 @@ function shortTime(iso: string) {
 }
 
 export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const lastIdRef = useRef<string | null>(null);
+
+  // Auto-scroll to the newest activity when a new item arrives. Tracking the
+  // latest item's id (not just count) avoids fighting a user who scrolled up
+  // to read older entries when nothing actually changed.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const newestId = items.length ? items[items.length - 1].id : null;
+    if (newestId && newestId !== lastIdRef.current) {
+      lastIdRef.current = newestId;
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, [items]);
+
   if (!items.length) return null;
 
   // Fills the remaining panel height; only this card's list scrolls (not the page).
@@ -24,7 +41,7 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
           </Badge>
         </CardTitle>
       </CardHeader>
-      <div className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
         {items.map((c, idx) => (
           <div key={c.id}>
             {idx > 0 && <Separator className="my-3" />}

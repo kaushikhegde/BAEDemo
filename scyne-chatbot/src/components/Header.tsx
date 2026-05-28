@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 export function Header({ right }: { right?: ReactNode }) {
   return (
     <header className="sticky top-0 z-30 glass border-b border-white/40 shadow-elev-1">
-      <div className="mx-auto max-w-[1440px] px-6 lg:px-8 h-14 flex items-center justify-between">
+      <div className="w-full px-6 lg:px-8 h-14 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <img
             src="/scyne-logo-ink.svg"
