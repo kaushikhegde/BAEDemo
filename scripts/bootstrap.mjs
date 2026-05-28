@@ -39,6 +39,10 @@ const AGENT_CWD = process.env.AGENT_CWD || WORKSPACE;
 const adapterConfig = {
   cwd: AGENT_CWD,
   extraArgs: ["--mcp-config", `${AGENT_CWD}/.mcp.json`],
+  // Default to Sonnet 4.6 (much cheaper than Opus). Override per-agent if a task
+  // genuinely needs Opus reasoning. Available ids: claude-opus-4-7, claude-opus-4-6,
+  // claude-sonnet-4-6, claude-haiku-4-6, claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001.
+  model: process.env.PAPERCLIP_AGENT_MODEL || "claude-sonnet-4-6",
 };
 const HEALTH_DEADLINE_MS = 120_000;
 
