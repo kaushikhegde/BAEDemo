@@ -162,7 +162,6 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   }, [activityView]);
   const [previewAvailable, setPreviewAvailable] = useState(false);
   const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string } | null>(null);
-  const autoSwitchedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // When the BA flow has reached `done` AND a Confluence URL is live, surface a one-shot
@@ -173,17 +172,20 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     const rootDone = status.flatIssues.length > 0 && status.flatIssues.every((i) => i.status === "done");
     const hasConfluence = (status.links?.confluence?.length ?? 0) > 0;
     if (!rootDone || !hasConfluence) return;
-    const dedupeKey = `scyne_ui_prompted_for_${parentIssueId}`;
+    // Dedupe per project/feature, not per parent issue, so clicking "Yes, build the UI"
+    // (which swaps parentIssueId to the new Build UI issue) doesn't immediately re-trigger
+    // the prompt against the stale "requirements done" status snapshot.
+    const dedupeKey = `scyne_ui_prompted_for_${targetProject}__${targetFeature}`;
     if (typeof window !== "undefined" && window.localStorage.getItem(dedupeKey)) return;
     setPendingUiPrompt({ project: targetProject, feature: targetFeature });
   }, [status, targetProject, targetFeature, parentIssueId]);
 
   // Watch for the UI preview becoming available for the current target.
-  // First time it appears, auto-switch the right pane to the UI tab.
+  // Don't auto-switch tabs — the green dot on the UI tab signals it's ready;
+  // the user clicks over when they want to see it.
   useEffect(() => {
     if (!targetProject || !targetFeature) {
       setPreviewAvailable(false);
-      autoSwitchedRef.current = false;
       return;
     }
     let cancelled = false;
@@ -191,10 +193,6 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       const ok = await hasPreview(targetProject, targetFeature);
       if (cancelled) return;
       setPreviewAvailable(ok);
-      if (ok && !autoSwitchedRef.current) {
-        autoSwitchedRef.current = true;
-        setRightTab("ui");
-      }
     };
     check();
     const id = setInterval(check, 3000);
@@ -312,9 +310,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (feat) setTargetFeature(feat);
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the UI agent for **${proj}** / **${feat}**…` }]);
         try {
+          // Pre-set the per-project dedupe flag so the "build UI?" prompt card doesn't pop
+          // again against the now-stale "requirements done" status snapshot.
+          if (typeof window !== "undefined" && proj && feat) {
+            window.localStorage.setItem(`scyne_ui_prompted_for_${proj}__${feat}`, "1");
+          }
           const issue = await triggerUiBuild(proj, feat);
           setParentIssueId(issue.id);
-          setRightTab("ui");
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the UI agent. The live preview will appear on the right once it scaffolds the app.` }]);
         } catch (e: any) {
           if (e?.code === "no_requirements") {
@@ -521,7 +523,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                     size="sm"
                     onClick={async () => {
                       const { project, feature } = pendingUiPrompt;
-                      const dedupeKey = `scyne_ui_prompted_for_${parentIssueId ?? "anon"}`;
+                      const dedupeKey = `scyne_ui_prompted_for_${project}__${feature}`;
                       if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
                       setPendingUiPrompt(null);
                       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", text: "Yes, build the UI." }]);
@@ -529,7 +531,6 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                       try {
                         const issue = await triggerUiBuild(project, feature);
                         setParentIssueId(issue.id);
-                        setRightTab("ui");
                         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** assigned to the UI agent. The live preview will land on the right once it scaffolds the app.` }]);
                       } catch (e: any) {
                         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't start the UI agent: ${e?.message ?? e}` }]);
@@ -542,7 +543,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      const dedupeKey = `scyne_ui_prompted_for_${parentIssueId ?? "anon"}`;
+                      const { project, feature } = pendingUiPrompt;
+                      const dedupeKey = `scyne_ui_prompted_for_${project}__${feature}`;
                       if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
                       setPendingUiPrompt(null);
                     }}
@@ -631,9 +633,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                       Live Transcript
                     </button>
                   </div>
-                  {activityView === "comments"
-                    ? <ActivityTimeline items={status.activity} />
-                    : <LiveTranscript parentIssueId={parentIssueId} />}
+                  {/* Render both panes always; hide the inactive one with CSS so its
+                      internal state (LiveTranscript's per-run cache, scroll position,
+                      etc.) survives tab switches instead of being destroyed on unmount. */}
+                  <div className={`flex-1 min-h-0 flex flex-col ${activityView === "comments" ? "" : "hidden"}`}>
+                    <ActivityTimeline items={status.activity} />
+                  </div>
+                  <div className={`flex-1 min-h-0 flex flex-col ${activityView === "transcript" ? "" : "hidden"}`}>
+                    <LiveTranscript parentIssueId={parentIssueId} />
+                  </div>
                   {resolvedApprovals.map((a) => (
                     <div key={a.id} className="shrink-0">
                       <ApprovalCard

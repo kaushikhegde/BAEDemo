@@ -27,9 +27,8 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
     }
   }, [items]);
 
-  if (!items.length) return null;
-
-  // Fills the remaining panel height; only this card's list scrolls (not the page).
+  // Always render the card — an empty state placeholder is better than disappearing
+  // entirely (which made the right pane look broken before any comments arrived).
   return (
     <Card elevation={1} className="flex-1 min-h-0 flex flex-col">
       <CardHeader className="shrink-0">
@@ -42,6 +41,11 @@ export function ActivityTimeline({ items }: { items: ActivityItem[] }) {
         </CardTitle>
       </CardHeader>
       <div ref={scrollRef} className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
+        {items.length === 0 && (
+          <p className="text-sm text-slate-400 italic py-2">
+            No activity yet. Agent updates will appear here as the workflow progresses.
+          </p>
+        )}
         {items.map((c, idx) => (
           <div key={c.id}>
             {idx > 0 && <Separator className="my-3" />}

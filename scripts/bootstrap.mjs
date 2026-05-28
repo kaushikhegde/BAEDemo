@@ -256,10 +256,18 @@ async function main() {
     const bundle = await readBundle(spec.file);
     let content = bundle.content;
     if (spec.key === "pm") {
+      // Replace BOTH the full UUID and the truncated prefix form (e.g. `f19feb64-`,
+      // `f19feb64-...`) that appears in prose. Prefix-only mentions confuse DL
+      // because the deployed file ends up with the new full ID in dispatch sections
+      // but stale prefix shorthand in the "## Your direct reports" descriptions.
+      const prefix = (uuid) => uuid.split("-")[0];
       content = content
         .split(OLD_IDS.ba).join(ids.ba)
         .split(OLD_IDS.ui).join(ids.ui)
-        .split(OLD_IDS.ux).join(ids.ux);
+        .split(OLD_IDS.ux).join(ids.ux)
+        .split(prefix(OLD_IDS.ba)).join(prefix(ids.ba))
+        .split(prefix(OLD_IDS.ui)).join(prefix(ids.ui))
+        .split(prefix(OLD_IDS.ux)).join(prefix(ids.ux));
     }
     await api("PUT", `/agents/${ids[spec.key]}/instructions-bundle/file`, {
       path: bundle.path || "AGENTS.md",
