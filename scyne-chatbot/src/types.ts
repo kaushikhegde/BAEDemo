@@ -40,7 +40,10 @@ export interface StatusSnapshot {
 
 export interface ArtifactStory {
   summary: string;
-  description: string;
+  // The BA writes Jira-payload shape; `description` may be a plain string OR an
+  // Atlassian Document Format doc ({type:"doc", content:[...]}). Renderer must
+  // handle both. See ArtifactsPreview.adfToText.
+  description: string | { type?: string; content?: any[]; [k: string]: any };
   labels: string[];
   meta: Record<string, any>;
 }

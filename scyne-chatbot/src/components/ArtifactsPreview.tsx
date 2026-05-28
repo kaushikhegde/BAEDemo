@@ -7,8 +7,35 @@ import { MiniMarkdown } from "./MiniMarkdown";
 import { cn } from "@/lib/utils";
 import type { Artifacts, ArtifactStory } from "../types";
 
+// The BA writes Jira-payload-shaped stories. `description` may be either a
+// plain string OR an Atlassian Document Format (ADF) document ({type:"doc",
+// content:[...]}). Flatten ADF to a markdown-ish string so the existing regex
+// + bullet parser still works. Bullets become `* text`, headings prefix `## `,
+// paragraphs separate with blank lines.
+function adfToText(node: any): string {
+  if (node == null) return "";
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) return node.map(adfToText).join("");
+  if (typeof node !== "object") return String(node);
+  const type = node.type;
+  const children = Array.isArray(node.content) ? node.content : [];
+  if (type === "text") return typeof node.text === "string" ? node.text : "";
+  if (type === "hardBreak") return "\n";
+  if (type === "paragraph") return adfToText(children) + "\n\n";
+  if (type === "heading") {
+    const lvl = Math.min(Math.max(Number(node.attrs?.level) || 1, 1), 6);
+    return "#".repeat(lvl) + " " + adfToText(children) + "\n\n";
+  }
+  if (type === "bulletList" || type === "orderedList") return adfToText(children);
+  if (type === "listItem") return "* " + adfToText(children).replace(/\n+$/, "") + "\n";
+  if (type === "codeBlock") return "```\n" + adfToText(children) + "\n```\n";
+  // doc + any unknown container — just recurse.
+  return adfToText(children);
+}
+
 function StoryCard({ s }: { s: ArtifactStory }) {
-  const desc = s.description || "";
+  const raw = s.description;
+  const desc = typeof raw === "string" ? raw : adfToText(raw);
   const acMatch = desc.match(/Acceptance Criteria.*?\n([\s\S]*)/i);
   const acText = acMatch ? acMatch[1] : "";
   const bullets = acText
