@@ -66,10 +66,11 @@ requirement-generator/                         workspace root (cwd for all agent
 ├── .mcp.json                                  project-scope MCP config (atlassian)
 ├── projects/<project>/<feature>/
 │   ├── requirements/
-│   │   ├── Policy/         (one or more .docx/.txt)
+│   │   ├── SOP/            (one or more .docx/.txt — SOP / policy docs)
 │   │   ├── Transcripts/    (one or more .docx/.txt/.md)
 │   │   ├── Notes/          (optional — additional notes)
-│   │   └── UI/             (one or more .png/.jpg mockups)
+│   │   ├── UI/             (one or more .png/.jpg mockups)
+│   │   └── templates/      (optional — per-project house-style templates; override examples/)
 │   ├── design/             (consumed by the Developer, NOT the BA)
 │   │   ├── style-guides/   (palette, typography, tokens, brand voice)
 │   │   └── example-screens/(visual reference)
@@ -80,7 +81,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │       ├── stories.md
 │       └── gaps.md
 ├── generated-apps/<project>-<feature>/        Developer writes the scaffolded React app here
-├── examples/               (gold-standard reference docs — house style for the BA)
+├── examples/               (gold-standard reference docs — house style for the BA; the FALLBACK when a project has no requirements/templates/)
 │   ├── gold-product-summary.pdf
 │   └── gold-story.doc
 ├── agent-instructions/     (per-agent AGENTS.md JSON payloads, pushed to Paperclip via API)
@@ -158,11 +159,11 @@ If you re-hire agents (new IDs), update:
 
 The `requirement-generator` skill (source: `./skills/requirement-generator/SKILL.md` in this repo, registered with Paperclip by the bootstrap) — the BA invokes it **by name** in Phase 1. It defines:
 
-- Input layout: `./projects/<project>/<feature>/requirements/{Policy,Transcripts,Notes,UI}/`.
+- Input layout: `./projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI}/`.
 - Output schema: 5 files in `./outputs/`.
 - House style: `<process_number> As a <role>, I want <action>, So that <outcome>.`, Australian English, declarative AC bullets (not Gherkin), persona format `Full Name (ABBR)`.
 - 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11.
-- Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc` — the BA matches these for house style.
+- Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc` — the BA matches these for house style. **Per-project override:** if `./projects/<project>/<feature>/requirements/templates/` contains files, the skill uses those as the canonical format (per artefact — Product Summary template and/or Jira story template) and falls back to `./examples/` for anything the templates folder doesn't cover. Absent/empty `templates/` → `./examples/` for everything (the default).
 
 To edit the skill: change `./skills/requirement-generator/SKILL.md` in this repo, then re-run the bootstrap so Paperclip re-registers the updated content.
 
@@ -286,7 +287,7 @@ curl -sS -X PUT \
 ### Add a new feature to a project
 
 ```bash
-mkdir -p projects/<project>/<feature>/requirements/{Policy,Transcripts,Notes,UI}
+mkdir -p projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI,templates}
 mkdir -p projects/<project>/<feature>/design/{style-guides,example-screens}
 mkdir -p projects/<project>/<feature>/outputs
 # Drop files into the four requirements subfolders

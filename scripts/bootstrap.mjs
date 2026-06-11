@@ -142,27 +142,59 @@ async function readBundle(file) {
   return parsed;
 }
 
+// Non-throwing API call: returns {ok, data} or {ok:false, error} so we can probe
+// candidate routes without aborting the bootstrap on the first 404/405.
+async function tryApi(method, p, body) {
+  try {
+    return { ok: true, data: await api(method, p, body) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// Refresh an already-registered skill in place so edits to SKILL.md propagate.
+// Paperclip's skill-update route isn't pinned across versions, so probe the
+// likely shapes (by slug, then by id) and stop at the first that the server
+// accepts. Never falls back to POST — that would risk a duplicate skill.
+async function refreshCompanySkill(companyId, slug, markdown, existing) {
+  const full = { name: slug, slug, markdown };
+  const candidates = [
+    ["PUT",   `/companies/${companyId}/skills/${slug}`, full],
+    ["PATCH", `/companies/${companyId}/skills/${slug}`, { markdown }],
+  ];
+  if (existing?.id) {
+    candidates.push(
+      ["PUT",   `/companies/${companyId}/skills/${existing.id}`, full],
+      ["PATCH", `/companies/${companyId}/skills/${existing.id}`, { markdown }],
+    );
+  }
+  for (const [method, p, b] of candidates) {
+    const res = await tryApi(method, p, b);
+    if (res.ok) return { updated: true, via: `${method} ${p}` };
+  }
+  return { updated: false };
+}
+
 // Agents are hired with `desiredSkills` (e.g. the BA needs `requirement-generator`).
 // Paperclip rejects the hire (422 "unknown references") unless that skill is a
 // registered company skill. The all-in-Docker image syncs skills from disk, but a
 // natively-installed (host) Paperclip has none — so we register them here from the
-// SKILL.md files shipped in this repo. Idempotent: skips any skill already present.
+// SKILL.md files shipped in this repo. Idempotent and convergent: a missing skill
+// is created; an existing one is refreshed in place so SKILL.md edits propagate on
+// every bootstrap (no manual re-register needed). If no update route is accepted,
+// we warn loudly rather than silently leaving stale content registered.
 async function ensureCompanySkills(companyId) {
   const needed = [...new Set(AGENTS.flatMap((a) => a.skills ?? []))];
   if (needed.length === 0) return;
 
   const existing = await api("GET", `/companies/${companyId}/skills`);
-  const have = new Set(
+  const bySlug = new Map(
     (Array.isArray(existing) ? existing : existing.items || existing.skills || [])
-      .map((s) => s.slug)
-      .filter(Boolean),
+      .filter((s) => s && s.slug)
+      .map((s) => [s.slug, s]),
   );
 
   for (const slug of needed) {
-    if (have.has(slug)) {
-      console.log(`[bootstrap] company skill '${slug}' already present`);
-      continue;
-    }
     const skillPath = path.join(SKILLS_DIR, slug, "SKILL.md");
     let markdown;
     try {
@@ -174,6 +206,22 @@ async function ensureCompanySkills(companyId) {
       );
       continue;
     }
+
+    const found = bySlug.get(slug);
+    if (found) {
+      const r = await refreshCompanySkill(companyId, slug, markdown, found);
+      if (r.updated) {
+        console.log(`[bootstrap] refreshed company skill '${slug}' (${r.via})`);
+      } else {
+        console.warn(
+          `[bootstrap] WARN: company skill '${slug}' exists but no update route was ` +
+          `accepted — the REGISTERED content is now STALE vs ${skillPath}. Update it ` +
+          `manually (or delete+recreate the skill) in Paperclip to pick up the edits.`,
+        );
+      }
+      continue;
+    }
+
     await api("POST", `/companies/${companyId}/skills`, { name: slug, slug, markdown });
     console.log(`[bootstrap] registered company skill '${slug}' from ${skillPath}`);
   }

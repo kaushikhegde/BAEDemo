@@ -1,10 +1,10 @@
 import path from "node:path";
 
-export type Subfolder = "policy" | "transcripts" | "notes" | "ui";
+export type Subfolder = "sop" | "transcripts" | "notes" | "ui";
 export type Hint = Subfolder | "audio" | undefined;
 
 const DISK_SUBFOLDER: Record<Subfolder, string> = {
-  policy: "Policy",
+  sop: "SOP",
   transcripts: "Transcripts",
   notes: "Notes",
   ui: "UI",
@@ -28,7 +28,7 @@ const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 const DOC_EXT = new Set([".docx", ".pdf", ".doc"]);
 const NOTE_EXT = new Set([".txt", ".md"]);
 
-const POLICY_HINT_RE = /(policy|spec|requirement|domain)/i;
+const SOP_HINT_RE = /(sop|policy|spec|requirement|domain)/i;
 const TRANSCRIPT_HINT_RE = /(transcript|meeting|call|interview)/i;
 const UI_HINT_RE = /(ui|screen|mock|wireframe|figma)/i;
 
@@ -38,7 +38,7 @@ const UI_HINT_RE = /(ui|screen|mock|wireframe|figma)/i;
  * Rules (deterministic, no LLM):
  *   - .png/.jpg/.jpeg/.gif/.webp           → ui/
  *   - .mp3/.wav/.m4a/.webm/.ogg/.flac      → audio (transcribe → transcripts/)
- *   - .docx/.pdf/.doc containing "policy"  → policy/
+ *   - .docx/.pdf/.doc containing "sop"     → sop/
  *   - .docx/.pdf/.doc containing
  *       "transcript"|"meeting"|"call"      → transcripts/
  *   - .docx/.pdf/.doc otherwise            → ambiguous (caller asks)
@@ -64,8 +64,8 @@ export function routeFile(originalName: string, hint?: Hint): RouteResult {
   }
 
   if (DOC_EXT.has(ext)) {
-    if (POLICY_HINT_RE.test(base)) {
-      return { subfolder: "policy", savedName: originalName, isAudio: false, ambiguous: false };
+    if (SOP_HINT_RE.test(base)) {
+      return { subfolder: "sop", savedName: originalName, isAudio: false, ambiguous: false };
     }
     if (TRANSCRIPT_HINT_RE.test(base)) {
       return { subfolder: "transcripts", savedName: originalName, isAudio: false, ambiguous: false };

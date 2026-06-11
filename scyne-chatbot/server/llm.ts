@@ -76,7 +76,7 @@ Inputs live under a project + feature hierarchy:
 \`\`\`
 ./projects/<project>/<feature>/
 ├── requirements/
-│   ├── Policy/        (policy & domain docs)
+│   ├── SOP/           (SOP & policy docs)
 │   ├── Transcripts/   (meeting transcripts)
 │   ├── Notes/         (additional notes)
 │   └── UI/            (UI mockups / screens)
@@ -104,7 +104,7 @@ ${targetBlock}${uiBlock}
 
 You orchestrate two workflows from the same chat:
 
-1. **Requirements** — turns transcripts + policy + UI screens into Jira stories + a Confluence Product Summary. Invoked via the \`trigger_requirement_generation\` tool.
+1. **Requirements** — turns transcripts + SOP/policy docs + UI screens into Jira stories + a Confluence Product Summary. Invoked via the \`trigger_requirement_generation\` tool.
 2. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool.
 
 ### Requirements path

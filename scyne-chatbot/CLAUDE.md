@@ -48,7 +48,7 @@ scyne-chatbot/
 └── src/                    (React frontend)
     ├── main.tsx            (entry)
     ├── App.tsx             (the only stateful component)
-    ├── api.ts              (typed fetch wrappers + recordingSocketUrl() for WS; upload helpers with hint types policy/transcripts/notes/ui)
+    ├── api.ts              (typed fetch wrappers + recordingSocketUrl() for WS; upload helpers with hint types sop/transcripts/notes/ui)
     ├── types.ts            (UIMessage, StatusSnapshot, ArtifactStory, etc.)
     ├── index.css           (Tailwind base + shadcn theme tokens)
     ├── lib/utils.ts        (cn() helper for shadcn)
@@ -77,7 +77,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | Method | Path                                | Purpose                                                                   |
 | ------ | ----------------------------------- | ------------------------------------------------------------------------- |
 | POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
-| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if Policy/Transcripts/UI are empty. |
+| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate as approved (Paperclip wakes the BA → Phase 2). |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
@@ -237,7 +237,7 @@ Edit `buildSystemPrompt` in `server/llm.ts`. Restart `dev:api` (or wait for tsx 
 ### Add a new project + feature
 On disk, in the workspace root:
 ```bash
-mkdir -p projects/<project>/<feature>/requirements/{Policy,Transcripts,Notes,UI}
+mkdir -p projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI,templates}
 mkdir -p projects/<project>/<feature>/design/{style-guides,example-screens}
 mkdir -p projects/<project>/<feature>/outputs
 ```

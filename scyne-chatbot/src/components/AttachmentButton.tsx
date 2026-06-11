@@ -42,9 +42,9 @@ const ZONES: Zone[] = [
     icon: <Mic className="size-5" />,
   },
   {
-    hint: "policy",
-    label: "Policy / spec",
-    blurb: "Policy & domain docs",
+    hint: "sop",
+    label: "SOP / policy",
+    blurb: "SOP & policy docs",
     accept: ".docx,.pdf,.doc,.txt,.md",
     icon: <FileText className="size-5" />,
   },

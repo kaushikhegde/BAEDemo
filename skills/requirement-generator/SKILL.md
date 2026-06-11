@@ -1,6 +1,6 @@
 ---
 name: requirement-generator
-description: Generate a Confluence Product Summary and Jira user stories from meeting transcripts, policy documents, and UI screens. Use when the user drops inputs into `inputs/` and asks to produce requirements, user stories, a product summary, or Jira tickets.
+description: Generate a Confluence Product Summary (with Mermaid process-flow diagrams) and Jira user stories from meeting transcripts, SOP/policy documents, and UI screens. Use when the user provides a project + feature and asks to produce requirements, user stories, a product summary, or Jira tickets.
 ---
 
 # Requirement Generator
@@ -20,15 +20,25 @@ When this document later refers to `outputs/extraction.json`, `outputs/product-s
 
 Read every file in `./projects/<project>/<feature>/requirements/` (the chatbot writes them here):
 - `Transcripts/transcript.*` — PO/BA/Dev meeting dialogue. **Primary source** of stories and acceptance criteria. Files may be `.docx`/`.pdf` (uploaded directly) or `.md` produced by the chatbot's voice agent — those start with a YAML front-matter block (`source: live-recording` or `audio-upload`) and use `**Speaker 1:** …` lines for diarised utterances. Treat each speaker as one participant; you don't need to map them to roles unless the content makes it obvious.
-- `Policy/policy.*` — domain/regulatory context. Use for the "Context" paragraph and assumptions, not stories.
+- `SOP/sop.*` — SOP / policy / domain & regulatory context (`.docx`/`.pdf`/`.md`). Use for the "Context" paragraph, constraints, and assumptions — **not** stories. Tag anything sourced here with its SOP filename so traceability is auditable.
 - `UI/ui-screen.*` (png/jpg) — wireframe or mockup. Reference by filename in UI/Screen Behaviour and attach to the relevant story.
 - `Notes/*` — supporting context (uploaded notes, additional docs). Fold in but don't treat as the primary source.
 
 The sibling `./projects/<project>/<feature>/design/` folder (style-guides, example-screens) is read by the downstream **UI agent**, not this skill — ignore it here.
 
-Read every file in `./examples/`:
-- `gold-product-summary.pdf` — the canonical Product Summary format. Match it section-for-section.
-- `gold-story.doc` — the canonical Jira story format. Match summary line, description structure, AC bullet style.
+## House-style reference (per-project templates, with fallback)
+
+Resolve the canonical format references **per artefact**, in this order:
+
+1. **Project templates (preferred).** If `./projects/<project>/<feature>/requirements/templates/` exists and contains files, use them as the house-style reference. Read every file and match it to the artefact it represents by its name/content:
+   - a **Product Summary** template (e.g. name contains `summary`/`product`, any `.md`/`.pdf`/`.docx`) → mirror it section-for-section for `product-summary.md`.
+   - a **Jira story** template (e.g. name contains `story`/`jira`/`ticket`) → match its summary line, description structure, and AC bullet style for `stories.*`.
+   If the folder has files but the role of one is unclear, use your best judgement and treat it as a general format reference.
+2. **Fallback to `./examples/`** for any artefact the project templates folder does **not** cover:
+   - `gold-product-summary.pdf` — the canonical Product Summary format. Match it section-for-section.
+   - `gold-story.doc` — the canonical Jira story format. Match summary line, description structure, AC bullet style.
+
+If `templates/` is absent or empty, use `./examples/` for everything (the default). Whichever you use, **note in `outputs/gaps.md` which reference drove each artefact** (project template vs example), so house-style provenance is auditable.
 
 ## Required parameters (ask if missing)
 
@@ -68,7 +78,7 @@ Use this exact 11-section structure. Confluence-flavored markdown.
 Section 1: Product Summary Overview (Context, Objectives, Assumptions, Out of Scope)
 Section 2: User Personas (table: Persona | Permission Set Groups | Permission Set | Sharing Rules)
 Section 3.1: Business Requirements (table: Process L3 | Subprocess L4 | User Story | Acceptance Criteria)
-Section 3.2: Business Flow ("Business flow diagram unavailable." + narrative line)
+Section 3.2: Business Flow — render the end-to-end process(es) as one or more **Mermaid** diagrams (see "Process flow diagrams (Mermaid)" below), each source-tagged. Only if the inputs genuinely describe no sequential/branching process, fall back to "Business flow diagram unavailable." + a one-line narrative.
 Section 3.3.1: Data Model → preserve placeholder verbatim
 Section 3.3.2: Data Migration (N/A row if nothing in inputs)
 Section 3.4: Validation (table)
@@ -79,6 +89,29 @@ Section 5.1: User Journey (table: Step | Actor | Description | System Behaviour)
 Section 5.2: UI / Screen Behaviour (table: Screen | Component | Description | Acceptance Criteria | Notes)
 Section 6: Test Cases (table: Test Case | Scenario | Steps | Expected Result)
 Section 7-11: preserve placeholder verbatim
+
+#### Process flow diagrams (Mermaid)
+
+Any process or workflow in the inputs that has **sequential steps or branching/decision logic** must be captured as a **Mermaid** diagram in Section 3.2 (Business Flow) — not just prose. Typical candidates: an end-to-end claim/assessment lifecycle, an approval/review workflow, routing logic, or a state transition.
+
+Rules:
+
+- Author each diagram inside a fenced ` ```mermaid ` code block. This is the maintainable source and renders natively in GitHub and the VS Code markdown preview.
+- Use `flowchart TD` for processes, `stateDiagram-v2` for state machines, `sequenceDiagram` for multi-party interactions over time.
+- Show **decision points** as `{ ... }` nodes and put **timeframes / SLAs** inline in the node label (e.g. `6-week SLA starts`).
+- **Tag every diagram with its source** the same way requirements are tagged (e.g. `Source: Transcripts/kickoff.md, SOP/accreditation.md`).
+- Keep node labels free of unescaped `()`; use `<br/>` for line breaks.
+- Do **not** invent steps — only diagram flows stated in the transcript or SOP. If a flow is only partly described, diagram what is known and note the gap in `outputs/gaps.md`.
+- **Leave the Mermaid as inline source** — do **not** pre-render it to an image here. The push step (BA Phase 2) renders each diagram to an image when it creates the Confluence page; the `.md` keeps the Mermaid block as the source of truth.
+
+Example:
+
+```mermaid
+flowchart TD
+    A[Request received] --> B{Approved?}
+    B -- Yes --> C[Proceed]
+    B -- No --> D[Return to requestor]
+```
 
 ### B. Stories (`outputs/stories.json`)
 
@@ -118,6 +151,7 @@ Same content as stories.json but rendered as a readable markdown checklist for B
 - Australian English spelling (Behaviour, Authorise, Organisation).
 - Preserve the **exact** placeholder string `Placeholder – Maintained manually. Do not populate via automation.` in sections 3.3.1, 7, 8, 10, 11. Section 9 ("Links") is **not** a placeholder — see the push step below.
 - If a section has no content, use a single-row table with N/A values and a Notes column explaining why.
+- Every process/workflow with steps or branching is captured as a source-tagged Mermaid diagram in Section 3.2 (Business Flow) — diagram only what the inputs state, never invent steps.
 - Never invent: if the transcript doesn't say it, don't claim it. Flag gaps in `outputs/gaps.md`.
 
 ## After rendering
@@ -138,6 +172,8 @@ This phase runs only when the user issues an explicit "push to Jira/Confluence" 
 ### Step 2 — Create Confluence page first
 
 Create the Product Summary page, capture its URL. This URL must exist before any Jira story is created so `{{PRODUCT_SUMMARY_URL}}` can be substituted.
+
+**Render Mermaid diagrams to images here.** Confluence does **not** render Mermaid natively — a raw fenced `mermaid` block sent as storage/ADF shows up as plain code text. For each Mermaid block in `product-summary.md` (Section 3.2): render the source to an image **locally** (SVG preferred, PNG fallback — use the Mermaid CLI `mmdc`, e.g. `npx -y @mermaid-js/mermaid-cli`; do not POST diagram content to a remote rendering service), attach it to the page, and embed it with `<ac:image>` (caption matching the diagram heading). Keep the Mermaid source in the `.md` as the source of truth. If local rendering is genuinely unavailable, fall back — in order — to (a) a Marketplace Mermaid macro if the instance has one installed, else (b) the Mermaid source inside a code macro (noting it is not rendered).
 
 ### Step 3 — Create Jira stories
 

@@ -77,7 +77,7 @@ app.post("/api/trigger", async (req, res) => {
     };
     const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
 
-    // Pre-flight: the BA needs at least one file in Policy, Transcripts and UI
+    // Pre-flight: the BA needs at least one file in SOP, Transcripts and UI
     // (Notes is optional — mirrors the BA's own validation). Block + tell the user
     // exactly what's missing rather than firing a run that the BA will just block.
     const reqRoot = path.join(ws, "projects", project, feature, "requirements");
@@ -87,7 +87,7 @@ app.post("/api/trigger", async (req, res) => {
         return entries.filter((e) => e.isFile() && !e.name.startsWith(".")).length;
       } catch { return 0; }
     };
-    const required = ["Policy", "Transcripts", "UI"];
+    const required = ["SOP", "Transcripts", "UI"];
     const counts = await Promise.all(required.map(countFiles));
     const emptyFolders = required.filter((_, i) => counts[i] === 0);
     if (emptyFolders.length > 0) {
@@ -137,7 +137,7 @@ app.post("/api/trigger", async (req, res) => {
       `Read every file in every subfolder of:`,
       `\`${ws}/projects/${project}/${feature}/requirements/\``,
       ``,
-      `Subfolders: Policy/, Transcripts/, Notes/, UI/.`,
+      `Subfolders: SOP/, Transcripts/, Notes/, UI/.`,
     ].join("\n");
 
     const issue = await paperclip.createIssue(
@@ -665,7 +665,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     if (route.ambiguous && !hint) {
       return res.status(409).json({
         error: "ambiguous_kind",
-        message: `Couldn't infer where ${req.file.originalname} belongs. Hint with one of: policy, transcripts, notes.`,
+        message: `Couldn't infer where ${req.file.originalname} belongs. Hint with one of: sop, transcripts, notes.`,
         originalName: req.file.originalname,
       });
     }
@@ -723,10 +723,11 @@ app.post("/api/projects", async (req, res) => {
 
     const base = path.join(WORKSPACE_PATH, "projects", project, feature);
     const dirs = [
-      path.join(base, "requirements", "Policy"),
+      path.join(base, "requirements", "SOP"),
       path.join(base, "requirements", "Transcripts"),
       path.join(base, "requirements", "Notes"),
       path.join(base, "requirements", "UI"),
+      path.join(base, "requirements", "templates"),
       path.join(base, "design", "style-guides"),
       path.join(base, "design", "example-screens"),
       path.join(base, "outputs"),
