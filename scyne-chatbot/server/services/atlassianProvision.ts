@@ -132,7 +132,10 @@ async function ensureConfluenceSpace(ep: Endpoints, key: string, name: string): 
 export type EnsureResult = { skipped?: boolean; reason?: string; jira?: One; confluence?: One };
 
 export async function ensureAtlassianTargets(opts: {
-  jiraKey: string; jiraName: string; confluenceKey: string; confluenceName: string;
+  // jiraKey is optional: the requirements flow ensures both targets, while the
+  // Confluence-only downstream stages (data model, solution design) pass no
+  // Jira key and only the space is ensured.
+  jiraKey?: string; jiraName?: string; confluenceKey: string; confluenceName: string;
 }): Promise<EnsureResult> {
   let ep: Endpoints | null;
   try {
@@ -146,7 +149,9 @@ export async function ensureAtlassianTargets(opts: {
 
   // Run sequentially so a clear create-failure surfaces first. Create failures throw
   // (→ approval blocked with an actionable message); lookups failing soft-skip.
-  const jira = await ensureJiraProject(ep, opts.jiraKey, opts.jiraName);
+  const jira = opts.jiraKey
+    ? await ensureJiraProject(ep, opts.jiraKey, opts.jiraName || opts.jiraKey)
+    : undefined;
   const confluence = await ensureConfluenceSpace(ep, opts.confluenceKey, opts.confluenceName);
   return { jira, confluence };
 }

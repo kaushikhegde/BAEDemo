@@ -52,6 +52,10 @@ export interface Artifacts {
   stories: ArtifactStory[];
   storiesMd: string | null;
   gaps: string | null;
+  // Downstream pipeline outputs (data model impact, solution design). Present
+  // only once those stages have run; the preview shows a tab for each when set.
+  dataModel: string | null;
+  solutionDesign: string | null;
 }
 
 // Live Transcript types ------------------------------------------------------

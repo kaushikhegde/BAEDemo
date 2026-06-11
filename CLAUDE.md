@@ -4,24 +4,36 @@ This document is the orientation guide for anyone (Claude included) working on t
 
 ## What this project is
 
-A local end-to-end workflow that takes raw discovery artefacts for a single feature (meeting transcripts, policy docs, UI screens, optional notes) and produces:
+A local end-to-end workflow that takes raw discovery artefacts for a single feature (meeting transcripts, SOP/policy docs, UI screens, optional notes) and produces:
 
 1. A **Confluence-ready Product Summary** (11-section markdown).
 2. A set of **Jira-ready user stories** (Atlassian Cloud REST v3 payloads).
-3. A **working Vite + React + shadcn/ui app** scaffolded from the Product Summary, with WCAG 2.0 AA auto-fixes applied.
+3. A **Salesforce Data Model Impact analysis** (objects, custom fields, Mermaid ER diagram), published to its own Confluence page.
+4. A **Salesforce Solution Design Document** (declarative-first component design, Mermaid flow diagram), published to its own Confluence page.
+5. A **working Vite + React + shadcn/ui app** scaffolded from the Product Summary, with WCAG 2.0 AA auto-fixes applied.
 
-The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs four agents on the local machine via Claude Code. The **Delivery Lead** is the single orchestrator: it delegates requirements to the **BA**, and drives the **Developer** then the **UX Auditor** directly (all three report to the Delivery Lead).
+Deliverables 1→3→4 form a **sequential, human-gated pipeline** (requirements → data model → solution design); each stage needs the previous stage's approved output. Deliverable 5 (the UI app) is a parallel branch off the Product Summary.
 
-## The four-agent flow
+The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs the Scyne agent org on the local machine via Claude Code. The **Delivery Lead** is the single orchestrator: it routes each request by title prefix to the owning worker — **BA** (requirements), **Data Modeler** (data model), **Architecture Lead** (solution design), and **Developer** → **UX Auditor** (UI build). Every worker raises its own human approval gate; the data-model/solution-design/requirements stages then publish to Atlassian themselves. The Data Modeler reports to the Architecture Lead on the org chart; the Architecture Lead, BA, Developer and UX Auditor all sit under the Delivery Lead's dispatch.
+
+> **Mermaid → PNG for Confluence:** all Mermaid diagrams (Product Summary flow, data model ER, solution-design flow) are rendered to **PNG** locally via `npx -y @mermaid-js/mermaid-cli` and embedded with `<ac:image>` before publishing. PNG (not SVG) is used deliberately — Confluence renders PNG inline reliably, whereas SVG attachments often show only as a download link.
+
+## The agent flow
 
 ```
 chatbot UI
-   │  POST /api/trigger   (creates a Paperclip issue, status=todo)
+   │  POST /api/trigger            → "Generate requirements — …"
+   │  POST /api/data-model/trigger → "Generate data model — …"
+   │  POST /api/solution-design/trigger → "Generate solution design — …"
+   │  POST /api/ui-agent/trigger   → "Build UI — …"
+   │  (each creates a top-level Paperclip issue, status=todo, assigned to the Delivery Lead)
    ▼
-Delivery Lead — orchestrates all three reports
+Delivery Lead — routes by title prefix to the owning worker
    ├─ classifies issue intent by title prefix:
-   │    "Generate requirements — …"  → REQUIREMENTS flow → BA
-   │    "Build UI — …"               → UI flow → Delivery Lead drives Developer, then UX Auditor
+   │    "Generate requirements — …"     → REQUIREMENTS flow → BA
+   │    "Generate data model — …"       → DATA MODEL flow → Data Modeler
+   │    "Generate solution design — …"  → SOLUTION DESIGN flow → Architecture Lead
+   │    "Build UI — …"                  → UI flow → Delivery Lead drives Developer, then UX Auditor
    │
    ├─ REQUIREMENTS flow: creates a child issue assigned to the BA (status=todo)
    │     ▼
@@ -31,6 +43,24 @@ Delivery Lead — orchestrates all three reports
    │      │          attaches them as work-products, raises an approval gate
    │      └─ PHASE 2 (after human approves): uses the `atlassian` MCP to
    │                 create the Confluence page + Jira stories
+   │
+   ├─ DATA MODEL flow (needs product-summary.md): child issue assigned to the Data Modeler (status=todo)
+   │     ▼
+   │   Data Modeler — two phases
+   │      ├─ PHASE 1: reads outputs/product-summary.md + datamodel-reference/ (static PSS catalogue)
+   │      │          runs the `datamodel-impact-analysis` skill → outputs/datamodel-impact.md
+   │      │          attaches it, raises an approval gate
+   │      └─ PHASE 2 (after human approves): renders the Mermaid ER diagram → PNG,
+   │                 creates a STANDALONE Confluence page "<feature> — Data Model Impact"
+   │
+   ├─ SOLUTION DESIGN flow (needs datamodel-impact.md): child issue assigned to the Architecture Lead (status=todo)
+   │     ▼
+   │   Architecture Lead — two phases
+   │      ├─ PHASE 1: reads outputs/product-summary.md + outputs/datamodel-impact.md
+   │      │          runs the `solution-design-document` skill → outputs/solution-design.md
+   │      │          attaches it, raises an approval gate
+   │      └─ PHASE 2 (after human approves): renders the Mermaid flow diagram → PNG,
+   │                 creates a STANDALONE Confluence page "<feature> — Solution Design"
    │
    └─ UI flow: Delivery Lead dispatches the Developer and UX Auditor directly, as
               SIBLINGS under the Build UI issue (not a chain). The Delivery Lead is re-woken
@@ -74,19 +104,28 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── design/             (consumed by the Developer, NOT the BA)
 │   │   ├── style-guides/   (palette, typography, tokens, brand voice)
 │   │   └── example-screens/(visual reference)
-│   └── outputs/            (BA writes here; Developer reads from here)
+│   └── outputs/            (BA writes here; Data Modeler / Architecture Lead / Developer read + write here)
 │       ├── extraction.json
-│       ├── product-summary.md
+│       ├── product-summary.md       (BA)
 │       ├── stories.json
 │       ├── stories.md
-│       └── gaps.md
+│       ├── gaps.md
+│       ├── datamodel-impact.md      (Data Modeler — fixed name, ER diagram inline)
+│       └── solution-design.md       (Architecture Lead — fixed name, flow diagram inline)
+├── datamodel-reference/    (STATIC global Salesforce PSS / Social-Insurance object catalogue — the Data Modeler's reference input; per-project override at projects/<p>/<f>/datamodel-reference/ if present)
+├── skills/                 (registered company skills — source of truth, registered with Paperclip by the bootstrap)
+│   ├── requirement-generator/SKILL.md
+│   ├── datamodel-impact-analysis/SKILL.md
+│   └── solution-design-document/SKILL.md
 ├── generated-apps/<project>-<feature>/        Developer writes the scaffolded React app here
 ├── examples/               (gold-standard reference docs — house style for the BA; the FALLBACK when a project has no requirements/templates/)
 │   ├── gold-product-summary.pdf
 │   └── gold-story.doc
 ├── agent-instructions/     (per-agent AGENTS.md JSON payloads, pushed to Paperclip via API)
-│   ├── pm.json
+│   ├── pm.json             (Delivery Lead)
 │   ├── ba.json
+│   ├── data-modeler.json
+│   ├── architect-lead.json
 │   ├── ui.json
 │   └── ux-auditor.json
 ├── scyne-chatbot/          (the React + Vite + Express chatbot — see its own README.md)
@@ -105,23 +144,21 @@ requirement-generator/                         workspace root (cwd for all agent
 
 ## IDs and configuration
 
-All IDs live in `scyne-chatbot/.env`. The two below are the source of truth for local dev:
+**The live agent IDs are written to `.bootstrap/ids.json` by `npm run bootstrap`** (the chatbot reads `companyId` + `deliveryLeadAgentId` from there; the full `org` map exposes every role by spec key). The values below are the *placeholder* IDs baked into `agent-instructions/pm.json` — the bootstrap string-replaces them with the freshly-hired IDs before pushing the Delivery Lead's bundle, so they never need to be the real IDs by hand:
 
-| Field                 | Value                                                          |
+| Field                 | Placeholder in pm.json (swapped at bootstrap)                  |
 | --------------------- | -------------------------------------------------------------- |
 | Company               | `2131f183-3822-4eee-9370-4b5cafae7e29` (`Scyne`)                |
-| Delivery Lead  | `212a6542-4e49-41dc-94f0-7d7acbc460ba`                          |
+| Delivery Lead  | resolved at bootstrap (`org.pm` in `.bootstrap/ids.json`)             |
 | BA | `7561c779-5c3f-4e3a-9dc2-0f13eb1851ec`                          |
-| Developer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (reports to the Delivery Lead)          |
-| UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (reports to the Delivery Lead)          |
+| Data Modeler | `ddddddd1-dddd-4ddd-8ddd-dddddddddddd` (reports to the Architecture Lead) |
+| Architecture Lead | `aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa` (reports to the Delivery Lead) |
+| Developer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (dispatched by the Delivery Lead)          |
+| UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (dispatched by the Delivery Lead)          |
 
-All four agents report to the Delivery Lead (the Developer and UX Auditor were moved off the BA). The Delivery Lead dispatches the Developer and UX Auditor directly as siblings under the Build UI issue; the BA owns requirements only.
+The Delivery Lead dispatches all five workers (one child issue each, routed by title prefix). Org-chart reporting: BA → Business Lead; Data Modeler → Architecture Lead; Architecture Lead, Developer, UX Auditor, UX Designer → Architecture Lead/Delivery Lead per `scripts/bootstrap.mjs`. The human approval gate between stages is what QAs each output — not the leads. The new placeholder IDs (`ddddddd1-…`, `aaaaaaa1-…`) are added to `OLD_IDS` in `scripts/bootstrap.mjs` and swapped exactly like the BA/Developer/UX placeholders.
 
-If you re-hire agents (new IDs), update:
-1. `scyne-chatbot/.env` (`PAPERCLIP_COMPANY_ID`, `PAPERCLIP_DELIVERY_LEAD_AGENT_ID`).
-2. `agent-instructions/pm.json` (BA, Developer, and UX Auditor ids are all baked into Delivery Lead's instructions — it dispatches all three).
-3. Set each new agent's `reportsTo` to the Delivery Lead id via `PATCH /api/agents/:id` (body `{"reportsTo":"<Delivery Lead id>"}`).
-4. Push the updated JSON files via `PUT /api/agents/:id/instructions-bundle/file`.
+In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everything, swaps the placeholder IDs in `pm.json`, and writes `.bootstrap/ids.json`. If you change the placeholder UUIDs themselves (the values in `OLD_IDS` in `scripts/bootstrap.mjs` must match the ones written in `agent-instructions/pm.json`), keep both in sync. The Delivery Lead dispatches the BA, Data Modeler, Architecture Lead, Developer, and UX Auditor — all five placeholder IDs are baked into `pm.json` and swapped at bootstrap.
 
 ## Paperclip (the orchestrator)
 
@@ -155,17 +192,24 @@ If you re-hire agents (new IDs), update:
 - **Heartbeats stay disabled per agent** (`runtimeConfig.heartbeat.enabled = false`). We wake agents via status transitions and `POST /agents/:id/wakeup` — not via a background polling loop. The server-side heartbeat service picks up queued runs within ~30s.
 - **Force a fresh Claude session** with `{"forceFreshSession": true}` in the wakeup body if an agent is stuck on a stale conclusion from a previous run.
 
-## The Skill
+## The Skills
 
-The `requirement-generator` skill (source: `./skills/requirement-generator/SKILL.md` in this repo, registered with Paperclip by the bootstrap) — the BA invokes it **by name** in Phase 1. It defines:
+Three registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
 
+**`requirement-generator`** (the BA, Phase 1):
 - Input layout: `./projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI}/`.
-- Output schema: 5 files in `./outputs/`.
+- Output schema: 5 files in the project-scoped `outputs/`.
 - House style: `<process_number> As a <role>, I want <action>, So that <outcome>.`, Australian English, declarative AC bullets (not Gherkin), persona format `Full Name (ABBR)`.
-- 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11.
-- Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc` — the BA matches these for house style. **Per-project override:** if `./projects/<project>/<feature>/requirements/templates/` contains files, the skill uses those as the canonical format (per artefact — Product Summary template and/or Jira story template) and falls back to `./examples/` for anything the templates folder doesn't cover. Absent/empty `templates/` → `./examples/` for everything (the default).
+- 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11. (Section 3.3.1 Data Model stays a manual placeholder — the Data Modeler publishes its analysis to a *separate* Confluence page, it does not fill 3.3.1.)
+- Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc`. **Per-project override:** files in `./projects/<project>/<feature>/requirements/templates/` take precedence per artefact; `./examples/` is the fallback.
 
-To edit the skill: change `./skills/requirement-generator/SKILL.md` in this repo, then re-run the bootstrap so Paperclip re-registers the updated content.
+**`datamodel-impact-analysis`** (the Data Modeler, Phase 1):
+- Inputs: `./projects/<project>/<feature>/outputs/product-summary.md` (approved) + `./datamodel-reference/` (static PSS catalogue; per-project override supported).
+- Output: `./projects/<project>/<feature>/outputs/datamodel-impact.md` (fixed name) — impact table, custom-field detail, standard-first decision hierarchy, and a Mermaid `erDiagram`.
+
+**`solution-design-document`** (the Architecture Lead, Phase 1):
+- Inputs: `./projects/<project>/<feature>/outputs/product-summary.md` (approved) + `./outputs/datamodel-impact.md` (approved).
+- Output: `./projects/<project>/<feature>/outputs/solution-design.md` (fixed name) — declarative-first (OOB → low-code → code) component design and a Mermaid `flowchart`.
 
 ## The chatbot (`scyne-chatbot/`)
 
@@ -187,15 +231,17 @@ open http://127.0.0.1:5173
 | Method | Path                              | Purpose                                                                   |
 | ------ | --------------------------------- | ------------------------------------------------------------------------- |
 | POST   | `/api/chat`                       | Proxies the chat conversation to Gemini, returns Anthropic-shaped blocks  |
-| POST   | `/api/trigger`                    | Creates the Paperclip parent issue (status=todo, assigned to the Delivery Lead)          |
-| GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links    |
-| POST   | `/api/approve/:approvalId`        | Resolves an approval gate as approved                                     |
+| POST   | `/api/trigger`                    | Creates the requirements issue (`Generate requirements — …`, status=todo, assigned to the Delivery Lead) |
+| POST   | `/api/data-model/trigger`         | Creates a `Generate data model — …` issue. Gated: `409 no_product_summary` if `outputs/product-summary.md` is missing |
+| POST   | `/api/solution-design/trigger`    | Creates a `Generate solution design — …` issue. Gated: `409 no_data_model` if `outputs/datamodel-impact.md` is missing |
+| GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links. Stage labels adapt to the flow (BA / Data Modeler / Architecture Lead / Developer) |
+| POST   | `/api/approve/:approvalId`        | Resolves an approval gate; wakes the gate's own issue assignee. Atlassian auto-provisioning is keyed on the keys in the issue description: requirements ensures Jira project + Confluence space; data-model/solution-design ensure just the space; Build UI carries no keys → skipped |
 | POST   | `/api/reject/:approvalId`         | Rejects an approval gate                                                  |
-| POST   | `/api/request-changes/:approvalId`| Reviewer feedback → marks the gate `revision_requested`, comments the feedback, re-fires the BA (issue → `todo`) to regenerate |
-| GET    | `/api/history`                    | All completed requirements runs with their Confluence + Jira links (History view) |
+| POST   | `/api/request-changes/:approvalId`| Reviewer feedback → comments it, re-fires the gate's assignee (issue → `todo`) to regenerate — works for any worker, not just the BA |
+| GET    | `/api/history`                    | All completed pipeline runs (requirements, data model, solution design) with their Confluence + Jira links (History view) |
 | GET    | `/api/runs/:issueId`              | Compact agent run summaries (agent · status · duration) for the run tree (Activity panel) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
-| GET    | `/api/artifacts`                  | Reads `outputs/*` from disk for the approval-card preview                 |
+| GET    | `/api/artifacts`                  | Reads `outputs/*` (incl. `datamodel-impact.md`, `solution-design.md`) for the approval-card preview |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |
 | POST   | `/api/ui-agent/trigger`           | Triggers the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead)     |
 | GET    | `/api/preview/:project/:feature`  | Returns preview URL for the scaffolded app                                |
@@ -213,11 +259,15 @@ The bot follows this discovery pattern:
 4. When user picks a feature — confirm and ask to proceed.
 5. When user confirms (any natural phrasing) — call `trigger_requirement_generation` with `{project, feature, ...}`.
 
-The LLM has three tools available:
+The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for the live UI build):
 
 - `set_target` — sets the chosen `{project, feature}` scope without firing anything. Lets the user pin a target before they're ready to run.
 - `trigger_requirement_generation` — fires the requirements flow. Defaults from `.env` fill in everything except `project` and `feature`.
+- `trigger_data_model` — fires the data model flow (`Generate data model — …`). Backend gates on `product-summary.md`; the bot offers to run requirements first if it's missing.
+- `trigger_solution_design` — fires the solution design flow (`Generate solution design — …`). Backend gates on `datamodel-impact.md`; the bot offers to run the data model first if it's missing.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
+
+The system prompt teaches the dependency chain (requirements → data model → solution design) so the bot proactively explains and offers the missing prerequisite rather than firing a stage that would just block.
 
 ### Frontend layout
 
@@ -245,7 +295,7 @@ These mean a user can simply say "process SADA / interim-benefit" without specif
 
 **Per-project push targets (not fixed to SADA):** `/api/trigger` defaults the **Jira project key** and **Confluence space key** to the *project name* (e.g. project `RTWSA` → keys `RTWSA`), not the `.env` SADA values. The `.env` `DEFAULT_JIRA_PROJECT_KEY` / `DEFAULT_PARENT_EPIC_KEY` / `DEFAULT_CONFLUENCE_PAGE_TITLE` only apply when the chosen project equals `DEFAULT_JIRA_PROJECT_KEY` (the SADA demo); for any other project the parent epic is omitted and the page title defaults to the feature name. The BA's Phase 2 **verifies the Jira project + Confluence space exist** (`getVisibleJiraProjects` / `getConfluenceSpaces`) and blocks with a clear message if not — it cannot create projects/spaces (the Atlassian MCP has no such tool). The Delivery Lead keeps the parent `Generate requirements` issue `in_progress` while the BA runs (it does **not** mark it `blocked`).
 
-**Auto-provisioning (no client setup by default):** at the **approval** step, `/api/approve` reads the Jira/Confluence keys from the parent issue description and calls `server/services/atlassianProvision.ts` (`ensureAtlassianTargets`) to create the missing Jira project + Confluence space via the Atlassian **REST** API (not the MCP) before resolving the gate. Auth reuses the **OAuth login the client already did for the MCP** (token cached in `~/.mcp-auth/`, used as a Bearer against `api.atlassian.com` 3LO) — no API token needed. An explicit API token (`ATLASSIAN_SITE_URL`+`ATLASSIAN_EMAIL`+`ATLASSIAN_API_TOKEN`) takes priority if set (Basic auth), useful when the MCP grant lacks create scope. **Soft-fail policy:** auth/lookup problems → skip provisioning and let the BA verify-and-block (so a stale token never blocks an approval where the target already exists); only a definitive *missing-target + create-rejected* throws `502 provision_failed` and holds the gate. Jira projects are created team-managed Kanban by default (`ATLASSIAN_JIRA_TEMPLATE_KEY`/`ATLASSIAN_JIRA_PROJECT_TYPE` override).
+**Auto-provisioning (no client setup by default):** at the **approval** step, `/api/approve` reads the Jira/Confluence keys from the parent issue description and calls `server/services/atlassianProvision.ts` (`ensureAtlassianTargets`) to create the missing targets via the Atlassian **REST** API (not the MCP) before resolving the gate — both Jira project + Confluence space for the requirements flow, just the space for the Confluence-only data-model/solution-design flows (whose descriptions carry no Jira key). Auth reuses the **OAuth login the client already did for the MCP** (token cached in `~/.mcp-auth/`, used as a Bearer against `api.atlassian.com` 3LO) — no API token needed. An explicit API token (`ATLASSIAN_SITE_URL`+`ATLASSIAN_EMAIL`+`ATLASSIAN_API_TOKEN`) takes priority if set (Basic auth), useful when the MCP grant lacks create scope. **Soft-fail policy:** auth/lookup problems → skip provisioning and let the BA verify-and-block (so a stale token never blocks an approval where the target already exists); only a definitive *missing-target + create-rejected* throws `502 provision_failed` and holds the gate. Jira projects are created team-managed Kanban by default (`ATLASSIAN_JIRA_TEMPLATE_KEY`/`ATLASSIAN_JIRA_PROJECT_TYPE` override).
 
 ## The Atlassian MCP
 
@@ -270,19 +320,20 @@ OAuth tokens for `mcp-remote` are cached in `~/.mcp-auth/` at user scope. The sa
 
 ### Re-apply agent instructions after editing them
 
+The simplest path is to **re-run `npm run bootstrap`** — it re-pushes every bundle (and swaps the pm.json placeholder IDs). For a single agent, PUT its bundle directly using the **live** id from `.bootstrap/ids.json` (`org.<key>`):
+
 ```bash
+# Look up live ids first
+cat .bootstrap/ids.json | jq '.org'
+
+# Then push one bundle (substitute the live id for the agent's org key)
 curl -sS -X PUT \
-  http://127.0.0.1:3100/api/agents/212a6542-4e49-41dc-94f0-7d7acbc460ba/instructions-bundle/file \
+  http://127.0.0.1:3100/api/agents/<live-id>/instructions-bundle/file \
   -H "Content-Type: application/json" \
   -d @agent-instructions/pm.json
-
-curl -sS -X PUT \
-  http://127.0.0.1:3100/api/agents/7561c779-5c3f-4e3a-9dc2-0f13eb1851ec/instructions-bundle/file \
-  -H "Content-Type: application/json" \
-  -d @agent-instructions/ba.json
 ```
 
-(Repeat for `ui.json` and `ux-auditor.json` with their respective agent IDs.)
+Bundles: `pm.json` (org.pm / Delivery Lead), `ba.json` (org.ba), `data-modeler.json` (org.dataModeler), `architect-lead.json` (org.archLead), `ui.json` (org.ui), `ux-auditor.json` (org.ux). Note `pm.json` must have its placeholder IDs swapped for the real report IDs before pushing — the bootstrap does this automatically, so prefer re-running it when pm.json changes.
 
 ### Add a new feature to a project
 

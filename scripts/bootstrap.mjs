@@ -5,7 +5,7 @@
 //   1. waits for the Paperclip API,
 //   2. finds or creates the `Scyne` company,
 //   3. disables board approval for new hires (so agents fire automatically),
-//   4. provisions the 19-agent Scyne org (CEO → Delivery Lead/Bid Manager → …)
+//   4. provisions the 20-agent Scyne org (CEO → Delivery Lead/Bid Manager → …)
 //      — hires anything missing by name, PATCHes everything back to spec
 //      (title, icon, reportsTo, adapterConfig) on every run,
 //   5. rewrites the Delivery Lead's instructions with the freshly-hired report IDs,
@@ -48,13 +48,18 @@ const HEALTH_DEADLINE_MS = 120_000;
 
 // Old report UUIDs hard-coded inside agent-instructions/pm.json. We string-
 // replace these with the real hired IDs before pushing the Delivery Lead's bundle.
+// archLead/dataModeler use obviously-fake placeholder UUIDs (distinct first
+// segments so the prefix-replace below can't collide) that the Delivery Lead
+// dispatches by — bootstrap swaps them for the real hired IDs.
 const OLD_IDS = {
   ba: "7561c779-5c3f-4e3a-9dc2-0f13eb1851ec",
   ui: "f19feb64-3ccd-42b2-b0b7-f9dfe7273a94",
   ux: "43a9e518-99c5-4916-8b91-3ff89e0c00ba",
+  archLead: "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  dataModeler: "ddddddd1-dddd-4ddd-8ddd-dddddddddddd",
 };
 
-// The 19-agent Scyne org. `key` is the in-script identifier (also exposed under
+// The 20-agent Scyne org. `key` is the in-script identifier (also exposed under
 // ids.json's `org` map); `name` is the Paperclip display name and the lookup
 // key for "does this agent already exist?". `title` / `icon` / `reportsToKey`
 // are applied via PATCH on every run so re-titling, icon swaps, and re-parenting
@@ -69,12 +74,13 @@ const AGENTS = [
   { key: "ceo",              name: "CEO",                       title: "Chief Executive",         icon: "crown",          reportsToKey: null },
   { key: "pm",               name: "Delivery Lead",             title: "Delivery Lead",           icon: "rocket",         reportsToKey: "ceo",          file: "pm.json",         skills: [] },
   { key: "bidManager",       name: "Bid Manager",               title: "Bid Manager",             icon: "gem",            reportsToKey: "ceo" },
-  { key: "archLead",         name: "Architecture Lead",         title: "Architecture Lead",       icon: "circuit-board",  reportsToKey: "pm" },
+  { key: "archLead",         name: "Architecture Lead",         title: "Architecture Lead",       icon: "circuit-board",  reportsToKey: "pm",           file: "architect-lead.json", skills: ["solution-design-document"] },
   { key: "businessLead",     name: "Business Lead",             title: "Business Lead",           icon: "lightbulb",      reportsToKey: "pm" },
   { key: "changeLead",       name: "Change Lead",               title: "Change Lead",             icon: "sparkles",       reportsToKey: "pm" },
   { key: "dataLead",         name: "Data Lead",                 title: "Data Lead",               icon: "database",       reportsToKey: "pm" },
   { key: "ux",               name: "UX Auditor",                title: "UX Auditor",              icon: "shield",         reportsToKey: "archLead",     file: "ux-auditor.json", skills: [] },
   { key: "architect",        name: "Architect",                 title: "Architect",               icon: "hammer",         reportsToKey: "archLead" },
+  { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["datamodel-impact-analysis"] },
   { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },
   { key: "uxDesigner",       name: "UX Designer",               title: "UX Designer",             icon: "wand",           reportsToKey: "archLead" },
   { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] },
@@ -308,14 +314,18 @@ async function main() {
       // `f19feb64-...`) that appears in prose. Prefix-only mentions confuse DL
       // because the deployed file ends up with the new full ID in dispatch sections
       // but stale prefix shorthand in the "## Your direct reports" descriptions.
+      // Map-driven so adding an agent to OLD_IDS is the ONLY edit needed here.
       const prefix = (uuid) => uuid.split("-")[0];
-      content = content
-        .split(OLD_IDS.ba).join(ids.ba)
-        .split(OLD_IDS.ui).join(ids.ui)
-        .split(OLD_IDS.ux).join(ids.ux)
-        .split(prefix(OLD_IDS.ba)).join(prefix(ids.ba))
-        .split(prefix(OLD_IDS.ui)).join(prefix(ids.ui))
-        .split(prefix(OLD_IDS.ux)).join(prefix(ids.ux));
+      for (const key of Object.keys(OLD_IDS)) {
+        if (!ids[key]) throw new Error(`pm.json swap: no hired id for OLD_IDS key '${key}'`);
+        content = content
+          .split(OLD_IDS[key]).join(ids[key])
+          .split(prefix(OLD_IDS[key])).join(prefix(ids[key]));
+      }
+      // A surviving placeholder means pm.json references an agent OLD_IDS doesn't
+      // cover (or vice versa) — fail loudly instead of deploying a dead dispatch id.
+      const leftover = Object.values(OLD_IDS).find((u) => content.includes(u));
+      if (leftover) throw new Error(`pm.json swap: placeholder ${leftover} survived the swap`);
     }
     await api("PUT", `/agents/${ids[spec.key]}/instructions-bundle/file`, {
       path: bundle.path || "AGENTS.md",

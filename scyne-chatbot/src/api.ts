@@ -67,6 +67,34 @@ export async function triggerUiBuild(project: string, feature: string) {
   return r.json();
 }
 
+// Shared shape for the downstream pipeline stage triggers: POST {project,
+// feature}; on failure surface the server's error code on the thrown error
+// (App.tsx branches on `.code` for the friendly prerequisite messages).
+async function postStageTrigger(path: string, label: string, project: string, feature: string) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, feature }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body?.message || body?.error || `${label} failed (${r.status})`);
+    (err as any).code = body?.error;
+    throw err;
+  }
+  return r.json();
+}
+
+// Fire the DATA MODEL stage. Gated server-side on the product summary existing
+// (409 no_product_summary).
+export const triggerDataModel = (project: string, feature: string) =>
+  postStageTrigger("/api/data-model/trigger", "Data model trigger", project, feature);
+
+// Fire the SOLUTION DESIGN stage. Gated server-side on the data model impact
+// existing (409 no_data_model).
+export const triggerSolutionDesign = (project: string, feature: string) =>
+  postStageTrigger("/api/solution-design/trigger", "Solution design trigger", project, feature);
+
 export async function postUiComment(issueId: string, body: string) {
   const r = await fetch("/api/ui-agent/comment", {
     method: "POST",

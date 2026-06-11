@@ -77,12 +77,14 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | Method | Path                                | Purpose                                                                   |
 | ------ | ----------------------------------- | ------------------------------------------------------------------------- |
 | POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
-| POST   | `/api/trigger`                      | Creates a Paperclip issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
-| GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. |
-| POST   | `/api/approve/:approvalId`          | Resolves an approval gate as approved (Paperclip wakes the BA → Phase 2). |
+| POST   | `/api/trigger`                      | Creates a `Generate requirements — …` issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
+| POST   | `/api/data-model/trigger`           | Creates a `Generate data model — …` issue. **Pre-flight:** `409 {error:"no_product_summary"}` if `outputs/product-summary.md` is missing. |
+| POST   | `/api/solution-design/trigger`      | Creates a `Generate solution design — …` issue. **Pre-flight:** `409 {error:"no_data_model"}` if `outputs/datamodel-impact.md` is missing. |
+| GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. `stage.label` adapts to the flow's worker. |
+| POST   | `/api/approve/:approvalId`          | Resolves an approval gate; explicitly wakes the gate's own issue assignee (BA / Data Modeler / Architecture Lead). Atlassian auto-provisioning runs only for the requirements flow. |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
-| POST   | `/api/request-changes/:approvalId`  | Reviewer feedback loop: marks the gate `revision_requested` (feedback → `decisionNote`), comments it on the issue, and flips the issue to `todo` to re-fire the BA's regenerate branch. Body `{issueId, feedback}`. |
-| GET    | `/api/history`                      | All completed "Generate requirements" runs across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
+| POST   | `/api/request-changes/:approvalId`  | Reviewer feedback loop: rejects the gate with the feedback, comments it on the issue, flips the issue to `todo`, and wakes its assignee to regenerate — works for any worker, not just the BA. Body `{issueId, feedback}`. |
+| GET    | `/api/history`                      | All completed pipeline runs (requirements, data model, solution design) across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
 | GET    | `/api/runs/:issueId`                | Compact agent run summaries (agent · status · duration) for the parent + descendant issues. Used by `RunsPanel` in the Activity panel. No tool counts (claude_local tool calls live in the run log, not run events). |
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
 | GET    | `/api/artifacts`                    | Reads `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` from disk. Used by `ArtifactsPreview` inside the approval card. |
@@ -141,14 +143,18 @@ The prompt instructs a discovery flow:
 4. Confirm the chosen `<project> / <feature>` and ask if ready.
 5. On any confirmation phrasing, call the appropriate tool.
 
-**Four tools are exposed to the LLM** (all defined in `server/llm.ts`):
+**Tools exposed to the LLM** (all defined in `server/llm.ts`):
 
 | Tool                            | When the bot calls it                                                                           |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `set_target`                    | When the user picks a project + feature but isn't ready to fire yet. Pins the scope so the right-pane TargetPicker reflects it. No Paperclip side effect. |
 | `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to the Delivery Lead. |
-| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly (both report to the Delivery Lead). |
-| `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. Replaces the old frontend regex gate that hijacked all chat. |
+| `trigger_data_model`            | When the user asks for the data model / object impact / ER diagram. Creates a `Generate data model — …` issue. Backend 409s `no_product_summary` if requirements aren't done — the bot then offers to run them first. |
+| `trigger_solution_design`       | When the user asks for the solution design / SDD / architecture. Creates a `Generate solution design — …` issue. Backend 409s `no_data_model` if the data model isn't done — the bot then offers to run it first. |
+| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly. |
+| `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. |
+
+The pipeline is gated **requirements → data model → solution design**; the system prompt teaches the bot to offer the missing prerequisite instead of firing a stage that would just block.
 
 The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
 
@@ -184,8 +190,8 @@ GEMINI_TRANSCRIBE_MODEL=gemini-2.5-flash       # optional
 GEMINI_LIVE_MODEL=models/gemini-2.5-flash-native-audio-latest  # optional
 
 PAPERCLIP_API_URL=http://127.0.0.1:3100/api
-PAPERCLIP_COMPANY_ID=2131f183-3822-4eee-9370-4b5cafae7e29
-PAPERCLIP_DELIVERY_LEAD_AGENT_ID=212a6542-4e49-41dc-94f0-7d7acbc460ba
+# Company + agent IDs are NOT in .env — the server reads them from
+# <workspace>/.bootstrap/ids.json, written by `npm run bootstrap`.
 
 WORKSPACE_PATH=/Users/<you>/Projects/buzzinga/requirement-generator
 
@@ -201,7 +207,7 @@ DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
 PORT=4000
 ```
 
-If you re-hire agents or move the workspace, only `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_DELIVERY_LEAD_AGENT_ID`, and `WORKSPACE_PATH` need updating here. The BA's ID is *not* in `.env` — it's baked into Delivery Lead's AGENTS.md (in `../agent-instructions/pm.json`) and into BA's response routes.
+If you move the workspace, only `WORKSPACE_PATH` needs updating here. Agent IDs never live in `.env`: `npm run bootstrap` hires/converges the org, swaps the placeholder IDs inside `../agent-instructions/pm.json`, and writes the live IDs to `<workspace>/.bootstrap/ids.json`, which `server/paperclip.ts` reads at startup.
 
 ## Branding
 
@@ -243,12 +249,8 @@ mkdir -p projects/<project>/<feature>/outputs
 ```
 Drop input files in the four `requirements/*` subfolders. The bot picks it up on the next `/api/features` poll — no code change.
 
-### Move an agent ID
-1. Update `.env` (`PAPERCLIP_DELIVERY_LEAD_AGENT_ID`).
-2. Update the BA ID inside `../agent-instructions/pm.json`.
-3. Update the Developer ID inside `../agent-instructions/ba.json`.
-4. Re-push each with `PUT /api/agents/:id/instructions-bundle/file` (see `../CLAUDE.md` for curl examples).
-5. Restart the chatbot.
+### Re-hire / re-wire agents
+Run `npm run bootstrap` at the workspace root — it hires anything missing, converges names/titles/reportsTo, swaps the placeholder IDs in `../agent-instructions/pm.json` for the live ones, re-pushes every AGENTS.md bundle, and rewrites `.bootstrap/ids.json`. Then restart the chatbot so `server/paperclip.ts` re-reads the IDs. Never hand-edit IDs in `.env` or the bundles (the bundles intentionally carry placeholders).
 
 ### Reset a stuck conversation
 Click "New session" in the right-pane header. This clears `localStorage`, drops `status`, resets `seenCommentIds`, and shows the fresh greeting. The Paperclip-side issue is **not** cancelled — it just becomes invisible to this UI.

@@ -1,21 +1,21 @@
 ---
 name: solution-design-document
 description: >
-  Generate a Salesforce Solution Design Document (SDD) as a .md file by
-  reading product summary and requirements files and data model reference
-  documents. Use this skill whenever a user asks to: create a solution
-  design, write a technical design document, produce an SDD, design a
-  Salesforce solution, recommend OmniStudio components, decide between
-  declarative and code-based approaches, or document how requirements will
-  be built in Salesforce. Trigger when the user mentions "solution design",
-  "technical design", "SDD", "how to build", "OmniStudio", "OmniScript",
-  "DataRaptor", "Integration Procedure", "Flow", "Apex", "LWC", or asks
-  which Salesforce capability should be used to deliver a requirement.
+  Generate a Salesforce Solution Design Document (SDD) as a .md file by reading a
+  feature's Product Summary and the Data Model Impact analysis. Use this skill
+  whenever a user (or the Architecture Lead agent) asks to: create a solution design,
+  write a technical design document, produce an SDD, design a Salesforce solution,
+  recommend OmniStudio components, decide between declarative and code-based
+  approaches, or document how requirements will be built in Salesforce. Trigger
+  when the request mentions "solution design", "technical design", "SDD", "how to
+  build", "OmniStudio", "OmniScript", "DataRaptor", "Integration Procedure",
+  "Flow", "Apex", "LWC", or asks which Salesforce capability should deliver a
+  requirement.
 ---
 
 # Salesforce Solution Design Document Generator
 
-Reads product summary `.md` files and data model reference `.md` files,
+Reads a feature's **Product Summary** and its **Data Model Impact** analysis,
 then produces a complete Solution Design Document (SDD) that:
 
 1. Maps every requirement to the most appropriate Salesforce capability
@@ -27,26 +27,39 @@ then produces a complete Solution Design Document (SDD) that:
 
 All source files are `.md` format.
 
+## Where the inputs and output live (Scyne workspace layout)
+
+This skill runs inside the Scyne workspace. Inputs and the output are organised
+by project + feature — the Architecture Lead agent passes you the `<project>` and
+`<feature>` in its issue description.
+
+- **Product Summary (input):** `./projects/<project>/<feature>/outputs/product-summary.md`
+  (the BA's approved output).
+- **Data Model Impact (input):** `./projects/<project>/<feature>/outputs/datamodel-impact.md`
+  (the Data Modeler's approved output — objects, custom fields, the ER diagram).
+- **Output (you write here):** `./projects/<project>/<feature>/outputs/solution-design.md`
+  — a single fixed filename so the chatbot's approval preview can read it.
+
 ---
 
 ## Step 1 — List and Read All Source Files
 
-Before reading anything, list the contents of both folders:
+Before reading anything, list the outputs folder so you know what is available:
 
 ```bash
-ls productsummary/
-ls datamodel/
+ls ./projects/<project>/<feature>/outputs/
 ```
 
-Note every filename — these will be cited as sources throughout the
-document. If either folder is empty, record it in the output under
-**Assumptions & Gaps** and continue with what is available.
+You expect to find `product-summary.md` and `datamodel-impact.md`. Note every
+filename — these will be cited as sources throughout the document. If either is
+missing, record it in the output under **Assumptions & Gaps** and continue with
+what is available.
 
 ---
 
-## Step 2 — Read the Product Summary Files
+## Step 2 — Read the Product Summary
 
-Read **every** `.md` file in `productsummary/`.
+Read `./projects/<project>/<feature>/outputs/product-summary.md`.
 
 Extract and catalogue the following:
 
@@ -81,20 +94,21 @@ you will validate it against the hierarchy in Step 4.
 
 ---
 
-## Step 3 — Read the Data Model Files
+## Step 3 — Read the Data Model Impact Analysis
 
-Read **every** `.md` file in `datamodel/`.
+Read `./projects/<project>/<feature>/outputs/datamodel-impact.md`.
 
-For each file, note:
+Note:
 - Standard objects relevant to the requirements
-- Custom objects or fields already identified (from a prior data model
-  impact analysis if available)
+- Custom objects or fields already identified by the Data Modeler
 - Object relationships relevant to solution design
 - Any OmniStudio-specific data model objects
   (e.g. `OmniProcess`, `DataRaptorBundle`, `IntegrationProcedure`)
 
 Use this to inform which objects the solution components will read from
-or write to in the design.
+or write to in the design. The data model is authoritative for object and
+field names — do not invent objects the Data Modeler didn't identify; flag
+any gap in **Assumptions & Gaps** instead.
 
 ---
 
@@ -266,18 +280,19 @@ For every requirement assigned to LWC:
 
 ## Step 5 — Write the Output Document
 
-Write the full document using exactly this structure:
+Compose the full document using exactly this structure (you save it to the
+output path in Step 7, after the quality check):
 
 ---
 
-```markdown
+````markdown
 # Solution Design Document
 **Product / Feature:** [name from product summary]
 **Date:** [today's date]
 **Version:** 0.1
 **Status:** Draft
-**Product Summary Sources:** [list productsummary filenames]
-**Data Model Sources:** [list datamodel filenames]
+**Product Summary Sources:** [list product-summary filenames]
+**Data Model Sources:** [list datamodel-impact filenames]
 
 ---
 
@@ -502,8 +517,8 @@ If no integrations are required, write: _No external integrations required._
 
 | Version | Date | Author | Notes |
 |---|---|---|---|
-| 0.1 | [today] | Claude | Initial solution design |
-```
+| 0.1 | [today] | Architecture Lead | Initial solution design |
+````
 
 ---
 
@@ -521,28 +536,26 @@ Before saving, verify:
 - [ ] The Mermaid diagram includes every component from Sections 4.1–4.5
 - [ ] All component names in the diagram match exactly those in Section 4
 - [ ] Integration points table is complete (or explicitly marked N/A)
+- [ ] Object and field names match the Data Model Impact analysis (no invented objects)
 - [ ] Assumptions & Gaps covers missing source files or ambiguous requirements
 - [ ] Section 2 summary table counts add up to total requirements
 
 ---
 
-## Step 7 — Save and Present
+## Step 7 — Save
 
-Save the completed file to the `/mnt/user-data/outputs/` folder —
-**not** the `output/` subfolder inside the skill directory:
+Save the completed document to:
 
 ```
-/mnt/user-data/outputs/solution-design-[product-name]-[YYYY-MM-DD].md
+./projects/<project>/<feature>/outputs/solution-design.md
 ```
 
-Use lowercase, hyphen-separated words for the product name.
-Example: `/mnt/user-data/outputs/solution-design-social-insurance-claims-2026-06-11.md`
+Write the **Mermaid solution flow diagram source inline** in the `.md` (it is
+the source of truth). Do **not** pre-render it to an image here — the Architect
+Lead agent renders Mermaid blocks to PNG locally and embeds them when it
+publishes to Confluence.
 
-The file must be fully written to disk before calling `present_files`.
-Then call `present_files` with the full absolute path so the user can
-download it immediately.
-
-After presenting, give the user a brief summary covering:
+After saving, give a brief summary covering:
 - Total requirements designed
 - Breakdown by solution type (OOB / Low-code / Code counts and %)
 - Names of all OmniStudio components introduced

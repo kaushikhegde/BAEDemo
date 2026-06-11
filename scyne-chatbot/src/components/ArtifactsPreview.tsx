@@ -68,9 +68,11 @@ function StoryCard({ s }: { s: ArtifactStory }) {
   );
 }
 
+type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution";
+
 export function ArtifactsPreview({ project, feature }: { project: string | null; feature: string | null }) {
   const [data, setData] = useState<Artifacts | null>(null);
-  const [tab, setTab] = useState<"stories" | "summary" | "gaps">("stories");
+  const [tab, setTab] = useState<ArtifactTab>("stories");
 
   useEffect(() => {
     if (!project || !feature) { setData(null); return; }
@@ -96,7 +98,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
     );
   }
 
-  const tabBtn = (key: typeof tab, label: string, count?: number) => (
+  const tabBtn = (key: ArtifactTab, label: string, count?: number) => (
     <Button
       key={key}
       onClick={() => setTab(key)}
@@ -117,6 +119,8 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {tabBtn("stories", "Stories", data.stories.length)}
         {tabBtn("summary", "Product Summary")}
         {tabBtn("gaps", "Gaps")}
+        {data.dataModel && tabBtn("datamodel", "Data Model")}
+        {data.solutionDesign && tabBtn("solution", "Solution Design")}
       </div>
       <div className="max-h-80 overflow-y-auto pr-1">
         {tab === "stories" && (
@@ -144,6 +148,24 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
               <MiniMarkdown source={data.gaps} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No gaps file (or empty).</div>
+            )}
+          </div>
+        )}
+        {tab === "datamodel" && (
+          <div className="text-slate-800">
+            {data.dataModel ? (
+              <MiniMarkdown source={data.dataModel} />
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No data model impact on disk yet.</div>
+            )}
+          </div>
+        )}
+        {tab === "solution" && (
+          <div className="text-slate-800">
+            {data.solutionDesign ? (
+              <MiniMarkdown source={data.solutionDesign} />
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No solution design on disk yet.</div>
             )}
           </div>
         )}

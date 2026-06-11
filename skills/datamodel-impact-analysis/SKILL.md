@@ -1,49 +1,67 @@
 ---
 name: datamodel-impact-analysis
 description: >
-  Analyse product summary and requirements documents against Salesforce
-  Social Insurance and Public Sector Solutions data models to identify
-  data model impacts. Use this skill whenever a user asks to: analyse data
-  model impact, check Salesforce object impact, identify which Salesforce
-  objects are affected by requirements, map requirements to Salesforce data
-  models, assess Public Sector Solutions or Social Insurance data model fit,
-  or generate an ER diagram for Salesforce requirements. Trigger when the
-  user mentions "data model", "Salesforce objects", "PSS", "Social Insurance",
-  "OmniStudio", "public sector", or "ER diagram" in the context of product
-  requirements.
+  Analyse a Product Summary against the Salesforce Social Insurance and Public
+  Sector Solutions (PSS) data models to identify data model impacts and produce
+  an ER diagram. Use this skill whenever a user (or the Data Modeler agent) asks
+  to: analyse data model impact, check Salesforce object impact, identify which
+  Salesforce objects are affected by requirements, map requirements to Salesforce
+  data models, assess PSS / Social Insurance data model fit, or generate an ER
+  diagram for Salesforce requirements. Trigger when the request mentions "data
+  model", "Salesforce objects", "PSS", "Social Insurance", "OmniStudio", "public
+  sector", or "ER diagram" in the context of a product summary or requirements.
 ---
 
 # Salesforce Data Model Impact Analyser
 
-Reads product summary and requirements `.md` files, cross-references them
-against Salesforce Social Insurance and Public Sector Solutions (PSS) data
-model reference documents, and produces:
+Reads the approved **Product Summary** for a feature, cross-references it against
+the Salesforce Social Insurance and Public Sector Solutions (PSS) data model
+**reference catalogue**, and produces:
 
 1. A **data model impact table** — standard objects, required custom fields
 2. A **Mermaid ER diagram** — visual relationships between impacted objects
 
 All source files are `.md` format.
 
+## Where the inputs and output live (Scyne workspace layout)
+
+This skill runs inside the Scyne workspace. Inputs and the output are organised
+by project + feature — the Data Modeler agent passes you the `<project>` and
+`<feature>` in its issue description.
+
+- **Product Summary (input):** `./projects/<project>/<feature>/outputs/product-summary.md`
+  (the BA's approved output). Read every `.md` file in that `outputs/` folder so
+  you also pick up any supporting summary the feature carries.
+- **Data model reference catalogue (static input):** `./datamodel-reference/`
+  at the workspace root — the global Salesforce PSS / Social-Insurance object
+  catalogue (one `.md` per solution area). **Per-project override:** if
+  `./projects/<project>/<feature>/datamodel-reference/` exists and contains
+  files, use that instead and fall back to the global folder for anything it
+  doesn't cover.
+- **Output (you write here):** `./projects/<project>/<feature>/outputs/datamodel-impact.md`
+  — a single fixed filename so the chatbot's approval preview can read it.
+
 ---
 
 ## Step 1 — List and Read All Source Files
 
-Before reading anything, list the contents of both folders:
+Before reading anything, list the contents of both input locations:
 
 ```bash
-ls productsummary/
-ls datamodel-reference/
+ls ./projects/<project>/<feature>/outputs/
+ls ./datamodel-reference/            # or the per-project override if present
 ```
 
 Note every filename — you will reference them as sources throughout the
-analysis. If either folder is empty, record it in the output under
+analysis. If either location is empty, record it in the output under
 **Assumptions & Gaps** and continue with what is available.
 
 ---
 
-## Step 2 — Read the Product Summary Files
+## Step 2 — Read the Product Summary
 
-Read **every** `.md` file in `productsummary/`.
+Read **every** `.md` file in `./projects/<project>/<feature>/outputs/` (the
+Product Summary is `product-summary.md`).
 
 For each file, extract and catalogue:
 
@@ -73,7 +91,8 @@ For each file, extract and catalogue:
 
 ## Step 3 — Read the Data Model Reference Files
 
-Read **every** `.md` file in `datamodel-reference/`.
+Read **every** `.md` file in `./datamodel-reference/` (or the per-project
+override).
 
 For each file, catalogue:
 
@@ -196,17 +215,17 @@ Then define the proposed custom object:
 
 ## Step 5 — Write the Output Document
 
-The output file will be saved to current working folder & in `./outputs/` in Step 7.
-Write the full document content using exactly this structure:
+Compose the full document using exactly this structure (you save it to the
+output path in Step 7, after the quality check):
 
 ---
 
-```markdown
+````markdown
 # Salesforce Data Model Impact Analysis
 **Product / Feature:** [name from product summary]
 **Date:** [today's date]
 **Reference Models:** [list the datamodel-reference filenames used]
-**Product Summary Sources:** [list the productsummary filenames used]
+**Product Summary Sources:** [list the product-summary filenames used]
 
 ---
 
@@ -319,8 +338,8 @@ erDiagram
 
 | Version | Date | Author | Notes |
 |---|---|---|---|
-| 0.1 | [today] | Claude | Initial data model impact analysis |
-```
+| 0.1 | [today] | Data Modeler | Initial data model impact analysis |
+````
 
 ---
 
@@ -343,22 +362,20 @@ Before saving, verify:
 
 ---
 
-## Step 7 — Save and Present
+## Step 7 — Save
 
-Save the completed file to the `/mnt/user-data/outputs/` directory:
+Save the completed document to:
 
 ```
-/mnt/user-data/outputs/datamodel-impact-[product-name]-[YYYY-MM-DD].md
+./projects/<project>/<feature>/outputs/datamodel-impact.md
 ```
 
-Use lowercase, hyphen-separated words for the product name.
-Example: `/mnt/user-data/outputs/datamodel-impact-social-insurance-claims-2026-06-11.md`
+Write the **Mermaid ER diagram source inline** in the `.md` (it is the source of
+truth). Do **not** pre-render it to an image here — the Data Modeler agent
+renders Mermaid blocks to PNG locally and embeds them when it publishes to
+Confluence. Keep the document focused on a single feature's analysis.
 
-The file must be fully written to disk before calling `present_files`.
-Then call `present_files` with the full absolute path so the user can
-download it immediately.
-
-After presenting, give the user a brief summary covering:
+After saving, give a brief summary covering:
 - Total number of objects impacted
 - Breakdown: Full Match / Partial Match / Extension / No Match counts
 - Total custom fields proposed across all objects

@@ -64,7 +64,7 @@ app.post("/api/trigger", async (req, res) => {
     // fixed .env value — so picking "RTWSA" pushes to RTWSA, not SADA. The .env
     // DEFAULT_* keys (and the parent epic) only apply when they belong to THIS
     // project (the original SADA demo). The BA verifies these exist before pushing.
-    const projectKey = String(project).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SADA";
+    const projectKey = deriveProjectKey(project);
     const envIsThisProject = (process.env.DEFAULT_JIRA_PROJECT_KEY || "").toUpperCase() === projectKey;
     const params: RequirementParams = {
       process_l3: overrides.process_l3 || process.env.DEFAULT_PROCESS_L3,
@@ -98,20 +98,23 @@ app.post("/api/trigger", async (req, res) => {
       });
     }
 
-    // Clear stale outputs from a prior run. The BA's Phase 1 vs Phase 2 branch
+    // Clear stale BA outputs from a prior run. The BA's Phase 1 vs Phase 2 branch
     // logic keys off "no work-products yet" — leftover files in outputs/ confuse
     // the agent's decision and can send it into a re-detect loop. We wipe the
     // CONTENTS of outputs/ (not the folder itself, so the BA doesn't have to
     // recreate it). Pure files only — never touch subdirectories or the parent.
+    // The downstream stages' approved artefacts (datamodel-impact.md,
+    // solution-design.md) are PRESERVED — they belong to the Data Modeler /
+    // Architecture Lead flows and wiping them would silently destroy approved
+    // work and re-gate the solution design behind a fresh data model run.
+    const KEEP_OUTPUTS = new Set(["datamodel-impact.md", "solution-design.md"]);
     const outputsDir = path.join(ws, "projects", project, feature, "outputs");
     try {
       await fs.mkdir(outputsDir, { recursive: true });
-      const stale = await fs.readdir(outputsDir, { withFileTypes: true });
-      await Promise.all(
-        stale
-          .filter((e) => e.isFile() && !e.name.startsWith("."))
-          .map((e) => fs.rm(path.join(outputsDir, e.name), { force: true })),
+      const stale = (await fs.readdir(outputsDir, { withFileTypes: true })).filter(
+        (e) => e.isFile() && !e.name.startsWith(".") && !KEEP_OUTPUTS.has(e.name),
       );
+      await Promise.all(stale.map((e) => fs.rm(path.join(outputsDir, e.name), { force: true })));
       console.log(`[trigger] cleared ${stale.length} stale output(s) from ${outputsDir}`);
     } catch (e: any) {
       console.warn(`[trigger] couldn't clear outputs ${outputsDir}: ${e?.message ?? e}`);
@@ -150,6 +153,112 @@ app.post("/api/trigger", async (req, res) => {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
+
+// One flow per top-level issue, classified by title prefix. This is the single
+// source of truth for flow detection — /api/status (stage labels), /api/history
+// (which runs to list), and anything else that needs to know which worker owns
+// an issue derive from here, so a new stage is added in ONE place.
+type Flow = {
+  key: "requirements" | "data_model" | "solution_design" | "ui";
+  worker: string;
+  generatingLabel: string;
+  pushingLabel: string;
+};
+const FLOWS: { prefix: string; flow: Flow }[] = [
+  { prefix: "Generate requirements", flow: { key: "requirements", worker: "BA", generatingLabel: "BA generating artifacts", pushingLabel: "Pushing to Atlassian" } },
+  { prefix: "Generate data model", flow: { key: "data_model", worker: "Data Modeler", generatingLabel: "Data Modeler generating the impact analysis", pushingLabel: "Publishing to Confluence" } },
+  { prefix: "Generate solution design", flow: { key: "solution_design", worker: "Architecture Lead", generatingLabel: "Architecture Lead designing the solution", pushingLabel: "Publishing to Confluence" } },
+  { prefix: "Build UI", flow: { key: "ui", worker: "Developer", generatingLabel: "Developer building the UI", pushingLabel: "Finalising the build" } },
+];
+function classifyFlow(title: string): Flow {
+  return FLOWS.find((f) => title.startsWith(f.prefix))?.flow ?? FLOWS[0].flow;
+}
+
+// Jira project / Confluence space key derived from the project name — must stay
+// byte-identical between the requirements stage (which provisions the space) and
+// the downstream stages (which publish into it).
+function deriveProjectKey(project: string): string {
+  return String(project).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SADA";
+}
+
+// 2b/2c. The downstream pipeline stages (data model, solution design) share one
+// trigger shape: validate target → check the prerequisite artefact exists on
+// disk (409 with a stage-specific code if not) → create a title-prefixed issue
+// for the Delivery Lead to route. Confluence-only — no Jira parameters.
+function stageTrigger(stage: {
+  logTag: string;
+  titlePrefix: string; // must match a FLOWS prefix + the Delivery Lead's classifier
+  intro: string;
+  gateFile: string; // outputs/<file> that must exist
+  gateErrorCode: string;
+  gateMessage: (project: string, feature: string) => string;
+  inputs: (project: string, feature: string) => string[];
+}) {
+  return async (req: express.Request, res: express.Response) => {
+    try {
+      const project = String(req.body?.project || "").trim();
+      const feature = String(req.body?.feature || "").trim();
+      if (!project || !feature) return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
+      assertSafeProjectFeature(project, feature);
+      const gatePath = path.join(WORKSPACE_PATH, "projects", project, feature, "outputs", stage.gateFile);
+      try {
+        await fs.access(gatePath);
+      } catch {
+        return res.status(409).json({ error: stage.gateErrorCode, message: stage.gateMessage(project, feature) });
+      }
+      // Display name defaults to the feature folder; space key to the project
+      // name (same derivation as /api/trigger). Both overridable via the body
+      // for runs whose requirements used custom values.
+      const feature_name = String(req.body?.feature_name || "").trim() || feature;
+      const confluence_space_key = String(req.body?.confluence_space_key || "").trim() || deriveProjectKey(project);
+      const description = [
+        stage.intro,
+        ``,
+        `## Project + Feature`,
+        `- Project: ${project}`,
+        `- Feature: ${feature}`,
+        `- Feature name: ${feature_name}`,
+        ``,
+        `## Parameters`,
+        `- Confluence space key: ${confluence_space_key}`,
+        ``,
+        `## Inputs`,
+        ...stage.inputs(project, feature),
+      ].join("\n");
+      const issue = await paperclip.createIssue(`${stage.titlePrefix} — ${feature_name} (${project}/${feature})`, description);
+      res.json(issue);
+    } catch (e: any) {
+      console.error(`[${stage.logTag}] failed:`, e);
+      res.status(500).json({ error: e?.message ?? String(e) });
+    }
+  };
+}
+
+app.post("/api/data-model/trigger", stageTrigger({
+  logTag: "data-model/trigger",
+  titlePrefix: "Generate data model",
+  intro: "Generated by the Scyne chatbot. Produce the Salesforce data model impact analysis and publish it to Confluence.",
+  gateFile: "product-summary.md",
+  gateErrorCode: "no_product_summary",
+  gateMessage: (p, f) => `No product summary found for ${p}/${f}. Generate + approve the requirements first, then run the data model.`,
+  inputs: (p, f) => [
+    `- projects/${p}/${f}/outputs/product-summary.md (approved Product Summary)`,
+    `- datamodel-reference/ (static Salesforce PSS / Social-Insurance object catalogue; per-project override under projects/${p}/${f}/datamodel-reference/ if present)`,
+  ],
+}));
+
+app.post("/api/solution-design/trigger", stageTrigger({
+  logTag: "solution-design/trigger",
+  titlePrefix: "Generate solution design",
+  intro: "Generated by the Scyne chatbot. Produce the Salesforce Solution Design Document and publish it to Confluence.",
+  gateFile: "datamodel-impact.md",
+  gateErrorCode: "no_data_model",
+  gateMessage: (p, f) => `No data model impact found for ${p}/${f}. Generate + approve the data model first, then run the solution design.`,
+  inputs: (p, f) => [
+    `- projects/${p}/${f}/outputs/product-summary.md (approved Product Summary)`,
+    `- projects/${p}/${f}/outputs/datamodel-impact.md (approved Data Model Impact)`,
+  ],
+}));
 
 // 3. Status — normalized progress view: tree + computed stage + activity timeline + extracted links + approvals
 app.get("/api/status/:issueId", async (req, res) => {
@@ -208,18 +317,22 @@ app.get("/api/status/:issueId", async (req, res) => {
     // Extract Confluence + Jira URLs from all comments
     const links = extractLinks(flatComments.map((c) => String(c.body)));
 
-    // Derive a coarse current "stage" from the state of the tree
+    // Derive a coarse current "stage" from the state of the tree. The stage KEYS
+    // stay stable across flows (the frontend StagePill maps keys → tones); only
+    // the human-facing labels adapt to which worker owns this flow, parsed from
+    // the parent issue title prefix.
     const parent = flatIssues[0];
     const children = flatIssues.slice(1);
+    const flow = classifyFlow(String(parent?.title || ""));
     const anyApproved = flatApprovals.some((a) => a.status === "approved");
     const anyPending = flatApprovals.some((a) => !a.status || a.status === "pending");
     const allDone = flatIssues.length > 0 && flatIssues.every((i) => i.status === "done");
     let stage: { key: string; label: string };
     if (allDone) stage = { key: "done", label: "Complete" };
-    else if (anyApproved && !allDone) stage = { key: "pushing", label: "Pushing to Atlassian" };
+    else if (anyApproved && !allDone) stage = { key: "pushing", label: flow.pushingLabel };
     else if (anyPending) stage = { key: "awaiting_approval", label: "Awaiting your approval" };
-    else if (children.some((c) => c.status === "in_progress" || c.status === "in_review")) stage = { key: "ba_generating", label: "BA generating artifacts" };
-    else if (children.length > 0) stage = { key: "delegated", label: "Delegated to BA" };
+    else if (children.some((c) => c.status === "in_progress" || c.status === "in_review")) stage = { key: "ba_generating", label: flow.generatingLabel };
+    else if (children.length > 0) stage = { key: "delegated", label: `Delegated to ${flow.worker}` };
     else if (parent?.status === "in_progress") stage = { key: "delivery_lead_triaging", label: "Delivery Lead triaging the request" };
     else stage = { key: "queued", label: "Queued" };
 
@@ -264,6 +377,13 @@ app.post("/api/approve/:approvalId", async (req, res) => {
     if (!parentIssueId) {
       return res.status(400).json({ error: "parentIssueId is required to locate the interaction" });
     }
+    // Provision whatever Atlassian targets the flow declares in its description —
+    // keyed on the DATA, not the issue title. The requirements flow carries both
+    // a Jira project key and a Confluence space key (both ensured); the
+    // Confluence-only downstream stages (data model, solution design) carry only
+    // the space key (so just the space is ensured — this also heals the case
+    // where the requirements gate was rejected and the space never got created);
+    // the Build UI flow carries neither (skipped entirely).
     if (provisioningConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
@@ -274,9 +394,9 @@ app.post("/api/approve/:approvalId", async (req, res) => {
         const jiraKey = grab("Jira project key");
         const confKey = grab("Confluence space key");
         const pageTitle = grab("Confluence page title");
-        if (jiraKey && confKey) {
+        if (confKey) {
           const result = await ensureAtlassianTargets({
-            jiraKey,
+            jiraKey: jiraKey || undefined,
             jiraName: project || jiraKey,
             confluenceKey: confKey,
             confluenceName: pageTitle || project || confKey,
@@ -362,15 +482,17 @@ app.post("/api/request-changes/:approvalId", async (req, res) => {
   }
 });
 
-// History — completed requirements runs across all sessions, with their
-// Confluence + Jira links. Lists top-level "Generate requirements" issues and
-// extracts links from each run's comment tree.
+// History — completed pipeline runs (requirements, data model, solution design)
+// across all sessions, with their Confluence + Jira links. Lists top-level
+// "Generate …" issues and extracts links from each run's comment tree. Build UI
+// runs stay excluded — they publish no Atlassian links.
+const HISTORY_PREFIXES = FLOWS.filter((f) => f.flow.key !== "ui").map((f) => f.prefix);
 app.get("/api/history", async (_req, res) => {
   try {
     const raw = await paperclip.listCompanyIssues();
     const all: any[] = Array.isArray(raw) ? raw : (raw.items || raw.issues || []);
     const runs = all.filter(
-      (i) => !i.parentId && typeof i.title === "string" && i.title.startsWith("Generate requirements"),
+      (i) => !i.parentId && typeof i.title === "string" && HISTORY_PREFIXES.some((p) => i.title.startsWith(p)),
     );
     const entries = await Promise.all(
       runs.map(async (run) => {
@@ -588,11 +710,13 @@ app.get("/api/artifacts", async (req, res) => {
     const read = async (f: string) => {
       try { return await fs.readFile(path.join(outputs, f), "utf8"); } catch { return null; }
     };
-    const [productSummary, storiesJson, storiesMd, gaps] = await Promise.all([
+    const [productSummary, storiesJson, storiesMd, gaps, dataModel, solutionDesign] = await Promise.all([
       read("product-summary.md"),
       read("stories.json"),
       read("stories.md"),
       read("gaps.md"),
+      read("datamodel-impact.md"),
+      read("solution-design.md"),
     ]);
     let stories: any[] = [];
     if (storiesJson) {
@@ -606,7 +730,7 @@ app.get("/api/artifacts", async (req, res) => {
         }));
       } catch {}
     }
-    res.json({ productSummary, stories, storiesMd, gaps });
+    res.json({ productSummary, stories, storiesMd, gaps, dataModel, solutionDesign });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

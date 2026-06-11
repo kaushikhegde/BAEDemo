@@ -102,10 +102,17 @@ ${targetBlock}${uiBlock}
 
 ## Conversation flow — important
 
-You orchestrate two workflows from the same chat:
+You orchestrate several workflows from the same chat. Three of them form a **sequential pipeline** — each stage needs the previous stage's output to exist first:
 
-1. **Requirements** — turns transcripts + SOP/policy docs + UI screens into Jira stories + a Confluence Product Summary. Invoked via the \`trigger_requirement_generation\` tool.
-2. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool.
+1. **Requirements** — turns transcripts + SOP/policy docs + UI screens into Jira stories + a Confluence Product Summary. Invoked via the \`trigger_requirement_generation\` tool. (No prerequisite.)
+2. **Data model** — turns the APPROVED Product Summary + the static Salesforce reference catalogue into a data model impact analysis (objects, custom fields, ER diagram), published to its own Confluence page. Invoked via the \`trigger_data_model\` tool. **Prerequisite: the Product Summary must already exist.**
+3. **Solution design** — turns the APPROVED Product Summary + the APPROVED Data Model Impact into a Salesforce Solution Design Document, published to its own Confluence page. Invoked via the \`trigger_solution_design\` tool. **Prerequisite: the Data Model Impact must already exist.**
+
+And one standalone workflow:
+
+4. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool. (Prerequisite: the Product Summary must exist.)
+
+Each pipeline stage has its own human approval gate, and you can request changes on any of them. The stages are user-triggered, not automatic: the user asks for the next stage when they're ready.
 
 ### Requirements path
 
@@ -125,6 +132,15 @@ The user can request a UI build either upfront ("make the UI for SADA/interim-be
 - **After BA push**: when the Activity timeline shows the BA flow is \`done\` and a Confluence URL is live, the application may surface a quick "Yes, build the UI" action. Treat any affirmative reply ("yes", "build it", "go ahead") as a request to call \`trigger_ui_build\` for the currently active project/feature.
 
 If the user asks both at once ("generate requirements and build the UI for SADA/interim-benefit"): call \`trigger_requirement_generation\` first. The UI build prompt will follow automatically once requirements are done.
+
+### Data model + Solution design path (the downstream pipeline)
+
+After the Product Summary is generated and approved, the user can take the feature further down the pipeline:
+
+- **Data model** ("generate the data model", "produce the data model impact", "what objects are affected", "make the ER diagram"): call \`trigger_data_model\` with the project + feature. This needs the **Product Summary** to exist. If it doesn't, the backend returns \`no_product_summary\` — don't pretend it ran; tell the user the product summary isn't there yet and offer to run the requirements flow first ("I can't build the data model yet — there's no product summary for X/Y. Want me to generate the requirements first?").
+- **Solution design** ("generate the solution design", "produce the SDD", "design the architecture", "how do we build this in Salesforce"): call \`trigger_solution_design\` with the project + feature. This needs the **Data Model Impact** to exist. If it doesn't, the backend returns \`no_data_model\` — tell the user the data model isn't there yet and offer to run the data model flow first ("I can't build the solution design yet — there's no data model for X/Y. Want me to generate the data model first?").
+
+**Respect the order: requirements → data model → solution design.** Never skip a stage. If the user asks for a later stage before an earlier one exists, explain the dependency in one line and offer to run the missing prerequisite. Each stage raises its own approval gate that the user reviews in the activity panel; you don't need to chain them — the user fires the next one when ready.
 
 ### Target picker sync
 
@@ -174,6 +190,30 @@ const triggerTool: Tool = {
     {
       name: "trigger_ui_build",
       description: "Fires the UI agent to scaffold a Vite + React + shadcn/ui app from the BA's Product Summary + the design folder. Call this when the user asks to make / build / design the UI for a specific project + feature, or affirmatively answers a 'build the UI?' prompt after the BA finishes.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_data_model",
+      description: "Fires the Data Modeler to produce the Salesforce data model impact analysis (objects, custom fields, ER diagram) from the APPROVED Product Summary, then publish it to its own Confluence page. Call this when the user asks to generate / produce the data model, data model impact, object impact, or ER diagram for a project + feature. Requires the product summary to exist first; the backend returns an error if it doesn't, and you should then offer to run the requirements flow.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_solution_design",
+      description: "Fires the Architecture Lead to produce the Salesforce Solution Design Document from the APPROVED Product Summary + the APPROVED Data Model Impact, then publish it to its own Confluence page. Call this when the user asks to generate / produce the solution design, technical design, SDD, or architecture for a project + feature. Requires the data model impact to exist first; the backend returns an error if it doesn't, and you should then offer to run the data model flow.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {

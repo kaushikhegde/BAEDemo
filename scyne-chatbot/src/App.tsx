@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -169,9 +169,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   // Dedupe via localStorage so we don't re-ask on refresh.
   useEffect(() => {
     if (!status || !targetProject || !targetFeature || !parentIssueId) return;
+    // Only the REQUIREMENTS flow ends with this CTA — the data-model and
+    // solution-design runs also finish all-done with a Confluence link, but
+    // prompting "build the UI?" mid-pipeline would be out of sequence.
+    const isRequirementsRun = !!status.flatIssues[0]?.title?.startsWith("Generate requirements");
     const rootDone = status.flatIssues.length > 0 && status.flatIssues.every((i) => i.status === "done");
     const hasConfluence = (status.links?.confluence?.length ?? 0) > 0;
-    if (!rootDone || !hasConfluence) return;
+    if (!isRequirementsRun || !rootDone || !hasConfluence) return;
     // Dedupe per project/feature, not per parent issue, so clicking "Yes, build the UI"
     // (which swaps parentIssueId to the new Build UI issue) doesn't immediately re-trigger
     // the prompt against the stale "requirements done" status snapshot.
@@ -325,6 +329,42 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             throw e;
           }
         }
+      } else if (toolUse?.name === "trigger_data_model" || toolUse?.name === "trigger_solution_design") {
+        // The two downstream pipeline stages share one trigger shape — only the
+        // worker label, API call, and prerequisite-gate message differ. Keeping
+        // them in one table prevents the copies drifting (e.g. a gate-code
+        // mismatch that would fall through to the raw error path).
+        const PIPELINE_STAGES = {
+          trigger_data_model: {
+            worker: "Data Modeler",
+            fire: triggerDataModel,
+            gateCode: "no_product_summary",
+            gateMessage: (p: string, f: string) => `I can't build the data model yet — there's no product summary for **${p}/${f}**. Want me to generate the requirements first?`,
+          },
+          trigger_solution_design: {
+            worker: "Architecture Lead",
+            fire: triggerSolutionDesign,
+            gateCode: "no_data_model",
+            gateMessage: (p: string, f: string) => `I can't build the solution design yet — there's no data model for **${p}/${f}**. Want me to generate the data model first?`,
+          },
+        } as const;
+        const stage = PIPELINE_STAGES[toolUse.name as keyof typeof PIPELINE_STAGES];
+        const args = toolUse.input as any;
+        const proj = args?.project, feat = args?.feature;
+        if (proj) setTargetProject(proj);
+        if (feat) setTargetFeature(feat);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the ${stage.worker} for **${proj}** / **${feat}**…` }]);
+        try {
+          const issue = await stage.fire(proj, feat);
+          setParentIssueId(issue.id);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Delivery Lead → ${stage.worker}. Live progress on the right →` }]);
+        } catch (e: any) {
+          if (e?.code === stage.gateCode) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: stage.gateMessage(proj, feat) }]);
+          } else {
+            throw e;
+          }
+        }
       } else if (toolUse?.name === "control_dev_server") {
         const args = toolUse.input as any;
         const action = args?.action === "stop" ? "stop" : "start";
@@ -403,7 +443,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setMessages((m) => [...m, {
       id: crypto.randomUUID(),
       role: "assistant",
-      text: `Sent your changes to the analyst:\n\n> ${feedback}\n\nThey’ll regenerate the requirements and raise a fresh approval here.`,
+      text: `Sent your changes back to the agent:\n\n> ${feedback}\n\nIt’ll regenerate and raise a fresh approval here.`,
     }]);
   }
 
