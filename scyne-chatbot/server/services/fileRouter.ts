@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export type Subfolder = "sop" | "transcripts" | "notes" | "ui";
+export type Subfolder = "sop" | "transcripts" | "notes" | "ui" | "template";
 export type Hint = Subfolder | "audio" | undefined;
 
 const DISK_SUBFOLDER: Record<Subfolder, string> = {
@@ -8,6 +8,7 @@ const DISK_SUBFOLDER: Record<Subfolder, string> = {
   transcripts: "Transcripts",
   notes: "Notes",
   ui: "UI",
+  template: "templates",
 };
 
 export function requirementsDir(workspace: string, project: string, feature: string, sub: Subfolder): string {
@@ -45,6 +46,8 @@ const UI_HINT_RE = /(ui|screen|mock|wireframe|figma)/i;
  *   - .txt/.md                              → notes/
  *
  * `hint` lets the caller force a subfolder when the user has already disambiguated.
+ * `template` is reachable only via an explicit hint — it is never auto-inferred
+ * (you never want a raw input auto-filed as a house-style template).
  */
 export function routeFile(originalName: string, hint?: Hint): RouteResult {
   const ext = path.extname(originalName).toLowerCase();

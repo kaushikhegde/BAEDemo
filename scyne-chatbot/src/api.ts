@@ -176,7 +176,7 @@ export async function getTranscriptTail(runId: string, offset: number): Promise<
   return r.json();
 }
 
-export type UploadHint = "sop" | "transcripts" | "notes" | "ui" | "style-guide" | "example-screen";
+export type UploadHint = "sop" | "transcripts" | "notes" | "ui" | "template" | "style-guide" | "example-screen";
 
 export interface UploadFileSuccess {
   kind: "file" | "transcript";

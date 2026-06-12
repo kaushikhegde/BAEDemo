@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { FileText, Image as ImageIcon, Mic, Paperclip, Palette, Layout, StickyNote, UploadCloud } from "lucide-react";
+import { FileText, Image as ImageIcon, LayoutTemplate, Mic, Paperclip, Palette, Layout, StickyNote, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,6 +54,16 @@ const ZONES: Zone[] = [
     blurb: "Anything else",
     accept: ".docx,.pdf,.doc,.txt,.md",
     icon: <StickyNote className="size-5" />,
+  },
+  // Templates land under projects/<p>/<f>/requirements/templates/. The BA prefers
+  // these per-artefact over the gold examples in ./examples/ when generating the
+  // Product Summary / stories — so they're house-style overrides, not raw inputs.
+  {
+    hint: "template",
+    label: "Templates",
+    blurb: "House style — overrides examples/",
+    accept: ".docx,.pdf,.doc,.txt,.md",
+    icon: <LayoutTemplate className="size-5" />,
   },
   // Design uploads land under projects/<p>/<f>/design/. The Developer (UI agent)
   // reads from here for visual direction; the BA ignores design/ entirely, so
