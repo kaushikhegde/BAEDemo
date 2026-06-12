@@ -79,7 +79,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
 | POST   | `/api/trigger`                      | Creates a `Generate requirements — …` issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
 | POST   | `/api/data-model/trigger`           | Creates a `Generate data model — …` issue. **Pre-flight:** `409 {error:"no_product_summary"}` if `outputs/product-summary.md` is missing. |
-| POST   | `/api/solution-design/trigger`      | Creates a `Generate solution design — …` issue. **Pre-flight:** `409 {error:"no_data_model"}` if `outputs/datamodel-impact.md` is missing. |
+| POST   | `/api/solution-design/trigger`      | Creates a `Generate solution design — …` issue. **Pre-flight:** `409 {error:"no_data_model"}` if `solutions/DataModel/outputs/datamodel-impact.md` is missing. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. `stage.label` adapts to the flow's worker. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate; explicitly wakes the gate's own issue assignee (BA / Data Modeler / Architecture Lead). Atlassian auto-provisioning runs only for the requirements flow. |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
@@ -87,7 +87,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | GET    | `/api/history`                      | All completed pipeline runs (requirements, data model, solution design) across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
 | GET    | `/api/runs/:issueId`                | Compact agent run summaries (agent · status · duration) for the parent + descendant issues. Used by `RunsPanel` in the Activity panel. No tool counts (claude_local tool calls live in the run log, not run events). |
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
-| GET    | `/api/artifacts`                    | Reads `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` from disk. Used by `ArtifactsPreview` inside the approval card. |
+| GET    | `/api/artifacts`                    | Reads the BA's `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` plus `solutions/DataModel/outputs/datamodel-impact.md` + `solutions/Design/outputs/solution-design.md`. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
 | POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to the Delivery Lead. Delivery Lead detects the title prefix and dispatches the Developer directly, then the UX Auditor once the build completes. |
 | GET    | `/api/preview/:project/:feature`    | Resolves the dev-server URL for the generated app from `generated-apps/registry.json`. |

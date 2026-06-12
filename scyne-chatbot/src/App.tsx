@@ -161,28 +161,48 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     try { window.localStorage.setItem("scyne_activity_view", activityView); } catch {}
   }, [activityView]);
   const [previewAvailable, setPreviewAvailable] = useState(false);
-  const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string } | null>(null);
+  const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string; headline: string; dedupeKey: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // When the BA flow has reached `done` AND a Confluence URL is live, surface a one-shot
-  // CTA in the chat scroll asking the user if they want to kick off the UI build.
-  // Dedupe via localStorage so we don't re-ask on refresh.
+  // Remember the last Build UI run this browser triggered, so the chat's
+  // modify/approve/push path can find it again after parentIssueId moves on to
+  // a pipeline run (data model / solution design) and back.
+  const rememberUiIssue = (issueId: string) => {
+    if (typeof window !== "undefined") window.localStorage.setItem("scyne_ui_issue_id", issueId);
+  };
+
+  // Surface a one-shot "build the UI?" CTA in the chat scroll at the two natural
+  // entry points: right after the REQUIREMENTS run completes (Confluence + Jira
+  // live), and again after the SOLUTION DESIGN run completes if the UI was
+  // skipped earlier — so the user can do requirements → data model → solution
+  // design and still come back to the UI from the chat. Each entry point has its
+  // own localStorage dedupe key so declining the first offer doesn't suppress
+  // the second.
   useEffect(() => {
     if (!status || !targetProject || !targetFeature || !parentIssueId) return;
-    // Only the REQUIREMENTS flow ends with this CTA — the data-model and
-    // solution-design runs also finish all-done with a Confluence link, but
-    // prompting "build the UI?" mid-pipeline would be out of sequence.
-    const isRequirementsRun = !!status.flatIssues[0]?.title?.startsWith("Generate requirements");
+    const rootTitle = status.flatIssues[0]?.title ?? "";
+    const isRequirementsRun = rootTitle.startsWith("Generate requirements");
+    const isSolutionDesignRun = rootTitle.startsWith("Generate solution design");
+    if (!isRequirementsRun && !isSolutionDesignRun) return;
     const rootDone = status.flatIssues.length > 0 && status.flatIssues.every((i) => i.status === "done");
     const hasConfluence = (status.links?.confluence?.length ?? 0) > 0;
-    if (!isRequirementsRun || !rootDone || !hasConfluence) return;
+    if (!rootDone || !hasConfluence) return;
+    // After the solution design, only re-offer if no UI app exists yet.
+    if (isSolutionDesignRun && previewAvailable) return;
     // Dedupe per project/feature, not per parent issue, so clicking "Yes, build the UI"
     // (which swaps parentIssueId to the new Build UI issue) doesn't immediately re-trigger
-    // the prompt against the stale "requirements done" status snapshot.
-    const dedupeKey = `scyne_ui_prompted_for_${targetProject}__${targetFeature}`;
+    // the prompt against the stale "done" status snapshot.
+    const dedupeKey = isRequirementsRun
+      ? `scyne_ui_prompted_for_${targetProject}__${targetFeature}`
+      : `scyne_ui_prompted_after_sd_${targetProject}__${targetFeature}`;
     if (typeof window !== "undefined" && window.localStorage.getItem(dedupeKey)) return;
-    setPendingUiPrompt({ project: targetProject, feature: targetFeature });
-  }, [status, targetProject, targetFeature, parentIssueId]);
+    setPendingUiPrompt({
+      project: targetProject,
+      feature: targetFeature,
+      headline: isRequirementsRun ? "Confluence + Jira are live." : "Solution design is published — the pipeline is complete.",
+      dedupeKey,
+    });
+  }, [status, targetProject, targetFeature, parentIssueId, previewAvailable]);
 
   // Watch for the UI preview becoming available for the current target.
   // Don't auto-switch tabs — the green dot on the UI tab signals it's ready;
@@ -314,12 +334,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (feat) setTargetFeature(feat);
         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the UI agent for **${proj}** / **${feat}**…` }]);
         try {
-          // Pre-set the per-project dedupe flag so the "build UI?" prompt card doesn't pop
-          // again against the now-stale "requirements done" status snapshot.
+          // Pre-set both per-project dedupe flags so neither "build UI?" prompt card
+          // (post-requirements or post-solution-design) pops against a stale snapshot.
           if (typeof window !== "undefined" && proj && feat) {
             window.localStorage.setItem(`scyne_ui_prompted_for_${proj}__${feat}`, "1");
+            window.localStorage.setItem(`scyne_ui_prompted_after_sd_${proj}__${feat}`, "1");
           }
           const issue = await triggerUiBuild(proj, feat);
+          rememberUiIssue(issue.id);
           setParentIssueId(issue.id);
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the UI agent. The live preview will appear on the right once it scaffolds the app.` }]);
         } catch (e: any) {
@@ -394,7 +416,21 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         const kind = String(args?.kind || "modify");
         const instruction = String(args?.instruction || userText);
         const repoUrl = String(args?.repo_url || "");
-        const buildUiIssues = (status?.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
+        let buildUiIssues = (status?.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
+        if (buildUiIssues.length === 0) {
+          // The chat has moved on to another flow (data model / solution design),
+          // so the polled tree has no Build UI issue. Fall back to the last Build
+          // UI run this browser triggered and look the child up in ITS tree —
+          // the UI preview stays alive across pipeline detours, so "come back to
+          // the UI" keeps working.
+          const storedId = typeof window !== "undefined" ? window.localStorage.getItem("scyne_ui_issue_id") : null;
+          if (storedId) {
+            try {
+              const uiStatus: StatusSnapshot = await getStatus(storedId);
+              buildUiIssues = (uiStatus.flatIssues ?? []).filter((i) => i.title.startsWith("Build UI"));
+            } catch { /* fall through to the not-found message */ }
+          }
+        }
         const activeUi = buildUiIssues.filter((i) => i.status !== "done");
         const uiChild = activeUi[activeUi.length - 1] ?? buildUiIssues[buildUiIssues.length - 1];
         if (!uiChild) {
@@ -454,6 +490,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setStatusError(null);
     setRuns([]);
     clearChatPersistence();
+    if (typeof window !== "undefined") window.localStorage.removeItem("scyne_ui_issue_id");
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
     setTargetProject(null);
@@ -580,7 +617,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             {pendingUiPrompt && (
               <Card elevation={2} className="p-4 flex flex-col gap-3 bg-white/80">
                 <div>
-                  <div className="text-sm font-semibold text-foreground">Confluence + Jira are live.</div>
+                  <div className="text-sm font-semibold text-foreground">{pendingUiPrompt.headline}</div>
                   <div className="text-sm text-muted-foreground">
                     Want me to build the UI for <span className="font-medium">{pendingUiPrompt.project}/{pendingUiPrompt.feature}</span> from the design folder?
                   </div>
@@ -589,14 +626,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   <Button
                     size="sm"
                     onClick={async () => {
-                      const { project, feature } = pendingUiPrompt;
-                      const dedupeKey = `scyne_ui_prompted_for_${project}__${feature}`;
+                      const { project, feature, dedupeKey } = pendingUiPrompt;
                       if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
                       setPendingUiPrompt(null);
                       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", text: "Yes, build the UI." }]);
                       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the UI agent for **${project}** / **${feature}**…` }]);
                       try {
                         const issue = await triggerUiBuild(project, feature);
+                        rememberUiIssue(issue.id);
                         setParentIssueId(issue.id);
                         setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** assigned to the UI agent. The live preview will land on the right once it scaffolds the app.` }]);
                       } catch (e: any) {
@@ -610,8 +647,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      const { project, feature } = pendingUiPrompt;
-                      const dedupeKey = `scyne_ui_prompted_for_${project}__${feature}`;
+                      const { dedupeKey } = pendingUiPrompt;
                       if (typeof window !== "undefined") window.localStorage.setItem(dedupeKey, "1");
                       setPendingUiPrompt(null);
                     }}

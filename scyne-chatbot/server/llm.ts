@@ -64,7 +64,7 @@ function buildSystemPrompt(
   uiContext?: UiContext,
 ): string {
   const uiBlock = uiContext?.active
-    ? `\n## A live UI preview is ACTIVE for ${uiContext.project}/${uiContext.feature}\n\nThe right pane is showing a running, editable UI build. For EACH user message decide the intent:\n- **A question or request for information** ("what does this screen do?", "why is it laid out this way?", "is it responsive?", "what's left to do?") → just answer in text. Do NOT touch the build.\n- **A change to the UI** ("make the header navy", "add a back button", "move the table up", "use bigger fonts") → call \`comment_on_ui_build\` with kind="modify" and a clear \`instruction\`.\n- **Approval** ("looks good", "ship it", "approve", "that's perfect") → call \`comment_on_ui_build\` with kind="approve".\n- **Push to GitHub** ("push to github <url>", "publish it to <repo>") → call \`comment_on_ui_build\` with kind="push" and \`repo_url\`.\n\nWhen unsure whether it's a question or a change, prefer answering in text and ask a one-line clarifying question. Never silently turn a question into a modify instruction.\n`
+    ? `\n## A live UI preview is ACTIVE for ${uiContext.project}/${uiContext.feature}\n\nThe right pane is showing a running, editable UI build. For EACH user message decide the intent:\n- **A question or request for information** ("what does this screen do?", "why is it laid out this way?", "is it responsive?", "what's left to do?") → just answer in text. Do NOT touch the build.\n- **A change to the UI** ("make the header navy", "add a back button", "move the table up", "use bigger fonts") → call \`comment_on_ui_build\` with kind="modify" and a clear \`instruction\`.\n- **Approval** ("looks good", "ship it", "approve", "that's perfect") → call \`comment_on_ui_build\` with kind="approve".\n- **Push to GitHub** ("push to github <url>", "publish it to <repo>") → call \`comment_on_ui_build\` with kind="push" and \`repo_url\`.\n- **A request to run another workflow stage** ("generate the data model", "run the solution design", "regenerate the requirements") → this is NOT a UI change. Call the matching trigger tool (\`trigger_data_model\` / \`trigger_solution_design\` / \`trigger_requirement_generation\`) as normal — the UI preview stays alive and the user can come back to it afterwards.\n\nWhen unsure whether it's a question or a change, prefer answering in text and ask a one-line clarifying question. Never silently turn a question into a modify instruction.\n`
     : "";
   const targetBlock = target?.project && target?.feature
     ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
@@ -114,6 +114,8 @@ And one standalone workflow:
 
 Each pipeline stage has its own human approval gate, and you can request changes on any of them. The stages are user-triggered, not automatic: the user asks for the next stage when they're ready.
 
+**The UI build is OPTIONAL and order-independent of stages 2–3.** The user can skip it entirely, run the data model and solution design first, and come back to the UI at any time — it only needs the Product Summary. If the user declines a UI-build offer or sidesteps it ("not now", "skip the UI", "do the data model instead"), do NOT call \`trigger_ui_build\` — run whatever stage they asked for. When they later say "now build the UI" / "let's do the UI", call \`trigger_ui_build\` for the active project/feature.
+
 ### Requirements path
 
 1. **Greet briefly.** Just say hi. Do NOT list projects, features, or defaults upfront. Wait for the user to ask.
@@ -126,10 +128,11 @@ Each pipeline stage has its own human approval gate, and you can request changes
 
 ### UI build path
 
-The user can request a UI build either upfront ("make the UI for SADA/interim-benefit") or after the BA finishes ("yes, build it" in response to the post-push prompt).
+The user can request a UI build upfront ("make the UI for SADA/interim-benefit"), right after the BA finishes ("yes, build it" in response to the post-push prompt), or LATER — after running the data model and solution design ("now build the UI", "let's come back to the UI").
 
 - **Upfront request** (e.g. "build the UI for SADA / interim-benefit", "make a UI for X", "design the screens for X"): call \`trigger_ui_build\` with the chosen project + feature. The backend will check that BA outputs (product-summary.md) exist; if not, it'll surface an error and you should ask the user whether to run the requirements flow first.
 - **After BA push**: when the Activity timeline shows the BA flow is \`done\` and a Confluence URL is live, the application may surface a quick "Yes, build the UI" action. Treat any affirmative reply ("yes", "build it", "go ahead") as a request to call \`trigger_ui_build\` for the currently active project/feature.
+- **Skipped, then resumed**: if the user skipped the UI to run the pipeline ("skip the UI", "data model first"), that's fine — when they later ask for it ("now do the UI", "build the screens now", or an affirmative reply to the post-solution-design prompt), call \`trigger_ui_build\` for the active project/feature. Nothing about the pipeline blocks the UI build.
 
 If the user asks both at once ("generate requirements and build the UI for SADA/interim-benefit"): call \`trigger_requirement_generation\` first. The UI build prompt will follow automatically once requirements are done.
 

@@ -29,37 +29,45 @@ All source files are `.md` format.
 
 ## Where the inputs and output live (Scyne workspace layout)
 
-This skill runs inside the Scyne workspace. Inputs and the output are organised
-by project + feature — the Architecture Lead agent passes you the `<project>` and
-`<feature>` in its issue description.
+This skill runs inside its own working folder
+`./projects/<project>/<feature>/solutions/Design/` — the Architecture Lead agent
+passes you the `<project>` and `<feature>` in its issue description, and stages
+the inputs into this folder before invoking the skill.
 
-- **Product Summary (input):** `./projects/<project>/<feature>/outputs/product-summary.md`
-  (the BA's approved output).
-- **Data Model Impact (input):** `./projects/<project>/<feature>/outputs/datamodel-impact.md`
-  (the Data Modeler's approved output — objects, custom fields, the ER diagram).
-- **Output (you write here):** `./projects/<project>/<feature>/outputs/solution-design.md`
+- **Product Summary (input):** `solutions/Design/productsummary/` — the BA's
+  approved product summary (the agent copies it here from the feature's
+  `outputs/product-summary.md`).
+- **Data Model Impact (input):** `solutions/Design/DataModel/` — the Data
+  Modeler's approved output (objects, custom fields, the ER diagram; the agent
+  copies it here from `solutions/DataModel/outputs/`).
+- **Output (you write here):** `solutions/Design/outputs/solution-design.md`
   — a single fixed filename so the chatbot's approval preview can read it.
+  Create the `outputs/` folder if it does not exist yet.
+
+(All paths below are relative to the working folder
+`./projects/<project>/<feature>/solutions/Design/`.)
 
 ---
 
 ## Step 1 — List and Read All Source Files
 
-Before reading anything, list the outputs folder so you know what is available:
+Before reading anything, list the contents of both input folders:
 
 ```bash
-ls ./projects/<project>/<feature>/outputs/
+ls productsummary/
+ls DataModel/
 ```
 
-You expect to find `product-summary.md` and `datamodel-impact.md`. Note every
-filename — these will be cited as sources throughout the document. If either is
-missing, record it in the output under **Assumptions & Gaps** and continue with
-what is available.
+You expect a product summary and a data model impact document. Note every
+filename — these will be cited as sources throughout the document. If either
+folder is empty, record it in the output under **Assumptions & Gaps** and
+continue with what is available.
 
 ---
 
 ## Step 2 — Read the Product Summary
 
-Read `./projects/<project>/<feature>/outputs/product-summary.md`.
+Read **every** `.md` file in `productsummary/`.
 
 Extract and catalogue the following:
 
@@ -96,7 +104,7 @@ you will validate it against the hierarchy in Step 4.
 
 ## Step 3 — Read the Data Model Impact Analysis
 
-Read `./projects/<project>/<feature>/outputs/datamodel-impact.md`.
+Read **every** `.md` file in `DataModel/` (the Data Modeler's impact analysis).
 
 Note:
 - Standard objects relevant to the requirements
@@ -544,15 +552,15 @@ Before saving, verify:
 
 ## Step 7 — Save
 
-Save the completed document to:
+Save the completed document to (relative to the working folder):
 
 ```
-./projects/<project>/<feature>/outputs/solution-design.md
+./projects/<project>/<feature>/solutions/Design/outputs/solution-design.md
 ```
 
 Write the **Mermaid solution flow diagram source inline** in the `.md` (it is
-the source of truth). Do **not** pre-render it to an image here — the Architect
-Lead agent renders Mermaid blocks to PNG locally and embeds them when it
+the source of truth). Do **not** pre-render it to an image here — the
+Architecture Lead agent renders Mermaid blocks to PNG locally and embeds them when it
 publishes to Confluence.
 
 After saving, give a brief summary covering:

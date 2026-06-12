@@ -25,43 +25,45 @@ All source files are `.md` format.
 
 ## Where the inputs and output live (Scyne workspace layout)
 
-This skill runs inside the Scyne workspace. Inputs and the output are organised
-by project + feature — the Data Modeler agent passes you the `<project>` and
-`<feature>` in its issue description.
+This skill runs inside its own working folder
+`./projects/<project>/<feature>/solutions/DataModel/` — the Data Modeler agent
+passes you the `<project>` and `<feature>` in its issue description, and stages
+the inputs into this folder before invoking the skill.
 
-- **Product Summary (input):** `./projects/<project>/<feature>/outputs/product-summary.md`
-  (the BA's approved output). Read every `.md` file in that `outputs/` folder so
-  you also pick up any supporting summary the feature carries.
-- **Data model reference catalogue (static input):** `./datamodel-reference/`
-  at the workspace root — the global Salesforce PSS / Social-Insurance object
-  catalogue (one `.md` per solution area). **Per-project override:** if
-  `./projects/<project>/<feature>/datamodel-reference/` exists and contains
-  files, use that instead and fall back to the global folder for anything it
-  doesn't cover.
-- **Output (you write here):** `./projects/<project>/<feature>/outputs/datamodel-impact.md`
+- **Product Summary (input):** `solutions/DataModel/productsummary/` — the BA's
+  approved product summary (the agent copies it here from the feature's
+  `outputs/product-summary.md`).
+- **Data model reference catalogue (input):** `solutions/DataModel/datamodel-reference/`
+  — the Salesforce PSS / Social-Insurance object catalogue (one `.md` per
+  solution area; the agent seeds it from the workspace-root `./datamodel-reference/`
+  when empty, so a feature can carry its own curated copy).
+- **Output (you write here):** `solutions/DataModel/outputs/datamodel-impact.md`
   — a single fixed filename so the chatbot's approval preview can read it.
+  Create the `outputs/` folder if it does not exist yet.
+
+(All paths below are relative to the working folder
+`./projects/<project>/<feature>/solutions/DataModel/`.)
 
 ---
 
 ## Step 1 — List and Read All Source Files
 
-Before reading anything, list the contents of both input locations:
+Before reading anything, list the contents of both input folders:
 
 ```bash
-ls ./projects/<project>/<feature>/outputs/
-ls ./datamodel-reference/            # or the per-project override if present
+ls productsummary/
+ls datamodel-reference/
 ```
 
 Note every filename — you will reference them as sources throughout the
-analysis. If either location is empty, record it in the output under
+analysis. If either folder is empty, record it in the output under
 **Assumptions & Gaps** and continue with what is available.
 
 ---
 
 ## Step 2 — Read the Product Summary
 
-Read **every** `.md` file in `./projects/<project>/<feature>/outputs/` (the
-Product Summary is `product-summary.md`).
+Read **every** `.md` file in `productsummary/`.
 
 For each file, extract and catalogue:
 
@@ -91,8 +93,7 @@ For each file, extract and catalogue:
 
 ## Step 3 — Read the Data Model Reference Files
 
-Read **every** `.md` file in `./datamodel-reference/` (or the per-project
-override).
+Read **every** `.md` file in `datamodel-reference/`.
 
 For each file, catalogue:
 
@@ -364,10 +365,10 @@ Before saving, verify:
 
 ## Step 7 — Save
 
-Save the completed document to:
+Save the completed document to (relative to the working folder):
 
 ```
-./projects/<project>/<feature>/outputs/datamodel-impact.md
+./projects/<project>/<feature>/solutions/DataModel/outputs/datamodel-impact.md
 ```
 
 Write the **Mermaid ER diagram source inline** in the `.md` (it is the source of

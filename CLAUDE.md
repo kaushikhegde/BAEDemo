@@ -46,18 +46,23 @@ Delivery Lead — routes by title prefix to the owning worker
    │
    ├─ DATA MODEL flow (needs product-summary.md): child issue assigned to the Data Modeler (status=todo)
    │     ▼
-   │   Data Modeler — two phases
-   │      ├─ PHASE 1: reads outputs/product-summary.md + datamodel-reference/ (static PSS catalogue)
-   │      │          runs the `datamodel-impact-analysis` skill → outputs/datamodel-impact.md
+   │   Data Modeler — works in solutions/DataModel/, two phases
+   │      ├─ PHASE 1: stages inputs (copies outputs/product-summary.md → productsummary/;
+   │      │          seeds datamodel-reference/ from the global catalogue if empty),
+   │      │          runs the `datamodel-impact-analysis` skill
+   │      │          → solutions/DataModel/outputs/datamodel-impact.md
    │      │          attaches it, raises an approval gate
    │      └─ PHASE 2 (after human approves): renders the Mermaid ER diagram → PNG,
    │                 creates a STANDALONE Confluence page "<feature> — Data Model Impact"
    │
-   ├─ SOLUTION DESIGN flow (needs datamodel-impact.md): child issue assigned to the Architecture Lead (status=todo)
+   ├─ SOLUTION DESIGN flow (needs solutions/DataModel/outputs/datamodel-impact.md):
+   │  child issue assigned to the Architecture Lead (status=todo)
    │     ▼
-   │   Architecture Lead — two phases
-   │      ├─ PHASE 1: reads outputs/product-summary.md + outputs/datamodel-impact.md
-   │      │          runs the `solution-design-document` skill → outputs/solution-design.md
+   │   Architecture Lead — works in solutions/Design/, two phases
+   │      ├─ PHASE 1: stages inputs (copies the product summary → productsummary/;
+   │      │          copies the Data Modeler's output → DataModel/),
+   │      │          runs the `solution-design-document` skill
+   │      │          → solutions/Design/outputs/solution-design.md
    │      │          attaches it, raises an approval gate
    │      └─ PHASE 2 (after human approves): renders the Mermaid flow diagram → PNG,
    │                 creates a STANDALONE Confluence page "<feature> — Solution Design"
@@ -104,15 +109,22 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── design/             (consumed by the Developer, NOT the BA)
 │   │   ├── style-guides/   (palette, typography, tokens, brand voice)
 │   │   └── example-screens/(visual reference)
-│   └── outputs/            (BA writes here; Data Modeler / Architecture Lead / Developer read + write here)
-│       ├── extraction.json
-│       ├── product-summary.md       (BA)
-│       ├── stories.json
-│       ├── stories.md
-│       ├── gaps.md
-│       ├── datamodel-impact.md      (Data Modeler — fixed name, ER diagram inline)
-│       └── solution-design.md       (Architecture Lead — fixed name, flow diagram inline)
-├── datamodel-reference/    (STATIC global Salesforce PSS / Social-Insurance object catalogue — the Data Modeler's reference input; per-project override at projects/<p>/<f>/datamodel-reference/ if present)
+│   ├── outputs/            (BA writes here; downstream stages read product-summary.md from here)
+│   │   ├── extraction.json
+│   │   ├── product-summary.md       (BA)
+│   │   ├── stories.json
+│   │   ├── stories.md
+│   │   └── gaps.md
+│   └── solutions/          (downstream pipeline working folders — each stage stages its own inputs)
+│       ├── DataModel/                       (the Data Modeler's working folder)
+│       │   ├── productsummary/              (input — copied from outputs/product-summary.md)
+│       │   ├── datamodel-reference/         (input — PSS catalogue; seeded from the global ./datamodel-reference/ if empty, curated copies win)
+│       │   └── outputs/datamodel-impact.md  (output — fixed name, ER diagram inline)
+│       └── Design/                          (the Architecture Lead's working folder)
+│           ├── productsummary/              (input — copied from outputs/product-summary.md)
+│           ├── DataModel/                   (input — copied from solutions/DataModel/outputs/)
+│           └── outputs/solution-design.md   (output — fixed name, flow diagram inline)
+├── datamodel-reference/    (STATIC global Salesforce PSS / Social-Insurance object catalogue — seeds each feature's solutions/DataModel/datamodel-reference/)
 ├── skills/                 (registered company skills — source of truth, registered with Paperclip by the bootstrap)
 │   ├── requirement-generator/SKILL.md
 │   ├── datamodel-impact-analysis/SKILL.md
@@ -203,13 +215,13 @@ Three registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 - 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11. (Section 3.3.1 Data Model stays a manual placeholder — the Data Modeler publishes its analysis to a *separate* Confluence page, it does not fill 3.3.1.)
 - Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc`. **Per-project override:** files in `./projects/<project>/<feature>/requirements/templates/` take precedence per artefact; `./examples/` is the fallback.
 
-**`datamodel-impact-analysis`** (the Data Modeler, Phase 1):
-- Inputs: `./projects/<project>/<feature>/outputs/product-summary.md` (approved) + `./datamodel-reference/` (static PSS catalogue; per-project override supported).
-- Output: `./projects/<project>/<feature>/outputs/datamodel-impact.md` (fixed name) — impact table, custom-field detail, standard-first decision hierarchy, and a Mermaid `erDiagram`.
+**`datamodel-impact-analysis`** (the Data Modeler, Phase 1 — working folder `solutions/DataModel/`):
+- Inputs (staged by the agent): `productsummary/` (copied from the approved `outputs/product-summary.md`) + `datamodel-reference/` (seeded from the global catalogue if empty).
+- Output: `solutions/DataModel/outputs/datamodel-impact.md` (fixed name) — impact table, custom-field detail, standard-first decision hierarchy, and a Mermaid `erDiagram`.
 
-**`solution-design-document`** (the Architecture Lead, Phase 1):
-- Inputs: `./projects/<project>/<feature>/outputs/product-summary.md` (approved) + `./outputs/datamodel-impact.md` (approved).
-- Output: `./projects/<project>/<feature>/outputs/solution-design.md` (fixed name) — declarative-first (OOB → low-code → code) component design and a Mermaid `flowchart`.
+**`solution-design-document`** (the Architecture Lead, Phase 1 — working folder `solutions/Design/`):
+- Inputs (staged by the agent): `productsummary/` (copied from the approved product summary) + `DataModel/` (copied from `solutions/DataModel/outputs/`).
+- Output: `solutions/Design/outputs/solution-design.md` (fixed name) — declarative-first (OOB → low-code → code) component design and a Mermaid `flowchart`.
 
 ## The chatbot (`scyne-chatbot/`)
 
@@ -233,7 +245,7 @@ open http://127.0.0.1:5173
 | POST   | `/api/chat`                       | Proxies the chat conversation to Gemini, returns Anthropic-shaped blocks  |
 | POST   | `/api/trigger`                    | Creates the requirements issue (`Generate requirements — …`, status=todo, assigned to the Delivery Lead) |
 | POST   | `/api/data-model/trigger`         | Creates a `Generate data model — …` issue. Gated: `409 no_product_summary` if `outputs/product-summary.md` is missing |
-| POST   | `/api/solution-design/trigger`    | Creates a `Generate solution design — …` issue. Gated: `409 no_data_model` if `outputs/datamodel-impact.md` is missing |
+| POST   | `/api/solution-design/trigger`    | Creates a `Generate solution design — …` issue. Gated: `409 no_data_model` if `solutions/DataModel/outputs/datamodel-impact.md` is missing |
 | GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links. Stage labels adapt to the flow (BA / Data Modeler / Architecture Lead / Developer) |
 | POST   | `/api/approve/:approvalId`        | Resolves an approval gate; wakes the gate's own issue assignee. Atlassian auto-provisioning is keyed on the keys in the issue description: requirements ensures Jira project + Confluence space; data-model/solution-design ensure just the space; Build UI carries no keys → skipped |
 | POST   | `/api/reject/:approvalId`         | Rejects an approval gate                                                  |
@@ -241,7 +253,7 @@ open http://127.0.0.1:5173
 | GET    | `/api/history`                    | All completed pipeline runs (requirements, data model, solution design) with their Confluence + Jira links (History view) |
 | GET    | `/api/runs/:issueId`              | Compact agent run summaries (agent · status · duration) for the run tree (Activity panel) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
-| GET    | `/api/artifacts`                  | Reads `outputs/*` (incl. `datamodel-impact.md`, `solution-design.md`) for the approval-card preview |
+| GET    | `/api/artifacts`                  | Reads the BA's `outputs/*` plus `solutions/DataModel/outputs/datamodel-impact.md` and `solutions/Design/outputs/solution-design.md` for the approval-card preview |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |
 | POST   | `/api/ui-agent/trigger`           | Triggers the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead)     |
 | GET    | `/api/preview/:project/:feature`  | Returns preview URL for the scaffolded app                                |
@@ -341,7 +353,10 @@ Bundles: `pm.json` (org.pm / Delivery Lead), `ba.json` (org.ba), `data-modeler.j
 mkdir -p projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI,templates}
 mkdir -p projects/<project>/<feature>/design/{style-guides,example-screens}
 mkdir -p projects/<project>/<feature>/outputs
+mkdir -p projects/<project>/<feature>/solutions/DataModel/{productsummary,datamodel-reference,outputs}
+mkdir -p projects/<project>/<feature>/solutions/Design/{productsummary,DataModel,outputs}
 # Drop files into the four requirements subfolders
+# (the solutions/ working folders are also created on demand by the agents)
 ```
 
 No code change needed — `/api/features` auto-discovers it on the next chat turn.
