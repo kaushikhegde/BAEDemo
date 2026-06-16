@@ -21,7 +21,7 @@ When this document later refers to `outputs/extraction.json`, `outputs/product-s
 Read every file in `./projects/<project>/<feature>/requirements/` (the chatbot writes them here):
 - `Transcripts/transcript.*` — PO/BA/Dev meeting dialogue. **Primary source** of stories and acceptance criteria. Files may be `.docx`/`.pdf` (uploaded directly) or `.md` produced by the chatbot's voice agent — those start with a YAML front-matter block (`source: live-recording` or `audio-upload`) and use `**Speaker 1:** …` lines for diarised utterances. Treat each speaker as one participant; you don't need to map them to roles unless the content makes it obvious.
 - `SOP/sop.*` — SOP / policy / domain & regulatory context (`.docx`/`.pdf`/`.md`). Use for the "Context" paragraph, constraints, and assumptions — **not** stories. Tag anything sourced here with its SOP filename so traceability is auditable.
-- `UI/ui-screen.*` (png/jpg) — wireframe or mockup. Reference by filename in UI/Screen Behaviour and attach to the relevant story.
+- `UI/ui-screen.*` (png/jpg) — wireframe or mockup. **OPTIONAL** — this folder may be empty. When present, reference by filename in UI/Screen Behaviour and attach to the relevant story. When empty, leave Section 5.2 (UI/Screen Behaviour) marked `N/A — no UI screens provided`, derive screen behaviour from the transcripts/SOP where the dialogue describes it, and do NOT block or treat the absence as a hard gap.
 - `Notes/*` — supporting context (uploaded notes, additional docs). Fold in but don't treat as the primary source.
 
 The sibling `./projects/<project>/<feature>/design/` folder (style-guides, example-screens) is read by the downstream **UI agent**, not this skill — ignore it here.

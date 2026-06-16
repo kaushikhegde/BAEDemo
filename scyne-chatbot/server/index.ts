@@ -77,9 +77,10 @@ app.post("/api/trigger", async (req, res) => {
     };
     const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
 
-    // Pre-flight: the BA needs at least one file in SOP, Transcripts and UI
-    // (Notes is optional — mirrors the BA's own validation). Block + tell the user
-    // exactly what's missing rather than firing a run that the BA will just block.
+    // Pre-flight: the BA needs at least one file in SOP and Transcripts.
+    // Notes and UI are OPTIONAL (mirrors the BA's own validation) — UI screens are
+    // a nice-to-have, not a gate. Block + tell the user exactly what's missing
+    // rather than firing a run that the BA will just block.
     const reqRoot = path.join(ws, "projects", project, feature, "requirements");
     const countFiles = async (sub: string) => {
       try {
@@ -87,7 +88,7 @@ app.post("/api/trigger", async (req, res) => {
         return entries.filter((e) => e.isFile() && !e.name.startsWith(".")).length;
       } catch { return 0; }
     };
-    const required = ["SOP", "Transcripts", "UI"];
+    const required = ["SOP", "Transcripts"];
     const counts = await Promise.all(required.map(countFiles));
     const emptyFolders = required.filter((_, i) => counts[i] === 0);
     if (emptyFolders.length > 0) {
