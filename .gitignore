@@ -32,6 +32,7 @@ outputs/
 projects/
 generated-apps/
 input-files/
+dummy/
 
 # Per-machine bootstrap output — written by `npm run bootstrap` against the LOCAL
 # Paperclip. Holds this machine's company + agent IDs. MUST NOT be committed: the

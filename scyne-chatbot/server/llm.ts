@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, SchemaType, type Tool } from "@google/generative-ai";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { WORKSPACE_PATH } from "./workspace.js";
 
 if (!process.env.GEMINI_API_KEY) {
   console.warn("[llm] Warning: GEMINI_API_KEY not set; chat will fail until configured.");
@@ -9,7 +10,7 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 export const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
+const WORKSPACE = WORKSPACE_PATH;
 
 /** Scan ./projects/<project>/<feature>/ structure on demand. */
 async function listAvailable(): Promise<Record<string, { name: string; counts: Record<string, number> }[]>> {

@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { WORKSPACE_PATH } from "./workspace.js";
 
 const BASE = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api";
 
@@ -8,7 +10,7 @@ const BASE = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api";
 // If ids.json is missing, instruct the user to run bootstrap rather than silently
 // pointing at non-existent UUIDs.
 const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH
-  || `${process.env.WORKSPACE_PATH || "/workspace"}/.bootstrap/ids.json`;
+  || path.join(WORKSPACE_PATH, ".bootstrap", "ids.json");
 let COMPANY = "";
 let DELIVERY_LEAD_AGENT = "";
 try {

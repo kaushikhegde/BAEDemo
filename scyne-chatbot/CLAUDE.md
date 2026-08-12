@@ -193,7 +193,7 @@ PAPERCLIP_API_URL=http://127.0.0.1:3100/api
 # Company + agent IDs are NOT in .env — the server reads them from
 # <workspace>/.bootstrap/ids.json, written by `npm run bootstrap`.
 
-WORKSPACE_PATH=/Users/<you>/Projects/buzzinga/requirement-generator
+# WORKSPACE_PATH=  # leave unset locally — derived from the install location
 
 DEFAULT_FEATURE_NAME=Review & Verify Evidence
 DEFAULT_PROCESS_L3=2.4 Review & Verify evidence
@@ -207,7 +207,14 @@ DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
 PORT=4000
 ```
 
-If you move the workspace, only `WORKSPACE_PATH` needs updating here. Agent IDs never live in `.env`: `npm run bootstrap` hires/converges the org, swaps the placeholder IDs inside `../agent-instructions/pm.json`, and writes the live IDs to `<workspace>/.bootstrap/ids.json`, which `server/paperclip.ts` reads at startup.
+**Workspace root resolution** (`server/workspace.ts`) — the one place that decides where `projects/`, `outputs/`, `generated-apps/` and `.bootstrap/ids.json` live. Never hardcode an absolute path anywhere else; every other module imports `WORKSPACE_PATH` from there. It resolves in this order:
+
+1. `WORKSPACE_PATH` env var, **if that directory exists and is writable on this machine** (Docker sets `/workspace`). A stale value copied from someone else's `.env` is logged and ignored rather than failing every write with `EACCES`.
+2. Otherwise the repo root found by walking up from `server/` for the `agent-instructions/` + `skills/` markers — so a fresh clone on any machine just works with no config.
+
+The resolved root is printed at boot: `[workspace] root = … (from WORKSPACE_PATH | derived from install location)`.
+
+Agent IDs never live in `.env`: `npm run bootstrap` hires/converges the org, swaps the placeholder IDs inside `../agent-instructions/pm.json`, and writes the live IDs to `<workspace>/.bootstrap/ids.json`, which `server/paperclip.ts` reads at startup.
 
 ## Branding
 

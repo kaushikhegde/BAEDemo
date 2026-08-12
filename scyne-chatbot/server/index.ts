@@ -11,6 +11,7 @@ import { chat } from "./llm.js";
 import { paperclip } from "./paperclip.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
+import { WORKSPACE_PATH } from "./workspace.js";
 import { ensureAtlassianTargets, provisioningConfigured } from "./services/atlassianProvision.js";
 import { filterRunLog, type TranscriptEvent } from "./services/runTranscript.js";
 import { writeTranscript } from "./services/transcriptWriter.js";
@@ -75,7 +76,7 @@ app.post("/api/trigger", async (req, res) => {
       confluence_space_key: overrides.confluence_space_key || projectKey,
       confluence_page_title: overrides.confluence_page_title || (envIsThisProject ? process.env.DEFAULT_CONFLUENCE_PAGE_TITLE : feature_name),
     };
-    const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
+    const ws = WORKSPACE_PATH;
 
     // Pre-flight: the BA needs at least one file in SOP and Transcripts.
     // Notes and UI are OPTIONAL (mirrors the BA's own validation) — UI screens are
@@ -663,7 +664,7 @@ app.get("/api/features", async (_req, res) => {
   try {
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
+    const ws = WORKSPACE_PATH;
     const projectsDir = path.join(ws, "projects");
     const result: Record<string, { name: string; counts: Record<string, number> }[]> = {};
     try {
@@ -707,7 +708,7 @@ app.get("/api/artifacts", async (req, res) => {
 
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const ws = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
+    const ws = WORKSPACE_PATH;
     const featureRoot = path.join(ws, "projects", project, feature);
     // BA artefacts live in outputs/; the downstream stages each write into
     // their own solutions/<Stage>/outputs/ working folder.
@@ -742,7 +743,6 @@ app.get("/api/artifacts", async (req, res) => {
 
 // --- Uploads & voice agent ------------------------------------------------
 
-const WORKSPACE_PATH = process.env.WORKSPACE_PATH || "/Users/tagariwalayashesh/Projects/buzzinga/requirement-generator";
 const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -873,6 +873,17 @@ app.post("/api/projects", async (req, res) => {
     res.json({ ok: true, project, feature, relativePath: path.relative(WORKSPACE_PATH, base) });
   } catch (e: any) {
     console.error("[projects] create failed:", e);
+    // A permission error here nearly always means the workspace root is wrong
+    // (pointing outside this checkout) — say so instead of leaking a raw EACCES.
+    if (["EACCES", "EPERM", "EROFS"].includes(e?.code)) {
+      return res.status(500).json({
+        error: "workspace_not_writable",
+        message:
+          `Can't create folders under ${WORKSPACE_PATH} (${e.code}). ` +
+          `The server's workspace root is not writable — unset WORKSPACE_PATH in scyne-chatbot/.env ` +
+          `to use this checkout, or point it at a directory you own.`,
+      });
+    }
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
   }
 });
