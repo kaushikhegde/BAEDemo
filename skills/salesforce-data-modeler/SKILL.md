@@ -60,9 +60,11 @@ this folder before invoking the skill.
   — a single fixed filename so the chatbot's approval preview can read it.
   Create the `outputs/` folder if it does not exist yet.
 
-This filename is deliberately distinct from `datamodel-impact.md`, which is the
-`datamodel-impact-analysis` skill's output. The two skills do not overwrite each
-other and may both run for the same feature.
+This is the only data model skill. The retired `datamodel-impact-analysis` skill
+wrote `datamodel-impact.md`; features built before it was retired still carry
+that file, and downstream stages still read it. Never write to that name — the
+two must not be conflated, and a stale analysis must never be mistaken for a
+fresh one.
 
 (All paths below are relative to the working folder
 `./projects/<project>/<feature>/solutions/DataModel/`.)

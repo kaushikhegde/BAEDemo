@@ -10,8 +10,10 @@
     "bootstrap": "WORKSPACE_PATH=\"$PWD\" AGENT_CWD=\"$PWD\" AGENT_INSTRUCTIONS_DIR=\"$PWD/agent-instructions\" SKILLS_DIR=\"$PWD/skills\" node scripts/bootstrap.mjs",
     "chatbot": "cd scyne-chatbot && npm run dev",
     "link-skills": "mkdir -p .claude/skills && for s in skills/*/; do n=$(basename \"$s\"); rm -rf \".claude/skills/$n\"; ln -s \"../../skills/$n\" \".claude/skills/$n\"; done && ls -l .claude/skills",
-    "stage": "node scripts/stage-datamodel.mjs",
+    "stage": "node scripts/stage.mjs",
     "convert": "node scripts/convert-to-md.mjs",
+    "brand": "node scripts/extract-brand.mjs",
+    "app": "node scripts/render-companion-app.mjs",
     "dev": "concurrently -n paperclip,app -c blue,green \"npm:paperclip\" \"npm run bootstrap && npm run chatbot\"",
     "oauth": "npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2"
   },

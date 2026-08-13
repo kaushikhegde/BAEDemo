@@ -107,10 +107,10 @@ function mdToHtml(md, diagrams) {
         const key = diagramKey(src);
         const svg = diagrams.get(key);
         out.push(svg
-          ? `<figure class="diagram" role="group" aria-label="Diagram"><div class="diagram-inner">${svg}</div></figure>`
-          : `<figure class="diagram diagram-fallback"><figcaption>Diagram source (not rendered)</figcaption><pre><code>${esc(src)}</code></pre></figure>`);
+          ? `<figure class="diagram" role="group" aria-label="Diagram" tabindex="0"><div class="diagram-inner">${svg}</div></figure>`
+          : `<figure class="diagram diagram-fallback"><figcaption>Diagram source (not rendered)</figcaption><pre tabindex="0"><code>${esc(src)}</code></pre></figure>`);
       } else {
-        out.push(`<pre><code>${esc(src)}</code></pre>`);
+        out.push(`<pre tabindex="0"><code>${esc(src)}</code></pre>`);
       }
       continue;
     }
@@ -123,8 +123,13 @@ function mdToHtml(md, diagrams) {
       i += 2;
       const rows = [];
       while (i < lines.length && /^\s*\|/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+      // A wide table scrolls inside its own container, which makes that container
+      // the only way to reach the off-screen columns. Without tabindex a keyboard
+      // user simply cannot scroll it, so the columns are unreachable for them.
+      const label = esc(head.filter(Boolean).slice(0, 3).join(", ")) || "Table";
       out.push(
-        `<div class="table-wrap"><table><thead><tr>${head.map((h) => `<th>${inline(h)}</th>`).join("")}</tr></thead><tbody>` +
+        `<div class="table-wrap" tabindex="0" role="region" aria-label="Table: ${label}">` +
+        `<table><thead><tr>${head.map((h) => `<th>${inline(h)}</th>`).join("")}</tr></thead><tbody>` +
         rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("") +
         `</tbody></table></div>`
       );
@@ -292,11 +297,86 @@ function readableOn(bg) {
   return contrast(bg, "#ffffff") >= contrast(bg, "#12151d") ? "#ffffff" : "#12151d";
 }
 
+function hexToRgb(hex) {
+  const v = expandHex(hex);
+  return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
+}
+const toHexStr = (rgb) => `#${rgb.map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0")).join("")}`;
+const mix = (a, b, t) => toHexStr(hexToRgb(a).map((c, i) => c + (hexToRgb(b)[i] - c) * t));
+
+/**
+ * A brand colour used as TEXT has to clear 4.5:1 against the surface behind it.
+ * A client's palette is chosen for their website, not for this page's dark mode:
+ * most brand colours are dark, and pasting one straight into both themes makes
+ * the wordmark, headings and links invisible on a dark background. So the text
+ * role is derived per theme — the brand is walked toward white or black only as
+ * far as it must go, which keeps the hue recognisably theirs.
+ */
+function brandTextColor(brand, surface) {
+  const target = readableOn(surface); // walk toward whichever end has headroom
+  for (let t = 0; t <= 1.0001; t += 0.05) {
+    const c = mix(brand, target, t);
+    if (contrast(c, surface) >= 4.5) return c;
+  }
+  return target;
+}
+
+/**
+ * A colour used as a BACKGROUND behind text must clear 4.5:1 against some
+ * foreground. Mid-greys are a dead zone: white and black both land near 4.4:1
+ * there, so no choice of text colour rescues them. A brand that falls in that
+ * band is walked out of it rather than trusted — otherwise the selected
+ * navigation item fails for every client whose brand is a mid-tone.
+ */
+function ensureTextSurface(bg, toward) {
+  if (contrast(bg, readableOn(bg)) >= 4.5) return bg;
+  for (let t = 0.05; t <= 1.0001; t += 0.05) {
+    const c = mix(bg, toward, t);
+    if (contrast(c, readableOn(c)) >= 4.5) return c;
+  }
+  return toward;
+}
+
+/**
+ * A font stack out of theme.json is untrusted text landing inside a CSS rule.
+ * Only family names, quotes, commas and spaces can survive — anything that could
+ * close the declaration or pull a resource is rejected outright rather than
+ * stripped, so a mangled stack never silently becomes a different font.
+ */
+function safeFontStack(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s || s.length > 160) return null;
+  if (!/^[A-Za-z0-9 ,'"._-]+$/.test(s)) return null;
+  if (/url\(|@import|expression|[;{}<>\\]/i.test(s)) return null;
+  return s;
+}
+
+/** Only an inline raster/vector data URI — the page must make zero requests. */
+function safeLogoSrc(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!/^data:image\/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/=]+$/.test(s)) return null;
+  if (s.length > 700_000) return null;
+  return s;
+}
+
 async function loadTheme(featureRoot) {
   const t = await readJson(path.join(featureRoot, "design", "style-guides", "theme.json"));
-  const out = { logoText: "Scyne", vars: {} };
+  // `vars` applies to both themes; `lightVars` / `darkVars` are theme-scoped and
+  // must win over the stylesheet's own dark block, so they are emitted after it.
+  const out = { logoText: "Scyne", logoSrc: null, fontStack: null, vars: {}, lightVars: {}, darkVars: {} };
   if (!t) return out;
   if (typeof t.logoText === "string" && t.logoText.trim()) out.logoText = t.logoText.trim();
+
+  if (t.logoSrc != null) {
+    out.logoSrc = safeLogoSrc(t.logoSrc);
+    if (!out.logoSrc) console.warn(`[render-companion-app] WARN theme.json "logoSrc" is not an inline data:image URI — ignored`);
+  }
+  if (t.fontFamily != null) {
+    out.fontStack = safeFontStack(t.fontFamily);
+    if (!out.fontStack) console.warn(`[render-companion-app] WARN theme.json "fontFamily" is not a plain font stack — ignored`);
+  }
   const map = { brand: "--brand", brandDeep: "--brand-deep", accent: "--accent", ink: "--ink", bg: "--bg", panel: "--panel", line: "--line" };
   for (const [k, cssVar] of Object.entries(map)) {
     const v = t[k];
@@ -304,10 +384,39 @@ async function loadTheme(featureRoot) {
     else if (v != null) console.warn(`[render-companion-app] WARN theme.json "${k}" is not a hex colour — ignored`);
   }
   if (out.vars["--brand"]) {
-    out.vars["--sel-bg"] = out.vars["--brand"];
-    out.vars["--sel-fg"] = readableOn(out.vars["--brand"]);
-    const ratio = contrast(out.vars["--sel-bg"], out.vars["--sel-fg"]);
-    console.log(`[render-companion-app] theme: brand ${out.vars["--brand"]} → selected text ${out.vars["--sel-fg"]} (contrast ${ratio.toFixed(1)}:1)`);
+    const brand = out.vars["--brand"];
+    const LIGHT_SURFACE = "#f7f8fb", DARK_SURFACE = "#181c26";
+
+    // The selected navigation item paints text ON the brand, so the brand has to
+    // be a surface that can carry text at all.
+    const selLight = ensureTextSurface(brand, "#12151d");
+    out.vars["--sel-bg"] = selLight;
+    out.vars["--sel-fg"] = readableOn(selLight);
+
+    // The wordmark, panel headings and links read against the page surface, and
+    // that surface differs per theme — so these are theme-scoped, not part of
+    // the single override block that applies to both.
+    out.lightVars["--brand-fg"] = brandTextColor(out.vars["--brand-deep"] || brand, LIGHT_SURFACE);
+    out.darkVars["--brand-fg"] = brandTextColor(brand, DARK_SURFACE);
+
+    // The brand as a background also flips: a dark navy is right in light mode
+    // and disappears into a dark one, so lift it clear of the dark surface, then
+    // make sure the lifted colour can still carry text.
+    const darkBrand = ensureTextSurface(
+      contrast(brand, DARK_SURFACE) >= 3 ? brand : mix(brand, "#ffffff", 0.45),
+      "#ffffff",
+    );
+    out.darkVars["--brand"] = darkBrand;
+    out.darkVars["--sel-bg"] = darkBrand;
+    out.darkVars["--sel-fg"] = readableOn(darkBrand);
+
+    console.log(
+      `[render-companion-app] theme: brand ${brand}\n` +
+      `  light  nav ${selLight} on ${out.vars["--sel-fg"]} (${contrast(selLight, out.vars["--sel-fg"]).toFixed(1)}:1), ` +
+      `text ${out.lightVars["--brand-fg"]} (${contrast(out.lightVars["--brand-fg"], LIGHT_SURFACE).toFixed(1)}:1)\n` +
+      `  dark   nav ${darkBrand} on ${out.darkVars["--sel-fg"]} (${contrast(darkBrand, out.darkVars["--sel-fg"]).toFixed(1)}:1), ` +
+      `text ${out.darkVars["--brand-fg"]} (${contrast(out.darkVars["--brand-fg"], DARK_SURFACE).toFixed(1)}:1)`,
+    );
   }
   return out;
 }
@@ -433,10 +542,10 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
 html,body{margin:0;padding:0}
 body{
   background:var(--bg); color:var(--ink);
-  font:15px/1.6 Arial,"Helvetica Neue",Helvetica,sans-serif;
+  font:15px/1.6 var(--font,Arial,"Helvetica Neue",Helvetica,sans-serif);
   -webkit-text-size-adjust:100%;
 }
-a{color:var(--brand-deep)}
+a{color:var(--brand-fg,var(--brand-deep))}
 a:focus-visible,button:focus-visible,[tabindex]:focus-visible,input:focus-visible,select:focus-visible{
   outline:3px solid var(--accent); outline-offset:2px; border-radius:4px;
 }
@@ -447,7 +556,7 @@ header.top{
   position:sticky; top:0; z-index:20;
 }
 .top-in{max-width:var(--maxw);margin:0 auto;padding:.85rem 1.25rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
-.brand{font-weight:700;color:var(--brand-deep);letter-spacing:.02em}
+.brand{font-weight:700;color:var(--brand-fg,var(--brand-deep));letter-spacing:.02em}
 .crumb{color:var(--muted);font-size:.85rem}
 .spacer{flex:1}
 .btn{
@@ -472,7 +581,7 @@ nav.side a[aria-selected="true"] .pill{background:transparent;border-color:curre
 .pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:0 .45rem;font-size:.72rem;color:var(--muted)}
 main{min-width:0}
 .panel[hidden]{display:none}
-.panel-h{margin:.2rem 0 1rem;font-size:1.5rem;color:var(--brand-deep)}
+.panel-h{margin:.2rem 0 1rem;font-size:1.5rem;color:var(--brand-fg,var(--brand-deep))}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem}
 .card{
   border:1px solid var(--line);border-radius:var(--radius);padding:1rem;background:var(--bg);
@@ -548,14 +657,34 @@ dialog::backdrop{background:rgba(10,12,20,.5)}
   .panel[hidden]{display:block!important}
   .wrap{grid-template-columns:1fr}
 }
-${Object.keys(theme.vars).length ? `:root,:root[data-theme]{${Object.entries(theme.vars).map(([k, v]) => `${k}:${v};`).join("")}}` : ""}
+${(() => {
+  const decl = (o) => Object.entries(o).map(([k, v]) => `${k}:${v};`).join("");
+  const vars = { ...theme.vars };
+  // The page loads no webfont, so the client's face only applies where it is
+  // already installed — always keep a generic tail so text renders regardless.
+  if (theme.fontStack) vars["--font"] = `${theme.fontStack},Arial,"Helvetica Neue",Helvetica,sans-serif`;
+  const out = [];
+  if (Object.keys(vars).length) out.push(`:root,:root[data-theme]{${decl(vars)}}`);
+  // Theme-scoped overrides mirror the three states the base stylesheet uses:
+  // bare :root (light), the prefers-color-scheme block guarded against an
+  // explicit light choice, and the explicit dark attribute.
+  if (Object.keys(theme.lightVars).length) out.push(`:root,:root[data-theme="light"]{${decl(theme.lightVars)}}`);
+  if (Object.keys(theme.darkVars).length) {
+    const d = decl(theme.darkVars);
+    out.push(`@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){${d}}}`);
+    out.push(`:root[data-theme="dark"]{${d}}`);
+  }
+  return out.join("\n");
+})()}
+.brand-logo{height:26px;width:auto;max-width:170px;display:block;flex:0 0 auto}
+.brand-lock{display:flex;align-items:center;gap:.55rem;min-width:0}
 </style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="top-in">
-    <span class="brand">${esc(theme.logoText)}</span>
+    <span class="brand-lock">${theme.logoSrc ? `<img class="brand-logo" src="${theme.logoSrc}" alt=""/>` : ""}<span class="brand">${esc(theme.logoText)}</span></span>
     <span class="crumb">${esc(project)} <span aria-hidden="true">/</span> ${esc(feature)}</span>
     <span class="spacer"></span>
     <label class="visually-hidden" for="q" style="position:absolute;left:-9999px">Search this page</label>
@@ -805,9 +934,20 @@ ${Object.keys(theme.vars).length ? `:root,:root[data-theme]{${Object.entries(the
         tb.appendChild(tr);
       });
       t.appendChild(tb);
-      var tw = el("div","table-wrap"); tw.appendChild(t);
+      var tw = scrollTable(t, "Experience metrics");
       var h = el("h3", null, "Experience metrics"); host.appendChild(h); host.appendChild(tw);
     }
+  }
+
+  // A scrolling table container is unreachable by keyboard unless it is
+  // focusable — the off-screen columns would exist but not be viewable.
+  function scrollTable(t, label){
+    var tw = el("div","table-wrap");
+    tw.setAttribute("tabindex","0");
+    tw.setAttribute("role","region");
+    tw.setAttribute("aria-label","Table: " + label);
+    tw.appendChild(t);
+    return tw;
   }
 
   function chart(steps){
@@ -915,7 +1055,7 @@ ${Object.keys(theme.vars).length ? `:root,:root[data-theme]{${Object.entries(the
         tb.appendChild(tr);
       });
       t.appendChild(tb);
-      var tw = el("div","table-wrap"); tw.appendChild(t);
+      var tw = scrollTable(t, "Process activities for " + ph);
       wrap.appendChild(tw);
       host.appendChild(wrap);
     });

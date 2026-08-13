@@ -117,6 +117,41 @@ export const triggerTestCases = (project: string, feature: string) =>
 export const triggerPersonas = (project: string, feature: string) =>
   postStageTrigger("/api/personas/trigger", "Personas trigger", project, feature);
 
+export type BrandTheme = {
+  brand?: string;
+  brandDeep?: string;
+  accent?: string;
+  logoText?: string;
+  fontFamily?: string;
+  hasLogo?: boolean;
+};
+export type BrandResult = {
+  ok: boolean;
+  url: string;
+  rerendered: boolean;
+  theme: BrandTheme | null;
+  source: any;
+};
+
+// Read a client's brand off a live site and write it as the feature's companion-app
+// theme. Unlike the stage triggers this is synchronous — no Paperclip issue, no
+// agent — because it is a file write the user needs to see the result of straight
+// away in order to correct it.
+export async function extractBrand(url: string, project: string, feature: string): Promise<BrandResult> {
+  const r = await fetch("/api/brand/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, project, feature }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err: any = new Error(body?.message || body?.error || `Brand extraction failed (HTTP ${r.status})`);
+    err.code = body?.error;
+    throw err;
+  }
+  return body as BrandResult;
+}
+
 export async function postUiComment(issueId: string, body: string) {
   const r = await fetch("/api/ui-agent/comment", {
     method: "POST",

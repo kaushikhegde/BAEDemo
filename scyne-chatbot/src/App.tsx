@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, extractBrand, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -422,6 +422,44 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: stage.gateMessage(proj, feat) }]);
           } else {
             throw e;
+          }
+        }
+      } else if (toolUse?.name === "extract_brand") {
+        // Synchronous, unlike every stage trigger: this writes theme.json and
+        // re-renders, so the user sees the palette immediately and can correct it.
+        const args = toolUse.input as any;
+        const url = String(args?.url || "").trim();
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        if (proj) setTargetProject(proj);
+        if (feat) setTargetFeature(feat);
+        if (!url || !proj || !feat) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I need a URL plus a project and feature to pull the branding into. Pick a target with the picker, then paste the site URL.` }]);
+        } else {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Reading the brand from ${url}…` }]);
+          try {
+            const r = await extractBrand(url, proj, feat);
+            const t = r.theme || {};
+            const swatch = (label: string, hex?: string) => (hex ? `- **${label}** \`${hex}\`` : null);
+            const lines = [
+              `Branding applied to **${proj}/${feat}**:`,
+              ``,
+              swatch("Brand", t.brand),
+              swatch("Deep", t.brandDeep),
+              swatch("Accent", t.accent),
+              t.logoText ? `- **Wordmark** ${t.logoText}` : null,
+              `- **Logo** ${t.hasLogo ? "found and inlined" : "none found"}`,
+              t.fontFamily ? `- **Type** ${t.fontFamily}` : null,
+              ``,
+              r.rerendered
+                ? `The companion app has been re-rendered with it.`
+                : `No companion app built yet for this feature — the theme is saved and will apply on the first build.`,
+              ``,
+              `These are read off the site's own CSS, so treat them as a first pass. If a colour is wrong, tell me and I'll correct \`design/style-guides/theme.json\`.`,
+            ].filter(Boolean).join("\n");
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: lines }]);
+          } catch (e: any) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I couldn't read the brand from ${url}: ${e?.message || e}\n\nSome sites build their CSS in the browser, so there's nothing to read server-side. You can tell me the hex colours directly instead and I'll write them into the theme.` }]);
           }
         }
       } else if (toolUse?.name === "control_dev_server") {

@@ -84,7 +84,7 @@ const AGENTS = [
   { key: "dataLead",         name: "Data Lead",                 title: "Data Lead",               icon: "database",       reportsToKey: "pm" },
   { key: "ux",               name: "UX Auditor",                title: "UX Auditor",              icon: "shield",         reportsToKey: "archLead",     file: "ux-auditor.json", skills: [] },
   { key: "architect",        name: "Architect",                 title: "Architect",               icon: "hammer",         reportsToKey: "archLead" },
-  { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["datamodel-impact-analysis", "salesforce-data-modeler"] },
+  { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["salesforce-data-modeler"] },
   { key: "capArchitect",     name: "Capabilities Process Architect", title: "Capabilities Process Architect", icon: "network", reportsToKey: "archLead", file: "capabilities-process-architect.json", skills: ["capability-process-map"] },
   { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "layers",         reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] },
   { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },

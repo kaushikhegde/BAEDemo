@@ -63,13 +63,13 @@ Delivery Lead — routes by title prefix to the owning worker
    │   Data Modeler — works in solutions/DataModel/, two phases
    │      ├─ PHASE 1: stages inputs (copies outputs/product-summary.md → productsummary/;
    │      │          seeds datamodel-reference/ from the global catalogue if empty),
-   │      │          runs the `datamodel-impact-analysis` skill
-   │      │          → solutions/DataModel/outputs/datamodel-impact.md
+   │      │          runs the `salesforce-data-modeler` skill
+   │      │          → solutions/DataModel/outputs/salesforce-data-model.md
    │      │          attaches it, raises an approval gate
    │      └─ PHASE 2 (after human approves): renders the Mermaid ER diagram → PNG,
-   │                 creates a STANDALONE Confluence page "<feature> — Data Model Impact"
+   │                 creates a STANDALONE Confluence page "<feature> — Data Model"
    │
-   ├─ SOLUTION DESIGN flow (needs solutions/DataModel/outputs/datamodel-impact.md):
+   ├─ SOLUTION DESIGN flow — OPTIONAL side stage (needs a .md in solutions/DataModel/outputs/):
    │  child issue assigned to the Architecture Lead (status=todo)
    │     ▼
    │   Architecture Lead — works in solutions/Design/, two phases
@@ -188,7 +188,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │       ├── DataModel/                       (the Data Modeler's working folder)
 │       │   ├── productsummary/              (input — copied from outputs/product-summary.md)
 │       │   ├── datamodel-reference/         (input — PSS catalogue; seeded from the global ./datamodel-reference/ if empty, curated copies win)
-│       │   └── outputs/datamodel-impact.md  (output — fixed name, ER diagram inline)
+│       │   └── outputs/salesforce-data-model.md  (output — fixed name, ER diagram inline)
 │       ├── Design/                          (the Architecture Lead's working folder)
 │       │   ├── productsummary/              (input — copied from outputs/product-summary.md)
 │       │   ├── DataModel/                   (input — copied from solutions/DataModel/outputs/)
@@ -216,7 +216,6 @@ requirement-generator/                         workspace root (cwd for all agent
 ├── datamodel-reference/    (STATIC global Salesforce PSS / Social-Insurance object catalogue — seeds each feature's solutions/DataModel/datamodel-reference/)
 ├── skills/                 (registered company skills — source of truth, registered with Paperclip by the bootstrap)
 │   ├── requirement-generator/SKILL.md
-│   ├── datamodel-impact-analysis/SKILL.md
 │   ├── solution-design-document/SKILL.md
 │   ├── capability-process-map/SKILL.md
 │   ├── salesforce-data-modeler/SKILL.md
@@ -308,7 +307,7 @@ In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everyt
 
 ## The Skills
 
-Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
+Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
 
 **`requirement-generator`** (the BA, Phase 1):
 - Input layout: `./projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI}/`.
@@ -317,13 +316,10 @@ Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 - 11-section Product Summary template, with placeholder text preserved verbatim in sections 3.3.1, 7, 8, 9, 10, 11. (Section 3.3.1 Data Model stays a manual placeholder — the Data Modeler publishes its analysis to a *separate* Confluence page, it does not fill 3.3.1.)
 - Reference files at `./examples/gold-product-summary.pdf` and `./examples/gold-story.doc`. **Per-project override:** files in `./projects/<project>/<feature>/requirements/templates/` take precedence per artefact; `./examples/` is the fallback.
 
-**`datamodel-impact-analysis`** (the Data Modeler, Phase 1 — working folder `solutions/DataModel/`):
-- Inputs (staged by the agent): `productsummary/` (copied from the approved `outputs/product-summary.md`) + `datamodel-reference/` (seeded from the global catalogue if empty).
-- Output: `solutions/DataModel/outputs/datamodel-impact.md` (fixed name) — impact table, custom-field detail, standard-first decision hierarchy, and a Mermaid `erDiagram`.
-
-**`salesforce-data-modeler`** (the Data Modeler — working folder `solutions/DataModel/`, standalone; **not** currently wired to any chatbot trigger):
+**`salesforce-data-modeler`** (the Data Modeler, Phase 1 — working folder `solutions/DataModel/`):
 - Inputs (staged by the agent): `productsummary/` (product summary / BRD / user stories / transcript) + optional `datamodel-reference/`. The Service Cloud standard-object catalogue, field-design rules and Mermaid ERD conventions are inlined as Appendices A–C — the skill needs no sidecar reference files.
-- Output: `solutions/DataModel/outputs/salesforce-data-model.md` (fixed name, deliberately distinct from `datamodel-impact.md` so the two skills never collide) — a 12-section Service Cloud design: object inventory, field dictionary, relationship matrix, Mermaid `erDiagram`, traceability matrix, and rejected alternatives.
+- Output: `solutions/DataModel/outputs/salesforce-data-model.md` (fixed name) — a 12-section Service Cloud design: object inventory, field dictionary, relationship matrix, Mermaid `erDiagram`, traceability matrix, and rejected alternatives.
+- **Replaced `datamodel-impact-analysis`**, which was retired (its `SKILL.md` is deleted). That skill wrote `datamodel-impact.md`; features created before the change still carry that file, so every downstream consumer reads *every* `.md` in `solutions/DataModel/outputs/` rather than one fixed name. Nothing regenerates `datamodel-impact.md`.
 - Standard-object-first: `Ticket__c`/`Customer__c`/`Agent__c`-style inventions are ruled out against Case/Account/User before any custom object is proposed.
 
 **`capability-process-map`** (the Capabilities Process Architect, Phase 1 — working folder `solutions/Capabilities/`):
@@ -373,7 +369,7 @@ open http://127.0.0.1:5173
 | POST   | `/api/chat`                       | Proxies the chat conversation to Gemini, returns Anthropic-shaped blocks  |
 | POST   | `/api/trigger`                    | Creates the requirements issue (`Generate requirements — …`, status=todo, assigned to the Delivery Lead) |
 | POST   | `/api/data-model/trigger`         | Creates a `Generate data model — …` issue. Gated: `409 no_product_summary` if `outputs/product-summary.md` is missing |
-| POST   | `/api/solution-design/trigger`    | Creates a `Generate solution design — …` issue. Gated: `409 no_data_model` if `solutions/DataModel/outputs/datamodel-impact.md` is missing |
+| POST   | `/api/solution-design/trigger`    | Creates a `Generate solution design — …` issue. Gated: `409 no_data_model` if `solutions/DataModel/outputs/` has neither `salesforce-data-model.md` nor `datamodel-impact.md` |
 | POST   | `/api/capability-map/trigger`     | Creates a `Generate capability map — …` issue. No pipeline prerequisite; `409 no_documents` only when the feature has no `.md` at all. Carries no Atlassian keys, so approval skips provisioning |
 | POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue. Gated: `409 no_product_summary` only — the data model is optional enrichment |
 | POST   | `/api/test-cases/trigger`         | Creates a `Generate test cases — …` issue. Gated: `409 no_product_summary` only — the data model and architecture are optional enrichment |
@@ -409,7 +405,7 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
 - `set_target` — sets the chosen `{project, feature}` scope without firing anything. Lets the user pin a target before they're ready to run.
 - `trigger_requirement_generation` — fires the requirements flow. Defaults from `.env` fill in everything except `project` and `feature`.
 - `trigger_data_model` — fires the data model flow (`Generate data model — …`). Backend gates on `product-summary.md`; the bot offers to run requirements first if it's missing.
-- `trigger_solution_design` — fires the solution design flow (`Generate solution design — …`). Backend gates on `datamodel-impact.md`; the bot offers to run the data model first if it's missing.
+- `trigger_solution_design` — fires the OPTIONAL solution design side stage (`Generate solution design — …`). Backend gates on the data model; the bot offers to run it first if missing. Not part of the recommended order — offered only when asked for by name.
 - `trigger_capability_map` — fires the capability map flow (`Generate capability map — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Backend only refuses with `no_documents` when the feature is empty.
 - `trigger_solution_architecture` — fires the solution architecture flow (`Generate solution architecture — …`). Gated on the product summary only. **Distinct from `trigger_solution_design`** — if the user just says "do the architecture", the bot asks which one rather than guessing.
 - `trigger_test_cases` — fires the test-case flow (`Generate test cases — …`). Gated on the product summary only; the data model and architecture enrich the pack when present.
@@ -503,13 +499,64 @@ had already happened once: `.claude/skills/requirement-generator` was a stale
 157-line copy of a 199-line skill.)
 
 **2. Staging.** Each skill reads from its working folder, which the agent
-normally populates. `scripts/stage-datamodel.mjs` does that step for the two
-Data Modeler skills, replicating `agent-instructions/data-modeler.json` exactly:
+normally populates. `scripts/stage.mjs` does that step for EVERY stage,
+replicating each agent's `agent-instructions/<agent>.json` Phase 1 step 2:
 
 ```bash
-npm run stage <project> <feature>              # e.g. npm run stage SADA interim-benefit
-npm run stage <project> <feature> -- --from-requirements   # no product summary yet
+npm run stage                                  # every feature + which stages have run
+npm run stage <project> <feature>              # status for one feature, and what's next
+npm run stage <project> <feature> <stage>      # stage one stage, print its skill command
+npm run stage <project> <feature> all          # stage every stage whose inputs are ready
 ```
+
+### The pipeline, in order
+
+Run the two ungated discovery stages first — every later stage is better for
+having them. Stages 4–6 need only the Product Summary, so they do NOT wait for
+each other; each reads the others' output when it happens to exist and says so
+in its own document.
+
+| # | `<stage>` | Skill / script | Owner | Needs |
+|---|---|---|---|---|
+| 1 | `capabilities` | `/capability-process-map` | Capabilities Process Architect | — |
+| 2 | `personas` | `/persona-journey-map` | Service Designer | — |
+| 3 | `requirements` | `/requirement-generator` | BA | — |
+| 4 | `datamodel` | `/salesforce-data-modeler` | Data Modeler | product summary |
+| 5 | `architecture` | `/salesforce-service-cloud-architecture` | Solution Architect | product summary |
+| 6 | `qa` | `/requirements-test-case-generator` | QA Architect | product summary |
+| 7 | `app` | `node scripts/render-companion-app.mjs` | Developer | anything |
+| — | `design` | `/solution-design-document` | Architecture Lead | data model |
+
+`design` is an **optional side stage**, deliberately outside the numbered order:
+it is a narrower, component-level deliverable that overlaps stage 5. Most
+features need only the architecture. It is excluded from `all` for that reason —
+ask for it by name when a client wants that level of detail.
+
+A full run of one feature, end to end:
+
+```bash
+npm run stage RTWSA Demo capabilities   # then /capability-process-map   in a Claude Code session
+npm run stage RTWSA Demo personas       # then /persona-journey-map
+npm run stage RTWSA Demo requirements   # then /requirement-generator
+npm run stage RTWSA Demo datamodel      # then /salesforce-data-modeler
+npm run stage RTWSA Demo architecture   # then /salesforce-service-cloud-architecture
+npm run stage RTWSA Demo qa             # then /requirements-test-case-generator
+npm run stage RTWSA Demo app            # then npm run app RTWSA Demo
+```
+
+Two stages have a **validator that must pass** before the output is trusted; the
+staging output prints them, and the agents treat a non-zero exit as a blocker:
+
+```bash
+node scripts/render-capability-map.mjs <project> <feature>   # after `capabilities`
+node scripts/validate-experience.mjs   <project> <feature>   # after `personas`
+```
+
+`validate-experience.mjs` is the only guard between the Service Designer and a
+companion-app build that may happen weeks later — `personas.json` and
+`journey-map.json` are a build contract, not just a document.
+
+### Conversion happens first
 
 **Staging converts documents to markdown first.** The skills only read `.md`, so
 a hand-placed `.pdf`/`.docx`/`.xlsx`/`.txt` under `requirements/` would otherwise
@@ -517,7 +564,7 @@ be silently invisible to the model. `scripts/convert-to-md.mjs` writes a sibling
 `.md` for each (`Conceptual Data Model.pdf` → `Conceptual Data Model.md`), using
 the same `markitdown-ts` conversion the chatbot's upload route uses
 (`scyne-chatbot/server/services/toMarkdown.ts`). It runs automatically as step 0
-of a stage; `--no-convert` skips it, and it also stands alone:
+of every stage; `--no-convert` skips it, and it also stands alone:
 
 ```bash
 npm run convert <project> <feature>                        # convert only
@@ -536,27 +583,46 @@ the source untouched rather than writing a partial file or archiving something
 that never converted. Images and audio are skipped by design — screens are read
 as images, audio goes through Gemini transcription — and are never archived.
 
-It copies `outputs/product-summary.md` → `solutions/DataModel/productsummary/`,
-seeds `datamodel-reference/` from the global catalogue when empty (a curated
-per-feature copy wins; `--force` overrides), creates `outputs/`, and prints the
-exact skill invocation. Run with no arguments to list every feature and flag
-which ones lack a product summary. `--from-requirements` stages
-`requirements/**.md` instead (skipping `templates/`) — suitable for
-`salesforce-data-modeler`, which accepts a BRD / user stories / transcript, but
-only a fallback for `datamodel-impact-analysis`, which expects an approved
-summary.
+### Flags
 
-Then, in a Claude Code session at the workspace root:
-
-```
-/salesforce-data-modeler     project: SADA, feature: interim-benefit
-/datamodel-impact-analysis   project: SADA, feature: interim-benefit
-```
+| Flag | Effect |
+|---|---|
+| `--force` | re-seed reference catalogues that already hold curated files |
+| `--no-convert` | skip the document → markdown pass |
+| `--keep-originals` | leave converted sources beside their `.md` instead of archiving |
+| `--from-requirements` | `datamodel` only — stage raw requirement `.md` instead of the product summary, for a feature that has not run the BA yet |
 
 Outputs land at the same paths the agent would write, so the chatbot's approval
-preview and the downstream Architecture Lead stage still find them. What you skip
-by going direct is the human approval gate and Confluence/Jira publishing — those
-live in the agents' Phase 2, not in the skills.
+preview and every downstream stage still find them. What you skip by going direct
+is the human approval gate and Confluence/Jira publishing — those live in the
+agents' Phase 2, not in the skills.
+
+### Brand the companion app from a client's website
+
+```bash
+npm run brand -- <url> <project> <feature>            # writes design/style-guides/theme.json
+npm run brand -- <url> <project> <feature> --dry      # print what it found, write nothing
+```
+
+`scripts/extract-brand.mjs` fetches the page and its stylesheets and extracts the
+brand colour (a CSS custom property literally named `--brand`/`--primary` beats
+raw frequency, which in turn beats nothing), an accent that is a genuinely
+different hue rather than a shade of the brand, the wordmark, the font stack, and
+the logo — **inlined as a data URI**, because the rendered page makes zero
+network requests and a linked logo would simply not load.
+
+It writes two files: `theme.json` (what the renderer reads) and
+`brand-source.json` (why each value was chosen, plus the runners-up). When a
+colour is wrong, correct `theme.json` — do not re-run the extractor on the same
+URL expecting a different answer.
+
+It refuses to overwrite a hand-authored `theme.json` without `--force`. Sites
+that build their CSS in the browser have nothing to read server-side; write the
+theme by hand in that case.
+
+The chatbot exposes the same thing: paste a URL in chat ("brand it like
+acme.com") and the `extract_brand` tool runs it against the active feature, then
+re-renders the companion app if one exists.
 
 ### Render the companion app by hand
 
@@ -620,8 +686,11 @@ Three Node scripts power the UI / a11y / capability agents:
 - `scripts/render-companion-app.mjs <project> <feature>` — used by the **Developer**. Reads every artefact the feature has produced and emits ONE self-contained `generated-apps/<project>-<feature>/index.html`: inline CSS + JS, data as a JSON island, Mermaid blocks pre-rendered to inline SVG via mermaid-cli, and a hand-drawn SVG satisfaction chart per journey. **Zero network requests** — no CDN, no webfont, no external image. Interactive: tab navigation with roving tabindex, persona dialogs, journey stage explorer, capability tree with maturity bars, filterable process table, in-page search with highlighting, and a light/dark toggle. Per-feature branding comes from `design/style-guides/theme.json` (hex tokens + wordmark); the selected-navigation foreground is **computed from the brand's luminance**, so a client palette cannot break WCAG contrast. Also writes the `generated-apps/registry.json` entry. Verified at **0 WCAG 2.0 A/AA violations** across every tab in light and dark. Flags: `--no-diagrams` skips the mermaid pass.
   > The React path it replaced (`scaffold-app.mjs` / `stop-app.mjs`) is kept at `scripts/legacy-react-scaffold/` with a README on restoring it. It was retired because the deliverable is a document a consultant hands to a client, not a running program — the React path cost an `npm install`, a detached process and a port per feature, all of which had to still be alive whenever anyone opened the preview.
 - `scripts/audit-a11y.mjs <project-feature-key>` — used by the **UX Auditor**. Reads the registry entry, runs `@axe-core/cli` (WCAG 2.0 A + AA) and `pa11y` (WCAG2AA standard) against `devUrl`, then writes consolidated violations to `generated-apps/<key>/audit.json`. Exits 0 even when violations exist — the auditor reads the JSON to decide what to fix. Unchanged by the move to static HTML: `devUrl` now points at `/api/companion-app/…` instead of a dev server, which both tools treat identically.
+  > **Both tools test ONE theme state, not four.** Headless Chrome defaults to `prefers-color-scheme: dark`, and neither `@axe-core/cli` nor `pa11y` exposes a flag to change it — so a clean `audit.json` is evidence about the dark palette only. The page has four states worth checking (system light, system dark, and the toggle forcing each), and a per-feature `theme.json` can pass one while failing another. When branding changes, verify all four with a driver that calls `page.emulateMediaFeatures([{name:"prefers-color-scheme",value:...}])` before trusting a pass.
   > **Known environment issue:** `@axe-core/cli` drives Chrome through ChromeDriver, and on a machine where the installed Chrome is newer than the bundled driver it fails with `session not created`. `npx browser-driver-manager install chrome` fixes it. `pa11y` uses its own bundled browser and is unaffected.
 
+- `scripts/stage.mjs <project> <feature> <stage>` — the local, Paperclip-free path. Replicates each agent's Phase 1 staging for every stage, converts source documents to markdown first, refuses a stage whose hard prerequisite is missing (naming the stage that would satisfy it), and prints the exact skill command to run next. With no `<stage>` it reports which stages a feature has run; with no arguments, that grid for every feature. Replaced `stage-datamodel.mjs`, which covered only the Data Modeler.
+- `scripts/extract-brand.mjs <url> <project> <feature>` — reads a client's site and writes `design/style-guides/theme.json` (palette, wordmark, font stack, logo as a data URI) plus `brand-source.json` recording why each value was chosen. Server-side only: the companion app itself makes zero network requests. Refuses to overwrite a hand-authored theme without `--force`.
 - `scripts/validate-experience.mjs <project> <feature>` — used by the **Service Designer**. Validates `solutions/Experience/outputs/{personas.json,journey-map.json}` against the companion-app contract: required fields, unique IDs, `avatarColor` in the app's palette, satisfaction scores as integers 1–5, no semicolons in persona bullets (the app's CSV loader splits on them), no `:`/`;` in journey step names (breaks the Mermaid `journey` parser), every journey's `personaId` resolving to a persona, every "moment that matters" resolving to a step, and every persona having exactly one journey. Reports **every** problem in one run and exits non-zero. This is the only guard between this stage and a companion-app build that happens weeks later.
 - `scripts/render-capability-map.mjs <project> <feature>` — used by the **Capabilities Process Architect**. Reads `solutions/Capabilities/outputs/{capability-map.json,process-model.json}`, validates them (non-zero exit naming the offending file/field), and writes `capability-process.html` — one self-contained page (inline CSS/JS, data as a JSON island, no network requests) with the capability tree, the L1/L2/L3 process explorer, actor/tier/capability filters, a coverage table and a source index. The agent never hand-writes the HTML, so every run looks the same.
 
