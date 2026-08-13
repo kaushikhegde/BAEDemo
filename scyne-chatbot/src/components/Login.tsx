@@ -130,7 +130,7 @@ export function Login({ onAuthenticated }: LoginProps) {
           <div className="leading-tight">
             <div className="text-[22px] font-semibold tracking-tight">scyne</div>
             <div className="text-[12px] tracking-wide text-white/70">
-              AI Powered Social Insurance Delivery
+              AI Powered SalesForce Delivery
             </div>
           </div>
         </div>

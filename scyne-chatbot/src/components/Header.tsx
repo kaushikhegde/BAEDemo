@@ -13,7 +13,7 @@ export function Header({ right }: { right?: ReactNode }) {
           />
           <span className="hidden sm:inline-block h-4 w-px bg-slate-300/70" aria-hidden />
           <span className="hidden sm:inline text-[13px] text-muted-foreground tracking-wide">
-            AI Powered Social Insurance Delivery
+            AI Powered SalesForce Delivery
           </span>
         </div>
         <div className="flex items-center gap-2">{right}</div>
