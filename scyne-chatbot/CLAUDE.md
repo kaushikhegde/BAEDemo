@@ -62,7 +62,7 @@ scyne-chatbot/
         ├── ProgressPanel.tsx   (flat list of issues + statuses)
         ├── ActivityTimeline.tsx(comments, autoscrolling, markdown-rendered)
         ├── ApprovalCard.tsx    (inline approve/reject with collapsible artefact preview)
-        ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps — reads /api/artifacts)
+        ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps | Data Model | Solution Design | Solution Architecture | Test Cases | Capability Map — reads /api/artifacts; the Capability Map tab also links to the interactive HTML)
         ├── LinksPanel.tsx      (Confluence + Jira links extracted from comments)
         ├── TargetPicker.tsx    (chip-style project + feature selector at top of chat)
         ├── AttachmentButton.tsx(upload .docx / .pdf / .png to a chosen scope)
@@ -80,6 +80,10 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | POST   | `/api/trigger`                      | Creates a `Generate requirements — …` issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
 | POST   | `/api/data-model/trigger`           | Creates a `Generate data model — …` issue. **Pre-flight:** `409 {error:"no_product_summary"}` if `outputs/product-summary.md` is missing. |
 | POST   | `/api/solution-design/trigger`      | Creates a `Generate solution design — …` issue. **Pre-flight:** `409 {error:"no_data_model"}` if `solutions/DataModel/outputs/datamodel-impact.md` is missing. |
+| POST   | `/api/capability-map/trigger`       | Creates a `Generate capability map — …` issue. **No pipeline prerequisite** — reads the same SOP/Transcripts/Notes as the BA. **Pre-flight:** `409 {error:"no_documents"}` only when the feature has no `.md` anywhere outside `outputs/`, `solutions/`, `design/`. Emits no Confluence key, so `/api/approve` skips provisioning. |
+| POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue (Solution Architect → SAD). **Pre-flight:** `409 {error:"no_product_summary"}` only. Deliberately NOT gated on the data model. |
+| POST   | `/api/test-cases/trigger`           | Creates a `Generate test cases — …` issue (QA Architect → test pack). **Pre-flight:** `409 {error:"no_product_summary"}` only. |
+| GET    | `/api/capability-map/:project/:feature` | Serves the architect's rendered `solutions/Capabilities/outputs/capability-process.html` as `text/html`. `404 {error:"not_generated"}` before the stage runs. Linked from the approval card, not iframed. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. `stage.label` adapts to the flow's worker. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate; explicitly wakes the gate's own issue assignee (BA / Data Modeler / Architecture Lead). Atlassian auto-provisioning runs only for the requirements flow. |
 | POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
@@ -87,7 +91,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | GET    | `/api/history`                      | All completed pipeline runs (requirements, data model, solution design) across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
 | GET    | `/api/runs/:issueId`                | Compact agent run summaries (agent · status · duration) for the parent + descendant issues. Used by `RunsPanel` in the Activity panel. No tool counts (claude_local tool calls live in the run log, not run events). |
 | GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
-| GET    | `/api/artifacts`                    | Reads the BA's `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` plus `solutions/DataModel/outputs/datamodel-impact.md` + `solutions/Design/outputs/solution-design.md`. Used by `ArtifactsPreview` inside the approval card. |
+| GET    | `/api/artifacts`                    | Reads the BA's `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` plus `solutions/DataModel/outputs/datamodel-impact.md`, `solutions/Design/outputs/solution-design.md` and `solutions/Capabilities/outputs/capability-process.md`. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
 | POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to the Delivery Lead. Delivery Lead detects the title prefix and dispatches the Developer directly, then the UX Auditor once the build completes. |
 | GET    | `/api/preview/:project/:feature`    | Resolves the dev-server URL for the generated app from `generated-apps/registry.json`. |
@@ -151,10 +155,13 @@ The prompt instructs a discovery flow:
 | `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to the Delivery Lead. |
 | `trigger_data_model`            | When the user asks for the data model / object impact / ER diagram. Creates a `Generate data model — …` issue. Backend 409s `no_product_summary` if requirements aren't done — the bot then offers to run them first. |
 | `trigger_solution_design`       | When the user asks for the solution design / SDD / architecture. Creates a `Generate solution design — …` issue. Backend 409s `no_data_model` if the data model isn't done — the bot then offers to run it first. |
+| `trigger_capability_map`        | When the user asks for a capability map, capability model, business capabilities, process model, L1/L2/L3 processes or operating model. Creates a `Generate capability map — …` issue. **No prerequisite** — never offer to run requirements first for this one; the only 409 is `no_documents`. |
+| `trigger_solution_architecture` | When the user asks for a solution architecture, SAD, HLD/LLD, target architecture, component design or integration architecture. Creates a `Generate solution architecture — …` issue. Only 409 is `no_product_summary`. **Not the same as `trigger_solution_design`** — the prompt tells the bot to ask which one when the request is ambiguous. |
+| `trigger_test_cases`            | When the user asks for test cases, a test plan/pack, QA or UAT scripts, acceptance tests, BDD scenarios or a traceability matrix. Creates a `Generate test cases — …` issue. Only 409 is `no_product_summary`. |
 | `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly. |
 | `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. |
 
-The pipeline is gated **requirements → data model → solution design**; the system prompt teaches the bot to offer the missing prerequisite instead of firing a stage that would just block.
+The pipeline is gated **requirements → data model → solution design**; the system prompt teaches the bot to offer the missing prerequisite instead of firing a stage that would just block. The **capability map** sits outside that chain — it has no prerequisite and publishes nothing, so the bot fires it whenever asked.
 
 The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
 

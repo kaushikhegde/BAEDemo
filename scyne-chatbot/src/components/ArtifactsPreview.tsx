@@ -68,7 +68,7 @@ function StoryCard({ s }: { s: ArtifactStory }) {
   );
 }
 
-type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution";
+type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution" | "architecture" | "testcases" | "capability";
 
 export function ArtifactsPreview({ project, feature }: { project: string | null; feature: string | null }) {
   const [data, setData] = useState<Artifacts | null>(null);
@@ -121,6 +121,9 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {tabBtn("gaps", "Gaps")}
         {data.dataModel && tabBtn("datamodel", "Data Model")}
         {data.solutionDesign && tabBtn("solution", "Solution Design")}
+        {data.solutionArchitecture && tabBtn("architecture", "Solution Architecture")}
+        {data.testCases && tabBtn("testcases", "Test Cases")}
+        {data.capabilityMap && tabBtn("capability", "Capability Map")}
       </div>
       <div className="max-h-80 overflow-y-auto pr-1">
         {tab === "stories" && (
@@ -166,6 +169,45 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
               <MiniMarkdown source={data.solutionDesign} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No solution design on disk yet.</div>
+            )}
+          </div>
+        )}
+        {tab === "architecture" && (
+          <div className="text-slate-800">
+            {data.solutionArchitecture ? (
+              <MiniMarkdown source={data.solutionArchitecture} />
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No solution architecture on disk yet.</div>
+            )}
+          </div>
+        )}
+        {tab === "testcases" && (
+          <div className="text-slate-800">
+            {data.testCases ? (
+              <MiniMarkdown source={data.testCases} />
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No test cases on disk yet.</div>
+            )}
+          </div>
+        )}
+        {tab === "capability" && (
+          <div className="text-slate-800">
+            {data.capabilityMap ? (
+              <>
+                {/* The architect also renders a self-contained interactive page;
+                    it opens in its own tab rather than inside this card. */}
+                <a
+                  href={`/api/capability-map/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-block mb-2 text-sm font-medium text-scyne-ink hover:underline"
+                >
+                  Open interactive map ↗
+                </a>
+                <MiniMarkdown source={data.capabilityMap} />
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No capability map on disk yet.</div>
             )}
           </div>
         )}

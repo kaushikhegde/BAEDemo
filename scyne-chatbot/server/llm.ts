@@ -109,9 +109,12 @@ You orchestrate several workflows from the same chat. Three of them form a **seq
 2. **Data model** — turns the APPROVED Product Summary + the static Salesforce reference catalogue into a data model impact analysis (objects, custom fields, ER diagram), published to its own Confluence page. Invoked via the \`trigger_data_model\` tool. **Prerequisite: the Product Summary must already exist.**
 3. **Solution design** — turns the APPROVED Product Summary + the APPROVED Data Model Impact into a Salesforce Solution Design Document, published to its own Confluence page. Invoked via the \`trigger_solution_design\` tool. **Prerequisite: the Data Model Impact must already exist.**
 
-And one standalone workflow:
+And these standalone workflows:
 
 4. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool. (Prerequisite: the Product Summary must exist.)
+5. **Capability map** — turns the SAME discovery documents the BA reads (SOP, Transcripts, Notes, plus any reference docs on the feature) into a Business Capability Map, an L1/L2/L3 Process Model, and an interactive HTML view. Invoked via the \`trigger_capability_map\` tool. **No prerequisite — it can run before requirements.** Nothing is published to Confluence or Jira; the artefacts stay in the workspace and the HTML opens in a browser tab.
+6. **Solution architecture** — turns the APPROVED Product Summary (plus the data model, if one exists) into a Salesforce Service Cloud **Solution Architecture Document**: capability-to-component map, Flow/LWC/Apex inventory with a justification for every custom component, integration interface catalogue, Architecture Decision Records and architecture diagrams. Published to its own Confluence page. Invoked via the \`trigger_solution_architecture\` tool. **Prerequisite: the Product Summary only.** This is a DIFFERENT, more detailed deliverable from the Solution Design in stage 3 — a feature can have both.
+7. **Test cases** — turns the APPROVED Product Summary (plus the data model and solution architecture, if they exist) into a **test pack**: executable test cases with steps and expected results, a requirements traceability matrix and a coverage gap analysis. Published to its own Confluence page. Invoked via the \`trigger_test_cases\` tool. **Prerequisite: the Product Summary only.**
 
 Each pipeline stage has its own human approval gate, and you can request changes on any of them. The stages are user-triggered, not automatic: the user asks for the next stage when they're ready.
 
@@ -145,6 +148,22 @@ After the Product Summary is generated and approved, the user can take the featu
 - **Solution design** ("generate the solution design", "produce the SDD", "design the architecture", "how do we build this in Salesforce"): call \`trigger_solution_design\` with the project + feature. This needs the **Data Model Impact** to exist. If it doesn't, the backend returns \`no_data_model\` — tell the user the data model isn't there yet and offer to run the data model flow first ("I can't build the solution design yet — there's no data model for X/Y. Want me to generate the data model first?").
 
 **Respect the order: requirements → data model → solution design.** Never skip a stage. If the user asks for a later stage before an earlier one exists, explain the dependency in one line and offer to run the missing prerequisite. Each stage raises its own approval gate that the user reviews in the activity panel; you don't need to chain them — the user fires the next one when ready.
+
+### Solution architecture + Test cases path
+
+Both need **only the Product Summary**. Do NOT tell the user to run the data model or the solution design first — those enrich the output but are not required, and the agents say in their own output which inputs they found.
+
+- **Solution architecture** ("generate the solution architecture", "produce the SAD", "design the target architecture", "what components do we need", "Flow vs Apex", "integration architecture", "produce the HLD"): call \`trigger_solution_architecture\` with the project + feature.
+- **Test cases** ("generate test cases", "produce the test pack", "write the QA scripts", "UAT scripts", "acceptance tests", "BDD scenarios", "traceability matrix", "how do we test this"): call \`trigger_test_cases\` with the project + feature.
+- The only failure for either is \`no_product_summary\` — then offer to run the requirements flow first.
+- **Do not confuse solution architecture with solution design.** "Solution design" / "SDD" → \`trigger_solution_design\` (needs the data model). "Solution architecture" / "SAD" / "architecture document" → \`trigger_solution_architecture\` (needs only the product summary). If the user is ambiguous ("do the architecture"), ask which one in a single line rather than guessing.
+
+### Capability map path
+
+- **Capability map** ("generate the capability map", "build the capability model", "what are the business capabilities", "produce the process model", "map the L1/L2/L3 processes", "give me the operating model", "capability heatmap"): call \`trigger_capability_map\` with the project + feature.
+- It has **no prerequisite** — it reads the same SOP / Transcripts / Notes the BA reads, so it can run before, after, or instead of the requirements flow. Never tell the user to run requirements first for this stage.
+- The only way it can fail is \`no_documents\` — the feature has no documents at all. Then ask them to upload at least one SOP, transcript or note (📎 attach button) and try again.
+- It publishes nothing. When it finishes, the artefacts are on disk and the interactive HTML is served at \`/api/capability-map/<project>/<feature>\` — mention that the user can open it in a browser tab, and that the map + process model are also in the approval preview.
 
 ### Target picker sync
 
@@ -218,6 +237,42 @@ const triggerTool: Tool = {
     {
       name: "trigger_solution_design",
       description: "Fires the Architecture Lead to produce the Salesforce Solution Design Document from the APPROVED Product Summary + the APPROVED Data Model Impact, then publish it to its own Confluence page. Call this when the user asks to generate / produce the solution design, technical design, SDD, or architecture for a project + feature. Requires the data model impact to exist first; the backend returns an error if it doesn't, and you should then offer to run the data model flow.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_capability_map",
+      description: "Fires the Capabilities Process Architect to build a Business Capability Map (L1–L3 hierarchy with current/target maturity), an L1/L2/L3 Process Model (lifecycle phase / step / activity with actor, service tier and components), and a self-contained interactive HTML view — all derived from the feature's own documents (the same SOP, Transcripts and Notes the BA reads). Call this when the user asks for a capability map, capability model, business capabilities, capability heatmap, process model, process taxonomy, L1/L2/L3 processes, value chain or operating model for a project + feature. This stage has NO prerequisite — never require requirements, a data model or a solution design first — and publishes nothing to Confluence or Jira.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_solution_architecture",
+      description: "Fires the Solution Architect to produce a Salesforce Service Cloud Solution Architecture Document (SAD): requirement-to-capability map, Flow/LWC/Apex component inventory with a written justification for every custom component, integration interface catalogue with patterns and idempotency, identity/security/licensing, non-functional design, environment and release strategy, Architecture Decision Records, and Mermaid architecture diagrams. Call this when the user asks for a solution architecture, SAD, HLD, LLD, target architecture, component design, integration architecture, 'Flow vs Apex', or what the target state should look like. Prerequisite: the Product Summary only — do NOT require the data model or the solution design first. This is a DIFFERENT deliverable from trigger_solution_design (the SDD): if the user is ambiguous about which they want, ask rather than guessing.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
+      name: "trigger_test_cases",
+      description: "Fires the QA Architect to produce a test pack: executable test cases with preconditions, concrete test data, numbered steps and per-step expected results, persona and permission coverage, a requirements traceability matrix in both directions, and an honest coverage gap analysis — optionally with a CSV for Jira/Xray/Zephyr/TestRail/Azure DevOps import and Gherkin scenarios. Call this when the user asks for test cases, test scenarios, a test plan or test pack, QA scripts, UAT scripts, acceptance tests, BDD/Cucumber scenarios, regression tests, a traceability matrix, or 'how do we test this'. Prerequisite: the Product Summary only — the data model and solution architecture enrich the pack when present but are NOT required, so never tell the user to run them first.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {

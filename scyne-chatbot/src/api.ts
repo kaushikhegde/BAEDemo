@@ -95,6 +95,22 @@ export const triggerDataModel = (project: string, feature: string) =>
 export const triggerSolutionDesign = (project: string, feature: string) =>
   postStageTrigger("/api/solution-design/trigger", "Solution design trigger", project, feature);
 
+// Fire the CAPABILITY MAP stage. No pipeline prerequisite — gated server-side
+// only on the feature having documents at all (409 no_documents).
+export const triggerCapabilityMap = (project: string, feature: string) =>
+  postStageTrigger("/api/capability-map/trigger", "Capability map trigger", project, feature);
+
+// Fire the SOLUTION ARCHITECTURE stage (Solution Architect → SAD). Gated only on
+// the product summary (409 no_product_summary) — the data model is optional
+// enrichment, so this deliberately does NOT wait for the data-model stage.
+export const triggerSolutionArchitecture = (project: string, feature: string) =>
+  postStageTrigger("/api/solution-architecture/trigger", "Solution architecture trigger", project, feature);
+
+// Fire the TEST CASES stage (QA Architect → test pack). Gated only on the
+// product summary (409 no_product_summary).
+export const triggerTestCases = (project: string, feature: string) =>
+  postStageTrigger("/api/test-cases/trigger", "Test cases trigger", project, feature);
+
 export async function postUiComment(issueId: string, body: string) {
   const r = await fetch("/api/ui-agent/comment", {
     method: "POST",

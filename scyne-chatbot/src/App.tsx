@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -351,11 +351,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             throw e;
           }
         }
-      } else if (toolUse?.name === "trigger_data_model" || toolUse?.name === "trigger_solution_design") {
-        // The two downstream pipeline stages share one trigger shape — only the
-        // worker label, API call, and prerequisite-gate message differ. Keeping
-        // them in one table prevents the copies drifting (e.g. a gate-code
-        // mismatch that would fall through to the raw error path).
+      } else if (
+        toolUse?.name === "trigger_data_model" ||
+        toolUse?.name === "trigger_solution_design" ||
+        toolUse?.name === "trigger_capability_map" ||
+        toolUse?.name === "trigger_solution_architecture" ||
+        toolUse?.name === "trigger_test_cases"
+      ) {
+        // The worker-stage triggers share one shape — only the worker label, API
+        // call, and gate message differ. Keeping them in one table prevents the
+        // copies drifting (e.g. a gate-code mismatch that would fall through to
+        // the raw error path). The capability map has no pipeline prerequisite;
+        // its gate only fires when the feature has no documents at all.
         const PIPELINE_STAGES = {
           trigger_data_model: {
             worker: "Data Modeler",
@@ -368,6 +375,27 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             fire: triggerSolutionDesign,
             gateCode: "no_data_model",
             gateMessage: (p: string, f: string) => `I can't build the solution design yet — there's no data model for **${p}/${f}**. Want me to generate the data model first?`,
+          },
+          trigger_capability_map: {
+            worker: "Capabilities Process Architect",
+            fire: triggerCapabilityMap,
+            gateCode: "no_documents",
+            gateMessage: (p: string, f: string) => `I can't map the capabilities yet — there are no documents for **${p}/${f}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
+          },
+          // Both of these gate on the product summary ONLY. The data model and
+          // solution architecture enrich them when present, so the gate message
+          // must never suggest running those first — that would be wrong advice.
+          trigger_solution_architecture: {
+            worker: "Solution Architect",
+            fire: triggerSolutionArchitecture,
+            gateCode: "no_product_summary",
+            gateMessage: (p: string, f: string) => `I can't design the architecture yet — there's no product summary for **${p}/${f}**. Want me to generate the requirements first?`,
+          },
+          trigger_test_cases: {
+            worker: "QA Architect",
+            fire: triggerTestCases,
+            gateCode: "no_product_summary",
+            gateMessage: (p: string, f: string) => `I can't write the test cases yet — there's no product summary for **${p}/${f}**. Want me to generate the requirements first?`,
           },
         } as const;
         const stage = PIPELINE_STAGES[toolUse.name as keyof typeof PIPELINE_STAGES];

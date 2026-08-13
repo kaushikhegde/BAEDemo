@@ -158,7 +158,7 @@ app.post("/api/trigger", async (req, res) => {
 // (which runs to list), and anything else that needs to know which worker owns
 // an issue derive from here, so a new stage is added in ONE place.
 type Flow = {
-  key: "requirements" | "data_model" | "solution_design" | "ui";
+  key: "requirements" | "data_model" | "solution_design" | "solution_architecture" | "test_cases" | "capability_map" | "ui";
   worker: string;
   generatingLabel: string;
   pushingLabel: string;
@@ -167,6 +167,15 @@ const FLOWS: { prefix: string; flow: Flow }[] = [
   { prefix: "Generate requirements", flow: { key: "requirements", worker: "BA", generatingLabel: "BA generating artifacts", pushingLabel: "Pushing to Atlassian" } },
   { prefix: "Generate data model", flow: { key: "data_model", worker: "Data Modeler", generatingLabel: "Data Modeler generating the impact analysis", pushingLabel: "Publishing to Confluence" } },
   { prefix: "Generate solution design", flow: { key: "solution_design", worker: "Architecture Lead", generatingLabel: "Architecture Lead designing the solution", pushingLabel: "Publishing to Confluence" } },
+  // NOTE: "Generate solution design" and "Generate solution architecture" share
+  // their first two words. classifyFlow uses startsWith on the FULL prefix, so
+  // they resolve correctly — but never shorten either prefix to "Generate
+  // solution", and keep both spelled out in the Delivery Lead's classifier too.
+  { prefix: "Generate solution architecture", flow: { key: "solution_architecture", worker: "Solution Architect", generatingLabel: "Solution Architect designing the target architecture", pushingLabel: "Publishing to Confluence" } },
+  { prefix: "Generate test cases", flow: { key: "test_cases", worker: "QA Architect", generatingLabel: "QA Architect designing the test pack", pushingLabel: "Publishing to Confluence" } },
+  // Capability map publishes nothing — the "pushing" label covers the architect's
+  // local finalise pass (verify artefacts, post the summary) after approval.
+  { prefix: "Generate capability map", flow: { key: "capability_map", worker: "Capabilities Process Architect", generatingLabel: "Capabilities Process Architect mapping capabilities + process", pushingLabel: "Finalising the capability map" } },
   { prefix: "Build UI", flow: { key: "ui", worker: "Developer", generatingLabel: "Developer building the UI", pushingLabel: "Finalising the build" } },
 ];
 function classifyFlow(title: string): Flow {
@@ -180,17 +189,57 @@ function deriveProjectKey(project: string): string {
   return String(project).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SADA";
 }
 
-// 2b/2c. The downstream pipeline stages (data model, solution design) share one
-// trigger shape: validate target → check the prerequisite artefact exists on
-// disk (409 with a stage-specific code if not) → create a title-prefixed issue
-// for the Delivery Lead to route. Confluence-only — no Jira parameters.
+// Count the `.md` documents a stage can read for a feature: everything under
+// projects/<p>/<f>/ except the generated trees (outputs/, solutions/, design/).
+// For a standard feature that's requirements/{SOP,Transcripts,Notes}; a feature
+// carrying its own reference document tree (e.g. companion/docs-md/*) counts too.
+// Agents read markdown, so `md` is what actually counts — but `other` lets the
+// refusal distinguish "this feature is empty" from "the sources are still
+// .docx/.pdf and were never converted", which are different user actions.
+const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules"]);
+async function countFeatureDocs(project: string, feature: string): Promise<{ md: number; other: number }> {
+  const root = path.join(WORKSPACE_PATH, "projects", project, feature);
+  let md = 0;
+  let other = 0;
+  async function walk(dir: string, depth: number) {
+    if (depth > 6) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name)) continue;
+        await walk(path.join(dir, e.name), depth + 1);
+      } else if (e.isFile()) {
+        if (e.name.toLowerCase().endsWith(".md")) md++;
+        else other++;
+      }
+    }
+  }
+  await walk(root, 0);
+  return { md, other };
+}
+
+// 2b/2c/2d. The downstream stages (data model, solution design, capability map)
+// share one trigger shape: validate target → run the stage's pre-flight (a
+// prerequisite artefact on disk, or — when the stage has no prerequisite — that
+// the feature has documents at all) → create a title-prefixed issue for the
+// Delivery Lead to route. No Jira parameters; the Confluence space key is
+// carried only by the stages that publish.
 function stageTrigger(stage: {
   logTag: string;
   titlePrefix: string; // must match a FLOWS prefix + the Delivery Lead's classifier
   intro: string;
-  gateFile: string; // path relative to projects/<p>/<f>/ that must exist
+  // A stage either gates on a prerequisite file (data model, solution design) or
+  // omits it entirely (capability map) and gates on "the feature has documents".
+  gateFile?: string; // path relative to projects/<p>/<f>/ that must exist
   gateErrorCode: string;
-  gateMessage: (project: string, feature: string) => string;
+  // `docs` is only populated for stages with no gateFile — it lets the message
+  // say WHY the feature has nothing readable.
+  gateMessage: (project: string, feature: string, docs?: { md: number; other: number }) => string;
+  confluence?: boolean; // include the Confluence space key in the description
   inputs: (project: string, feature: string) => string[];
 }) {
   return async (req: express.Request, res: express.Response) => {
@@ -199,17 +248,27 @@ function stageTrigger(stage: {
       const feature = String(req.body?.feature || "").trim();
       if (!project || !feature) return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
       assertSafeProjectFeature(project, feature);
-      const gatePath = path.join(WORKSPACE_PATH, "projects", project, feature, stage.gateFile);
-      try {
-        await fs.access(gatePath);
-      } catch {
-        return res.status(409).json({ error: stage.gateErrorCode, message: stage.gateMessage(project, feature) });
+      if (stage.gateFile) {
+        const gatePath = path.join(WORKSPACE_PATH, "projects", project, feature, stage.gateFile);
+        try {
+          await fs.access(gatePath);
+        } catch {
+          return res.status(409).json({ error: stage.gateErrorCode, message: stage.gateMessage(project, feature) });
+        }
+      } else {
+        const docs = await countFeatureDocs(project, feature);
+        if (docs.md === 0) {
+          return res.status(409).json({ error: stage.gateErrorCode, ...docs, message: stage.gateMessage(project, feature, docs) });
+        }
       }
       // Display name defaults to the feature folder; space key to the project
       // name (same derivation as /api/trigger). Both overridable via the body
       // for runs whose requirements used custom values.
       const feature_name = String(req.body?.feature_name || "").trim() || feature;
       const confluence_space_key = String(req.body?.confluence_space_key || "").trim() || deriveProjectKey(project);
+      // Only stages that publish carry Atlassian keys — /api/approve keys its
+      // auto-provisioning off the "Confluence space key" line, so a local-only
+      // stage must not emit one or approval would try to create a space.
       const description = [
         stage.intro,
         ``,
@@ -217,9 +276,11 @@ function stageTrigger(stage: {
         `- Project: ${project}`,
         `- Feature: ${feature}`,
         `- Feature name: ${feature_name}`,
-        ``,
-        `## Parameters`,
-        `- Confluence space key: ${confluence_space_key}`,
+        ...(stage.confluence === false ? [] : [
+          ``,
+          `## Parameters`,
+          `- Confluence space key: ${confluence_space_key}`,
+        ]),
         ``,
         `## Inputs`,
         ...stage.inputs(project, feature),
@@ -262,6 +323,93 @@ app.post("/api/solution-design/trigger", stageTrigger({
     `- Output: solutions/Design/outputs/solution-design.md`,
   ],
 }));
+
+// 2d. Solution architecture — the Solution Architect's SAD. Gated on the product
+// summary only, NOT on the data model: the skill consumes a data model when one
+// exists and records the dependency when it doesn't, so requiring one would block
+// a stage that can still produce useful output. Distinct from /api/solution-design
+// (Architecture Lead → solutions/Design/) in every respect: different agent,
+// different skill, different folder, different Confluence page.
+app.post("/api/solution-architecture/trigger", stageTrigger({
+  logTag: "solution-architecture/trigger",
+  titlePrefix: "Generate solution architecture",
+  intro: "Generated by the Scyne chatbot. Produce the Salesforce Service Cloud Solution Architecture Document and publish it to Confluence.",
+  gateFile: path.join("outputs", "product-summary.md"),
+  gateErrorCode: "no_product_summary",
+  gateMessage: (p, f) => `No product summary found for ${p}/${f}. Generate + approve the requirements first, then run the solution architecture.`,
+  inputs: (p, f) => [
+    `Working folder: projects/${p}/${f}/solutions/Architecture/ — stage the inputs there, then run the skill.`,
+    `- projects/${p}/${f}/outputs/product-summary.md (approved Product Summary; copy into solutions/Architecture/productsummary/)`,
+    `- projects/${p}/${f}/solutions/DataModel/outputs/ (optional — copy any .md into solutions/Architecture/DataModel/; do NOT block if absent)`,
+    `- projects/${p}/${f}/requirements/Notes/ (optional — current-state architecture / landscape docs; copy into solutions/Architecture/landscape/)`,
+    `- Output: solutions/Architecture/outputs/solution-architecture.md`,
+  ],
+}));
+
+// 2e. Test cases — the QA Architect's pack. Gated on the product summary only;
+// the data model and solution architecture are opportunistic enrichment.
+app.post("/api/test-cases/trigger", stageTrigger({
+  logTag: "test-cases/trigger",
+  titlePrefix: "Generate test cases",
+  intro: "Generated by the Scyne chatbot. Produce the test pack (test cases, traceability matrix, coverage gap analysis) and publish it to Confluence.",
+  gateFile: path.join("outputs", "product-summary.md"),
+  gateErrorCode: "no_product_summary",
+  gateMessage: (p, f) => `No product summary found for ${p}/${f}. Generate + approve the requirements first, then run the test cases.`,
+  inputs: (p, f) => [
+    `Working folder: projects/${p}/${f}/solutions/QA/ — stage the inputs there, then run the skill.`,
+    `- projects/${p}/${f}/outputs/product-summary.md and outputs/stories.md (approved requirements; copy into solutions/QA/productsummary/)`,
+    `- projects/${p}/${f}/solutions/DataModel/outputs/ (optional — copy any .md into solutions/QA/DataModel/; drives boundary + validation cases)`,
+    `- projects/${p}/${f}/solutions/Architecture/outputs/ and solutions/Design/outputs/ (optional — copy any .md into solutions/QA/Architecture/; drives integration + failure cases)`,
+    `- Output: solutions/QA/outputs/test-cases.md (plus test-cases.csv / test-cases.feature if produced)`,
+  ],
+}));
+
+// 2f. Capability map — the one stage with NO prerequisite: it reads the same
+// discovery documents the BA reads, so it can run before requirements. It also
+// publishes nothing (confluence: false), which keeps /api/approve from trying to
+// provision an Atlassian space when the gate is approved.
+app.post("/api/capability-map/trigger", stageTrigger({
+  logTag: "capability-map/trigger",
+  titlePrefix: "Generate capability map",
+  intro: "Generated by the Scyne chatbot. Produce the Business Capability Map, the L1/L2/L3 Process Model and the interactive HTML view. Local artefacts only — nothing is published to Confluence or Jira.",
+  gateErrorCode: "no_documents",
+  gateMessage: (p, f, docs) =>
+    docs && docs.other > 0
+      ? `No readable documents for ${p}/${f}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
+      : `No documents found for ${p}/${f}. Upload at least one SOP, transcript or note (or a reference document tree) before generating the capability map.`,
+  confluence: false,
+  inputs: (p, f) => [
+    `Working folder: projects/${p}/${f}/solutions/Capabilities/ — stage the documents there, then run the skill.`,
+    `- projects/${p}/${f}/requirements/{SOP,Transcripts,Notes}/ (the same documents the BA reads)`,
+    `- any other .md document tree under projects/${p}/${f}/ except outputs/, solutions/ and design/`,
+    `- projects/${p}/${f}/outputs/product-summary.md (optional — use it as an extra source if it exists; do NOT block on it)`,
+    `- Outputs: solutions/Capabilities/outputs/{capability-map.json,process-model.json,capability-process.md,capability-process.html}`,
+    `- Render the HTML with: node scripts/render-capability-map.mjs ${p} ${f}`,
+  ],
+}));
+
+// 2e. Serve the rendered capability map. The architect writes a self-contained
+// page (inline CSS/JS, no network requests), so it can be handed straight to the
+// browser — the chatbot links to it rather than iframing it.
+app.get("/api/capability-map/:project/:feature", async (req, res) => {
+  try {
+    const { project, feature } = req.params;
+    assertSafeProjectFeature(project, feature);
+    const file = path.join(WORKSPACE_PATH, "projects", project, feature, "solutions", "Capabilities", "outputs", "capability-process.html");
+    let html: string;
+    try {
+      html = await fs.readFile(file, "utf8");
+    } catch {
+      return res.status(404).json({
+        error: "not_generated",
+        message: `No capability map for ${project}/${feature} yet. Run the capability map stage first.`,
+      });
+    }
+    res.type("html").send(html);
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
 
 // 3. Status — normalized progress view: tree + computed stage + activity timeline + extracted links + approvals
 app.get("/api/status/:issueId", async (req, res) => {
@@ -715,13 +863,17 @@ app.get("/api/artifacts", async (req, res) => {
     const read = async (...rel: string[]) => {
       try { return await fs.readFile(path.join(featureRoot, ...rel), "utf8"); } catch { return null; }
     };
-    const [productSummary, storiesJson, storiesMd, gaps, dataModel, solutionDesign] = await Promise.all([
+    const [productSummary, storiesJson, storiesMd, gaps, dataModel, salesforceDataModel, solutionDesign, solutionArchitecture, testCases, capabilityMap] = await Promise.all([
       read("outputs", "product-summary.md"),
       read("outputs", "stories.json"),
       read("outputs", "stories.md"),
       read("outputs", "gaps.md"),
       read("solutions", "DataModel", "outputs", "datamodel-impact.md"),
+      read("solutions", "DataModel", "outputs", "salesforce-data-model.md"),
       read("solutions", "Design", "outputs", "solution-design.md"),
+      read("solutions", "Architecture", "outputs", "solution-architecture.md"),
+      read("solutions", "QA", "outputs", "test-cases.md"),
+      read("solutions", "Capabilities", "outputs", "capability-process.md"),
     ]);
     let stories: any[] = [];
     if (storiesJson) {
@@ -735,7 +887,14 @@ app.get("/api/artifacts", async (req, res) => {
         }));
       } catch {}
     }
-    res.json({ productSummary, stories, storiesMd, gaps, dataModel, solutionDesign });
+    // `dataModel` prefers the Data Modeler's impact analysis and falls back to
+    // the salesforce-data-modeler skill's output, so the preview tab shows
+    // whichever data-model deliverable the feature actually has.
+    res.json({
+      productSummary, stories, storiesMd, gaps,
+      dataModel: dataModel ?? salesforceDataModel,
+      solutionDesign, solutionArchitecture, testCases, capabilityMap,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -867,6 +1026,9 @@ app.post("/api/projects", async (req, res) => {
       path.join(base, "solutions", "Design", "productsummary"),
       path.join(base, "solutions", "Design", "DataModel"),
       path.join(base, "solutions", "Design", "outputs"),
+      // Capabilities Process Architect working folder.
+      path.join(base, "solutions", "Capabilities", "documents"),
+      path.join(base, "solutions", "Capabilities", "outputs"),
     ];
     for (const d of dirs) await fs.mkdir(d, { recursive: true });
 
