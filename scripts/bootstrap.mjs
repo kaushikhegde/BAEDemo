@@ -60,6 +60,7 @@ const OLD_IDS = {
   capArchitect: "ccccccc1-cccc-4ccc-8ccc-cccccccccccc",
   solutionArchitect: "bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   qaArchitect: "eeeeeee1-eeee-4eee-8eee-eeeeeeeeeeee",
+  serviceDesigner: "fffffff1-ffff-4fff-8fff-ffffffffffff",
 };
 
 // The 20-agent Scyne org. `key` is the in-script identifier (also exposed under
@@ -88,6 +89,7 @@ const AGENTS = [
   { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "layers",         reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] },
   { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },
   { key: "uxDesigner",       name: "UX Designer",               title: "UX Designer",             icon: "wand",           reportsToKey: "archLead" },
+  { key: "serviceDesigner",  name: "Service Designer",          title: "Service Designer",        icon: "users",          reportsToKey: "archLead",     file: "service-designer.json", skills: ["persona-journey-map"] },
   { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] },
   { key: "qaTester",         name: "QA Tester",                 title: "QA Tester",               icon: "bug",            reportsToKey: "businessLead" },
   { key: "qaArchitect",      name: "QA Architect",              title: "QA Architect",            icon: "clipboard-check", reportsToKey: "businessLead", file: "qa-architect.json", skills: ["requirements-test-case-generator"] },

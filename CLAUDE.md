@@ -10,12 +10,13 @@ A local end-to-end workflow that takes raw discovery artefacts for a single feat
 2. A set of **Jira-ready user stories** (Atlassian Cloud REST v3 payloads).
 3. A **Salesforce Data Model Impact analysis** (objects, custom fields, Mermaid ER diagram), published to its own Confluence page.
 4. A **Salesforce Solution Design Document** (declarative-first component design, Mermaid flow diagram), published to its own Confluence page.
-5. A **working Vite + React + shadcn/ui app** scaffolded from the Product Summary, with WCAG 2.0 AA auto-fixes applied.
+5. A **companion app** — ONE self-contained, interactive HTML page assembling every artefact the feature has produced (personas, journeys with a satisfaction chart, capabilities, process model, stories, and each generated document with its Mermaid diagrams inlined as SVG), with WCAG 2.0 AA verified.
 6. A **Business Capability Map + L1/L2/L3 Process Model**, rendered as a self-contained interactive **HTML** page (local artefact — nothing is published).
 7. A **Salesforce Service Cloud Solution Architecture Document** (capability-to-component map, Flow/LWC/Apex inventory with a justification per custom component, integration interface catalogue, ADRs, architecture diagrams), published to its own Confluence page.
 8. A **test pack** (executable test cases, requirements traceability matrix, coverage gap analysis, optional CSV/Gherkin exports), published to its own Confluence page.
+9. An **evidence-traced persona set + journey map per persona**, published to its own Confluence page — plus `personas.json` and `journey-map.json`, which are a **build contract for the companion app** that is scaffolded last.
 
-Deliverables 1→3→4 form a **sequential, human-gated pipeline** (requirements → data model → solution design); each stage needs the previous stage's approved output. Deliverable 5 (the UI app) is a parallel branch off the Product Summary. Deliverable 6 (the capability + process map) is **standalone and ungated** — the **Capabilities Process Architect** reads the same discovery documents the BA reads, so it can run before, after, or instead of the requirements flow. Deliverables 7 and 8 (**Solution Architect**, **QA Architect**) gate on the Product Summary **only**: they consume the data model and each other's output when those exist and say so in their own documents, but never block waiting for them.
+Deliverables 1→3→4 form a **sequential, human-gated pipeline** (requirements → data model → solution design); each stage needs the previous stage's approved output. Deliverable 5 (the companion app) is a parallel branch — it renders whatever exists, so it works on a partial pipeline. Deliverable 6 (the capability + process map) is **standalone and ungated** — the **Capabilities Process Architect** reads the same discovery documents the BA reads, so it can run before, after, or instead of the requirements flow. Deliverable 9 (**Service Designer**) is standalone and ungated like deliverable 6 — it reads the same discovery documents. Deliverables 7 and 8 (**Solution Architect**, **QA Architect**) gate on the Product Summary **only**: they consume the data model and each other's output when those exist and say so in their own documents, but never block waiting for them.
 
 > **Solution design (4) vs solution architecture (7)** are two different deliverables that may both exist for one feature. The Architecture Lead runs `solution-design-document` in `solutions/Design/`; the Solution Architect runs `salesforce-service-cloud-architecture` in `solutions/Architecture/`. Their issue title prefixes share their first two words, so the Delivery Lead must read as far as `design` / `architecture` before routing.
 
@@ -33,6 +34,7 @@ chatbot UI
    │  POST /api/capability-map/trigger → "Generate capability map — …"
    │  POST /api/solution-architecture/trigger → "Generate solution architecture — …"
    │  POST /api/test-cases/trigger → "Generate test cases — …"
+   │  POST /api/personas/trigger   → "Generate personas — …"
    │  POST /api/ui-agent/trigger   → "Build UI — …"
    │  (each creates a top-level Paperclip issue, status=todo, assigned to the Delivery Lead)
    ▼
@@ -44,6 +46,7 @@ Delivery Lead — routes by title prefix to the owning worker
    │    "Generate capability map — …"   → CAPABILITY MAP flow → Capabilities Process Architect
    │    "Generate solution architecture — …" → SOLUTION ARCHITECTURE flow → Solution Architect
    │    "Generate test cases — …"       → TEST CASES flow → QA Architect
+   │    "Generate personas — …"        → PERSONAS flow → Service Designer
    │    "Build UI — …"                  → UI flow → Delivery Lead drives Developer, then UX Auditor
    │
    ├─ REQUIREMENTS flow: creates a child issue assigned to the BA (status=todo)
@@ -118,6 +121,21 @@ Delivery Lead — routes by title prefix to the owning worker
    │      └─ PHASE 2 (after human approves): creates a STANDALONE Confluence page
    │                 "<feature> — Test Cases", attaching the CSV if one was produced
    │
+   ├─ PERSONAS flow (NO prerequisite): child issue assigned to the
+   │  Service Designer (status=todo)
+   │     ▼
+   │   Service Designer — works in solutions/Experience/, two phases
+   │      ├─ PHASE 1: stages every .md under the feature into documents/<category>/
+   │      │          (skipping templates/), plus the product summary and the
+   │      │          capability model if they exist,
+   │      │          runs the `persona-journey-map` skill
+   │      │          → outputs/{personas-journeys.md, personas.json, journey-map.json},
+   │      │          MUST pass `node scripts/validate-experience.mjs <project> <feature>`
+   │      │          before attaching anything, raises an approval gate
+   │      └─ PHASE 2 (after human approves): renders EVERY Mermaid journey diagram
+   │                 → PNG (two per persona), creates a STANDALONE Confluence page
+   │                 "<feature> — Personas & Journey Map", attaching the two JSON files
+   │
    └─ UI flow: Delivery Lead dispatches the Developer and UX Auditor directly, as
               SIBLINGS under the Build UI issue (not a chain). The Delivery Lead is re-woken
               automatically (issue_children_completed) after each child finishes.
@@ -185,6 +203,11 @@ requirement-generator/                         workspace root (cwd for all agent
 │       │   ├── DataModel/                   (input, optional)
 │       │   ├── Architecture/                (input, optional — from solutions/Architecture/ and/or solutions/Design/)
 │       │   └── outputs/test-cases.md        (output — fixed name, + optional .csv / .feature)
+│       ├── Experience/                      (the Service Designer's working folder)
+│       │   ├── documents/<category>/        (input — every .md under the feature, staged by category)
+│       │   ├── productsummary/              (input, optional)
+│       │   ├── capabilities/                (input, optional — from solutions/Capabilities/outputs/)
+│       │   └── outputs/                     (personas-journeys.md, personas.json, journey-map.json)
 │       └── Capabilities/                    (the Capabilities Process Architect's working folder)
 │           ├── documents/<category>/        (input — every .md under the feature, staged by category)
 │           ├── capability-reference/        (optional input — house capability taxonomy)
@@ -198,7 +221,8 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── capability-process-map/SKILL.md
 │   ├── salesforce-data-modeler/SKILL.md
 │   ├── salesforce-service-cloud-architecture/SKILL.md
-│   └── requirements-test-case-generator/SKILL.md
+│   ├── requirements-test-case-generator/SKILL.md
+│   └── persona-journey-map/SKILL.md
 ├── generated-apps/<project>-<feature>/        Developer writes the scaffolded React app here
 ├── examples/               (gold-standard reference docs — house style for the BA; the FALLBACK when a project has no requirements/templates/)
 │   ├── gold-product-summary.pdf
@@ -211,6 +235,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── capabilities-process-architect.json
 │   ├── solution-architect.json
 │   ├── qa-architect.json
+│   ├── service-designer.json
 │   ├── ui.json
 │   └── ux-auditor.json
 ├── scyne-chatbot/          (the React + Vite + Express chatbot — see its own README.md)
@@ -240,6 +265,7 @@ requirement-generator/                         workspace root (cwd for all agent
 | Capabilities Process Architect | `ccccccc1-cccc-4ccc-8ccc-cccccccccccc` (reports to the Architecture Lead) |
 | Solution Architect | `bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb` (reports to the Architecture Lead) |
 | QA Architect | `eeeeeee1-eeee-4eee-8eee-eeeeeeeeeeee` (reports to the Business Lead) |
+| Service Designer | `fffffff1-ffff-4fff-8fff-ffffffffffff` (reports to the Architecture Lead) |
 | Architecture Lead | `aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa` (reports to the Delivery Lead) |
 | Developer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (dispatched by the Delivery Lead)          |
 | UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (dispatched by the Delivery Lead)          |
@@ -282,7 +308,7 @@ In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everyt
 
 ## The Skills
 
-Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
+Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
 
 **`requirement-generator`** (the BA, Phase 1):
 - Input layout: `./projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI}/`.
@@ -315,6 +341,12 @@ Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 - Output: `solutions/QA/outputs/test-cases.md` (fixed name), plus optional `test-cases.csv` (Jira/Xray/Zephyr/TestRail/ADO import) and `test-cases.feature` (Gherkin).
 - Ambiguous or contradictory requirements are reported under **Requirement Quality Issues** with the interpretation used — never silently guessed.
 
+**`persona-journey-map`** (the Service Designer — working folder `solutions/Experience/`):
+- Inputs (staged by the agent): `documents/<category>/` (required — every `.md` under the feature except `outputs/`, `solutions/`, `design/` and `templates/`) + `productsummary/` and `capabilities/` (both optional). Persona design, journey mapping technique and the companion-app data contract are inlined as Appendices A–C.
+- Outputs: `solutions/Experience/outputs/` — `personas-journeys.md` (the reviewable deliverable), plus `personas.json` and `journey-map.json` in the shape the **companion app** consumes. No prerequisite stage.
+- The discipline is evidence: every persona and every pain point cites the source document, and inferences are labelled as inferences. Three evidenced personas beat seven invented ones.
+- The two JSON files are a build contract, so the agent must pass `node scripts/validate-experience.mjs <project> <feature>` before it raises the approval gate.
+
 **`solution-design-document`** (the Architecture Lead, Phase 1 — working folder `solutions/Design/`):
 - Inputs (staged by the agent): `productsummary/` (copied from the approved product summary) + `DataModel/` (copied from `solutions/DataModel/outputs/`).
 - Output: `solutions/Design/outputs/solution-design.md` (fixed name) — declarative-first (OOB → low-code → code) component design and a Mermaid `flowchart`.
@@ -345,6 +377,7 @@ open http://127.0.0.1:5173
 | POST   | `/api/capability-map/trigger`     | Creates a `Generate capability map — …` issue. No pipeline prerequisite; `409 no_documents` only when the feature has no `.md` at all. Carries no Atlassian keys, so approval skips provisioning |
 | POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue. Gated: `409 no_product_summary` only — the data model is optional enrichment |
 | POST   | `/api/test-cases/trigger`         | Creates a `Generate test cases — …` issue. Gated: `409 no_product_summary` only — the data model and architecture are optional enrichment |
+| POST   | `/api/personas/trigger`           | Creates a `Generate personas — …` issue. No pipeline prerequisite; `409 no_documents` only. Publishes, so it carries the Confluence space key |
 | GET    | `/api/capability-map/:project/:feature` | Serves the rendered `capability-process.html` (self-contained page); `404 not_generated` before the stage has run |
 | GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links. Stage labels adapt to the flow (BA / Data Modeler / Architecture Lead / Developer) |
 | POST   | `/api/approve/:approvalId`        | Resolves an approval gate; wakes the gate's own issue assignee. Atlassian auto-provisioning is keyed on the keys in the issue description: requirements ensures Jira project + Confluence space; data-model/solution-design ensure just the space; Build UI carries no keys → skipped |
@@ -353,7 +386,7 @@ open http://127.0.0.1:5173
 | GET    | `/api/history`                    | All completed pipeline runs (requirements, data model, solution design) with their Confluence + Jira links (History view) |
 | GET    | `/api/runs/:issueId`              | Compact agent run summaries (agent · status · duration) for the run tree (Activity panel) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
-| GET    | `/api/artifacts`                  | Reads the BA's `outputs/*` plus `solutions/DataModel/outputs/{datamodel-impact,salesforce-data-model}.md`, `solutions/Design/outputs/solution-design.md`, `solutions/Architecture/outputs/solution-architecture.md`, `solutions/QA/outputs/test-cases.md` and `solutions/Capabilities/outputs/capability-process.md` for the approval-card preview |
+| GET    | `/api/artifacts`                  | Reads the BA's `outputs/*` plus `solutions/DataModel/outputs/{datamodel-impact,salesforce-data-model}.md`, `solutions/Design/outputs/solution-design.md`, `solutions/Architecture/outputs/solution-architecture.md`, `solutions/QA/outputs/test-cases.md`, `solutions/Experience/outputs/personas-journeys.md` and `solutions/Capabilities/outputs/capability-process.md` for the approval-card preview |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |
 | POST   | `/api/ui-agent/trigger`           | Triggers the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead)     |
 | GET    | `/api/preview/:project/:feature`  | Returns preview URL for the scaffolded app                                |
@@ -380,6 +413,7 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
 - `trigger_capability_map` — fires the capability map flow (`Generate capability map — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Backend only refuses with `no_documents` when the feature is empty.
 - `trigger_solution_architecture` — fires the solution architecture flow (`Generate solution architecture — …`). Gated on the product summary only. **Distinct from `trigger_solution_design`** — if the user just says "do the architecture", the bot asks which one rather than guessing.
 - `trigger_test_cases` — fires the test-case flow (`Generate test cases — …`). Gated on the product summary only; the data model and architecture enrich the pack when present.
+- `trigger_personas` — fires the persona + journey flow (`Generate personas — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Its `personas.json` / `journey-map.json` feed the companion app.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
 
 The system prompt teaches the dependency chain (requirements → data model → solution design) so the bot proactively explains and offers the missing prerequisite rather than firing a stage that would just block.
@@ -448,7 +482,7 @@ curl -sS -X PUT \
   -d @agent-instructions/pm.json
 ```
 
-Bundles: `pm.json` (org.pm / Delivery Lead), `ba.json` (org.ba), `data-modeler.json` (org.dataModeler), `architect-lead.json` (org.archLead), `capabilities-process-architect.json` (org.capArchitect), `solution-architect.json` (org.solutionArchitect), `qa-architect.json` (org.qaArchitect), `ui.json` (org.ui), `ux-auditor.json` (org.ux). Note `pm.json` must have its placeholder IDs swapped for the real report IDs before pushing — the bootstrap does this automatically, so prefer re-running it when pm.json changes.
+Bundles: `pm.json` (org.pm / Delivery Lead), `ba.json` (org.ba), `data-modeler.json` (org.dataModeler), `architect-lead.json` (org.archLead), `capabilities-process-architect.json` (org.capArchitect), `solution-architect.json` (org.solutionArchitect), `qa-architect.json` (org.qaArchitect), `service-designer.json` (org.serviceDesigner), `ui.json` (org.ui), `ux-auditor.json` (org.ux). Note `pm.json` must have its placeholder IDs swapped for the real report IDs before pushing — the bootstrap does this automatically, so prefer re-running it when pm.json changes.
 
 ### Run a skill locally, without Paperclip
 
@@ -524,6 +558,25 @@ preview and the downstream Architecture Lead stage still find them. What you ski
 by going direct is the human approval gate and Confluence/Jira publishing — those
 live in the agents' Phase 2, not in the skills.
 
+### Render the companion app by hand
+
+```bash
+node scripts/render-companion-app.mjs <project> <feature>              # full render
+node scripts/render-companion-app.mjs <project> <feature> --no-diagrams # skip mermaid (much faster)
+open generated-apps/<project>-<feature>/index.html                      # or just open the file
+```
+
+It renders whatever exists — a feature with only a product summary produces a
+valid two-tab page. It refuses only when the feature has produced nothing at all.
+Branding is data: drop a `design/style-guides/theme.json` next to the feature and
+re-render.
+
+```json
+{ "brand": "#464e7e", "brandDeep": "#363c63", "accent": "#b4795a", "logoText": "Scyne" }
+```
+
+Never hand-edit the emitted `index.html` — the next render overwrites it.
+
 ### Add a new feature to a project
 
 ```bash
@@ -534,6 +587,7 @@ mkdir -p projects/<project>/<feature>/solutions/DataModel/{productsummary,datamo
 mkdir -p projects/<project>/<feature>/solutions/Design/{productsummary,DataModel,outputs}
 mkdir -p projects/<project>/<feature>/solutions/Architecture/{productsummary,DataModel,landscape,outputs}
 mkdir -p projects/<project>/<feature>/solutions/QA/{productsummary,DataModel,Architecture,outputs}
+mkdir -p projects/<project>/<feature>/solutions/Experience/{documents,productsummary,capabilities,outputs}
 mkdir -p projects/<project>/<feature>/solutions/Capabilities/{documents,outputs}
 # Drop files into the four requirements subfolders
 # (the solutions/ working folders are also created on demand by the agents)
@@ -563,12 +617,15 @@ Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-m
 
 Three Node scripts power the UI / a11y / capability agents:
 
-- `scripts/scaffold-app.mjs <project> <feature>` — used by the **Developer**. Creates `generated-apps/<project>-<feature>/` from the Vite react-ts template, installs deps, adds Tailwind + shadcn/ui, allocates a free port (`PAPERCLIP_PORT_BASE` or 5174), launches `npm run dev` detached, and waits until the dev URL responds. Writes the entry into `generated-apps/registry.json`. Idempotent — if the app and its PID are alive, it just re-prints the registry entry.
-- `scripts/audit-a11y.mjs <project-feature-key>` — used by the **UX Auditor**. Reads the registry entry, runs `@axe-core/cli` (WCAG 2.0 A + AA) and `pa11y` (WCAG2AA standard) against the dev URL, then writes consolidated violations to `generated-apps/<key>/audit.json`. Exits 0 even when violations exist — the auditor reads the JSON to decide what to fix.
+- `scripts/render-companion-app.mjs <project> <feature>` — used by the **Developer**. Reads every artefact the feature has produced and emits ONE self-contained `generated-apps/<project>-<feature>/index.html`: inline CSS + JS, data as a JSON island, Mermaid blocks pre-rendered to inline SVG via mermaid-cli, and a hand-drawn SVG satisfaction chart per journey. **Zero network requests** — no CDN, no webfont, no external image. Interactive: tab navigation with roving tabindex, persona dialogs, journey stage explorer, capability tree with maturity bars, filterable process table, in-page search with highlighting, and a light/dark toggle. Per-feature branding comes from `design/style-guides/theme.json` (hex tokens + wordmark); the selected-navigation foreground is **computed from the brand's luminance**, so a client palette cannot break WCAG contrast. Also writes the `generated-apps/registry.json` entry. Verified at **0 WCAG 2.0 A/AA violations** across every tab in light and dark. Flags: `--no-diagrams` skips the mermaid pass.
+  > The React path it replaced (`scaffold-app.mjs` / `stop-app.mjs`) is kept at `scripts/legacy-react-scaffold/` with a README on restoring it. It was retired because the deliverable is a document a consultant hands to a client, not a running program — the React path cost an `npm install`, a detached process and a port per feature, all of which had to still be alive whenever anyone opened the preview.
+- `scripts/audit-a11y.mjs <project-feature-key>` — used by the **UX Auditor**. Reads the registry entry, runs `@axe-core/cli` (WCAG 2.0 A + AA) and `pa11y` (WCAG2AA standard) against `devUrl`, then writes consolidated violations to `generated-apps/<key>/audit.json`. Exits 0 even when violations exist — the auditor reads the JSON to decide what to fix. Unchanged by the move to static HTML: `devUrl` now points at `/api/companion-app/…` instead of a dev server, which both tools treat identically.
+  > **Known environment issue:** `@axe-core/cli` drives Chrome through ChromeDriver, and on a machine where the installed Chrome is newer than the bundled driver it fails with `session not created`. `npx browser-driver-manager install chrome` fixes it. `pa11y` uses its own bundled browser and is unaffected.
 
+- `scripts/validate-experience.mjs <project> <feature>` — used by the **Service Designer**. Validates `solutions/Experience/outputs/{personas.json,journey-map.json}` against the companion-app contract: required fields, unique IDs, `avatarColor` in the app's palette, satisfaction scores as integers 1–5, no semicolons in persona bullets (the app's CSV loader splits on them), no `:`/`;` in journey step names (breaks the Mermaid `journey` parser), every journey's `personaId` resolving to a persona, every "moment that matters" resolving to a step, and every persona having exactly one journey. Reports **every** problem in one run and exits non-zero. This is the only guard between this stage and a companion-app build that happens weeks later.
 - `scripts/render-capability-map.mjs <project> <feature>` — used by the **Capabilities Process Architect**. Reads `solutions/Capabilities/outputs/{capability-map.json,process-model.json}`, validates them (non-zero exit naming the offending file/field), and writes `capability-process.html` — one self-contained page (inline CSS/JS, data as a JSON island, no network requests) with the capability tree, the L1/L2/L3 process explorer, actor/tier/capability filters, a coverage table and a source index. The agent never hand-writes the HTML, so every run looks the same.
 
-The chatbot doesn't call these directly; the agents do (via the `Bash` tool in their Claude Code sessions). The one exception is `scaffold-app.mjs` / `stop-app.mjs`, which `/api/preview/:project/:feature/:action` shells out to.
+The chatbot doesn't call these directly; the agents do (via the `Bash` tool in their Claude Code sessions). The one exception is `render-companion-app.mjs`, which `/api/preview/:project/:feature/:action` shells out to when the user asks to refresh the preview.
 
 ## Generated apps registry
 

@@ -68,7 +68,7 @@ function StoryCard({ s }: { s: ArtifactStory }) {
   );
 }
 
-type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution" | "architecture" | "testcases" | "capability";
+type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution" | "architecture" | "testcases" | "personas" | "capability";
 
 export function ArtifactsPreview({ project, feature }: { project: string | null; feature: string | null }) {
   const [data, setData] = useState<Artifacts | null>(null);
@@ -123,6 +123,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {data.solutionDesign && tabBtn("solution", "Solution Design")}
         {data.solutionArchitecture && tabBtn("architecture", "Solution Architecture")}
         {data.testCases && tabBtn("testcases", "Test Cases")}
+        {data.personas && tabBtn("personas", "Personas & Journeys")}
         {data.capabilityMap && tabBtn("capability", "Capability Map")}
       </div>
       <div className="max-h-80 overflow-y-auto pr-1">
@@ -187,6 +188,15 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
               <MiniMarkdown source={data.testCases} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No test cases on disk yet.</div>
+            )}
+          </div>
+        )}
+        {tab === "personas" && (
+          <div className="text-slate-800">
+            {data.personas ? (
+              <MiniMarkdown source={data.personas} />
+            ) : (
+              <div className="text-sm text-muted-foreground italic">No personas or journey map on disk yet.</div>
             )}
           </div>
         )}

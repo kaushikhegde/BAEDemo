@@ -60,6 +60,7 @@ export interface Artifacts {
   solutionArchitecture: string | null;
   testCases: string | null;
   capabilityMap: string | null;
+  personas: string | null;
 }
 
 // Live Transcript types ------------------------------------------------------

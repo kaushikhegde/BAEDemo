@@ -111,6 +111,12 @@ export const triggerSolutionArchitecture = (project: string, feature: string) =>
 export const triggerTestCases = (project: string, feature: string) =>
   postStageTrigger("/api/test-cases/trigger", "Test cases trigger", project, feature);
 
+// Fire the PERSONAS stage (Service Designer → persona set + journey maps). No
+// pipeline prerequisite — gated server-side only on the feature having documents
+// at all (409 no_documents), same as the capability map.
+export const triggerPersonas = (project: string, feature: string) =>
+  postStageTrigger("/api/personas/trigger", "Personas trigger", project, feature);
+
 export async function postUiComment(issueId: string, body: string) {
   const r = await fetch("/api/ui-agent/comment", {
     method: "POST",

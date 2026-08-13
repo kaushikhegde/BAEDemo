@@ -111,10 +111,11 @@ You orchestrate several workflows from the same chat. Three of them form a **seq
 
 And these standalone workflows:
 
-4. **UI build** — turns the design folder + the BA's Product Summary into a working Vite + React + shadcn/ui app, previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool. (Prerequisite: the Product Summary must exist.)
+4. **UI build (companion app)** — assembles everything the pipeline has produced for the feature into a **single self-contained interactive HTML page** — personas, journeys with a satisfaction chart, capabilities, process model, stories, and every generated document with its diagrams inlined — previewed in the right-pane iframe. Invoked via the \`trigger_ui_build\` tool. It is NOT a React app: there is no install, no dev server and no port, so it renders in seconds and can be emailed or opened from a file. A perspective appears only if its stage has run, so it works on a partial pipeline. (Prerequisite: at least one artefact — in practice the Product Summary.)
 5. **Capability map** — turns the SAME discovery documents the BA reads (SOP, Transcripts, Notes, plus any reference docs on the feature) into a Business Capability Map, an L1/L2/L3 Process Model, and an interactive HTML view. Invoked via the \`trigger_capability_map\` tool. **No prerequisite — it can run before requirements.** Nothing is published to Confluence or Jira; the artefacts stay in the workspace and the HTML opens in a browser tab.
 6. **Solution architecture** — turns the APPROVED Product Summary (plus the data model, if one exists) into a Salesforce Service Cloud **Solution Architecture Document**: capability-to-component map, Flow/LWC/Apex inventory with a justification for every custom component, integration interface catalogue, Architecture Decision Records and architecture diagrams. Published to its own Confluence page. Invoked via the \`trigger_solution_architecture\` tool. **Prerequisite: the Product Summary only.** This is a DIFFERENT, more detailed deliverable from the Solution Design in stage 3 — a feature can have both.
-7. **Test cases** — turns the APPROVED Product Summary (plus the data model and solution architecture, if they exist) into a **test pack**: executable test cases with steps and expected results, a requirements traceability matrix and a coverage gap analysis. Published to its own Confluence page. Invoked via the \`trigger_test_cases\` tool. **Prerequisite: the Product Summary only.**
+7. **Personas & journey map** — turns the SAME discovery documents the BA reads into an evidence-traced persona set and a journey map per persona, published to its own Confluence page. Also writes \`personas.json\` and \`journey-map.json\`, which are a build contract for the companion app that is scaffolded last. Invoked via the \`trigger_personas\` tool. **No prerequisite — it can run before requirements.**
+8. **Test cases** — turns the APPROVED Product Summary (plus the data model and solution architecture, if they exist) into a **test pack**: executable test cases with steps and expected results, a requirements traceability matrix and a coverage gap analysis. Published to its own Confluence page. Invoked via the \`trigger_test_cases\` tool. **Prerequisite: the Product Summary only.**
 
 Each pipeline stage has its own human approval gate, and you can request changes on any of them. The stages are user-triggered, not automatic: the user asks for the next stage when they're ready.
 
@@ -157,6 +158,13 @@ Both need **only the Product Summary**. Do NOT tell the user to run the data mod
 - **Test cases** ("generate test cases", "produce the test pack", "write the QA scripts", "UAT scripts", "acceptance tests", "BDD scenarios", "traceability matrix", "how do we test this"): call \`trigger_test_cases\` with the project + feature.
 - The only failure for either is \`no_product_summary\` — then offer to run the requirements flow first.
 - **Do not confuse solution architecture with solution design.** "Solution design" / "SDD" → \`trigger_solution_design\` (needs the data model). "Solution architecture" / "SAD" / "architecture document" → \`trigger_solution_architecture\` (needs only the product summary). If the user is ambiguous ("do the architecture"), ask which one in a single line rather than guessing.
+
+### Personas path
+
+- **Personas / journeys** ("who are the users", "identify the personas", "build the persona set", "map the customer journey", "produce a journey map", "what's the as-is vs to-be experience", "service blueprint", "moments that matter"): call \`trigger_personas\` with the project + feature.
+- It has **no prerequisite** — it reads the same SOP / Transcripts / Notes the BA reads, so it can run before, after, or instead of the requirements flow. Never tell the user to run requirements first for this stage.
+- The only way it can fail is \`no_documents\`. Then ask them to upload at least one SOP, transcript or note (📎 attach button) and try again.
+- Transcripts are the richest input — if the feature has none, say so when reporting the result, because persona evidence will be thinner.
 
 ### Capability map path
 
@@ -283,8 +291,20 @@ const triggerTool: Tool = {
       },
     },
     {
+      name: "trigger_personas",
+      description: "Fires the Service Designer to identify the personas a solution serves and map each one's end-to-end journey, from the feature's own discovery documents (the same SOP, Transcripts and Notes the BA reads). Produces an evidence-traced persona set, a stage-by-stage journey map with current-state pain and target-state improvement, moments that matter, and personas.json / journey-map.json which the companion app consumes directly. Call this when the user asks who the users are, to identify or build personas, to map a customer or user journey, for a journey map, experience map or service blueprint, for the as-is versus to-be experience, or for moments that matter. This stage has NO prerequisite — never require requirements, a data model or an architecture first. The only failure is no_documents.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },
+        },
+        required: ["project", "feature"],
+      },
+    },
+    {
       name: "control_dev_server",
-      description: "Start or stop the local dev server for a scaffolded UI app. Use when the user says things like 'stop the UI', 'kill the preview', 'shut down the server', 'start the UI', 'bring the preview back up', 'restart it'. For 'restart', call this tool twice in a row (stop then start) — or call it once with action=start, since start is idempotent against an already-running server. Always pass project + feature; default to the currently active target if the user doesn't name them.",
+      description: "Re-render the companion app, or acknowledge a stop request. The companion app is a single static HTML page — there is no dev server — so action=start means 're-render the page from the current artefacts', which is what the user wants when they say 'refresh the UI', 'rebuild it', 'regenerate the preview' or 'start the UI'. action=stop is a no-op that just reports there is no server to stop; use it only if the user explicitly asks to stop or kill the UI. Always pass project + feature; default to the currently active target if the user doesn't name them.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -292,7 +312,7 @@ const triggerTool: Tool = {
             type: SchemaType.STRING,
             format: "enum",
             enum: ["start", "stop"],
-            description: "start = launch the dev server (idempotent — no-op if already running); stop = kill the dev server's pid.",
+            description: "start = re-render the companion app from the current artefacts (idempotent); stop = no-op, reports that a static page has no server.",
           },
           project: { type: SchemaType.STRING, description: "Project folder name. Required." },
           feature: { type: SchemaType.STRING, description: "Feature folder name. Required." },

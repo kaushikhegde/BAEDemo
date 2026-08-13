@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -356,7 +356,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         toolUse?.name === "trigger_solution_design" ||
         toolUse?.name === "trigger_capability_map" ||
         toolUse?.name === "trigger_solution_architecture" ||
-        toolUse?.name === "trigger_test_cases"
+        toolUse?.name === "trigger_test_cases" ||
+        toolUse?.name === "trigger_personas"
       ) {
         // The worker-stage triggers share one shape — only the worker label, API
         // call, and gate message differ. Keeping them in one table prevents the
@@ -396,6 +397,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             fire: triggerTestCases,
             gateCode: "no_product_summary",
             gateMessage: (p: string, f: string) => `I can't write the test cases yet — there's no product summary for **${p}/${f}**. Want me to generate the requirements first?`,
+          },
+          // No pipeline prerequisite — reads the discovery documents directly,
+          // so the gate message must ask for documents, not for requirements.
+          trigger_personas: {
+            worker: "Service Designer",
+            fire: triggerPersonas,
+            gateCode: "no_documents",
+            gateMessage: (p: string, f: string) => `I can't identify the personas yet — there are no documents for **${p}/${f}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
           },
         } as const;
         const stage = PIPELINE_STAGES[toolUse.name as keyof typeof PIPELINE_STAGES];

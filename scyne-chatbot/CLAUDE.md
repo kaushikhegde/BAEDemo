@@ -62,7 +62,7 @@ scyne-chatbot/
         ├── ProgressPanel.tsx   (flat list of issues + statuses)
         ├── ActivityTimeline.tsx(comments, autoscrolling, markdown-rendered)
         ├── ApprovalCard.tsx    (inline approve/reject with collapsible artefact preview)
-        ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps | Data Model | Solution Design | Solution Architecture | Test Cases | Capability Map — reads /api/artifacts; the Capability Map tab also links to the interactive HTML)
+        ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps | Data Model | Solution Design | Solution Architecture | Test Cases | Personas & Journeys | Capability Map — reads /api/artifacts; the Capability Map tab also links to the interactive HTML)
         ├── LinksPanel.tsx      (Confluence + Jira links extracted from comments)
         ├── TargetPicker.tsx    (chip-style project + feature selector at top of chat)
         ├── AttachmentButton.tsx(upload .docx / .pdf / .png to a chosen scope)
@@ -83,6 +83,7 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | POST   | `/api/capability-map/trigger`       | Creates a `Generate capability map — …` issue. **No pipeline prerequisite** — reads the same SOP/Transcripts/Notes as the BA. **Pre-flight:** `409 {error:"no_documents"}` only when the feature has no `.md` anywhere outside `outputs/`, `solutions/`, `design/`. Emits no Confluence key, so `/api/approve` skips provisioning. |
 | POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue (Solution Architect → SAD). **Pre-flight:** `409 {error:"no_product_summary"}` only. Deliberately NOT gated on the data model. |
 | POST   | `/api/test-cases/trigger`           | Creates a `Generate test cases — …` issue (QA Architect → test pack). **Pre-flight:** `409 {error:"no_product_summary"}` only. |
+| POST   | `/api/personas/trigger`             | Creates a `Generate personas — …` issue (Service Designer → persona set + journey maps). **No pipeline prerequisite** — reads the same discovery documents as the BA. **Pre-flight:** `409 {error:"no_documents"}` only. Unlike the capability map it DOES publish, so it carries the Confluence space key. |
 | GET    | `/api/capability-map/:project/:feature` | Serves the architect's rendered `solutions/Capabilities/outputs/capability-process.html` as `text/html`. `404 {error:"not_generated"}` before the stage runs. Linked from the approval card, not iframed. |
 | GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. `stage.label` adapts to the flow's worker. |
 | POST   | `/api/approve/:approvalId`          | Resolves an approval gate; explicitly wakes the gate's own issue assignee (BA / Data Modeler / Architecture Lead). Atlassian auto-provisioning runs only for the requirements flow. |
@@ -94,7 +95,9 @@ All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
 | GET    | `/api/artifacts`                    | Reads the BA's `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` plus `solutions/DataModel/outputs/datamodel-impact.md`, `solutions/Design/outputs/solution-design.md` and `solutions/Capabilities/outputs/capability-process.md`. Used by `ArtifactsPreview` inside the approval card. |
 | POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
 | POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to the Delivery Lead. Delivery Lead detects the title prefix and dispatches the Developer directly, then the UX Auditor once the build completes. |
-| GET    | `/api/preview/:project/:feature`    | Resolves the dev-server URL for the generated app from `generated-apps/registry.json`. |
+| GET    | `/api/companion-app/:project/:feature` | Serves the rendered `generated-apps/<project>-<feature>/index.html` as `text/html` with `Cache-Control: no-store`. `404 {error:"not_generated"}` before the Developer has rendered it. This is what the preview iframe points at. |
+| GET    | `/api/preview/:project/:feature`    | Resolves the registry entry for the generated companion app. `devUrl` now points at `/api/companion-app/…` rather than a dev server, so `PreviewPane` and `scripts/audit-a11y.mjs` are unchanged. |
+| POST   | `/api/preview/:project/:feature/:action` | `start` re-renders the companion app (`render-companion-app.mjs`); `stop` is a reported no-op, since a static page has no server. The React dev-server path lives in `scripts/legacy-react-scaffold/`. |
 | POST   | `/api/ui-agent/comment`             | Adds a follow-up comment on the UI-build issue (e.g. iteration prompts).  |
 | WS     | `ws://127.0.0.1:4000/recording`     | Browser ↔ backend audio stream. Client pushes PCM frames; backend pipes them into Gemini Live and pushes transcript chunks back. Used by `RecordMeetingPanel`. |
 
@@ -158,6 +161,7 @@ The prompt instructs a discovery flow:
 | `trigger_capability_map`        | When the user asks for a capability map, capability model, business capabilities, process model, L1/L2/L3 processes or operating model. Creates a `Generate capability map — …` issue. **No prerequisite** — never offer to run requirements first for this one; the only 409 is `no_documents`. |
 | `trigger_solution_architecture` | When the user asks for a solution architecture, SAD, HLD/LLD, target architecture, component design or integration architecture. Creates a `Generate solution architecture — …` issue. Only 409 is `no_product_summary`. **Not the same as `trigger_solution_design`** — the prompt tells the bot to ask which one when the request is ambiguous. |
 | `trigger_test_cases`            | When the user asks for test cases, a test plan/pack, QA or UAT scripts, acceptance tests, BDD scenarios or a traceability matrix. Creates a `Generate test cases — …` issue. Only 409 is `no_product_summary`. |
+| `trigger_personas`              | When the user asks who the users are, to identify personas, to map a customer/user journey, for a journey or experience map, a service blueprint, the as-is vs to-be experience, or moments that matter. Creates a `Generate personas — …` issue. **No prerequisite**; only 409 is `no_documents`. Its `personas.json` / `journey-map.json` are a build contract for the companion app. |
 | `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly. |
 | `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. |
 
