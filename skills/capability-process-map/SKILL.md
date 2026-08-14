@@ -1,9 +1,9 @@
 ---
 name: capability-process-map
 description: >
-  Build a Business Capability Map and an L1/L2/L3 Process Model from a feature's
-  discovery and reference documents, then render them as a self-contained
-  interactive HTML page. Use this skill whenever a user (or the Capabilities
+  Build a Business Capability Map and an L1/L2/L3 Process Model for a PROJECT
+  from every discovery and reference document the client has, then render them
+  as a self-contained interactive HTML page. Use this skill whenever a user (or the Capabilities
   Process Architect agent) asks to: generate a capability map, build a business
   capability model, produce a process model or process taxonomy, map L1/L2/L3
   processes, produce a capability heatmap or maturity assessment, or turn a set
@@ -26,6 +26,11 @@ This is the **project definition**: who the client organisation is, what it is
 regulated or obliged to do, who its customers actually are, and what it cannot
 do. It is written once per project and applies to every feature under it.
 
+**This skill is PROJECT-level.** A capability map describes the client
+organisation, not one slice of work — so it is generated once per project and
+every feature reads it. Your inputs are every document the client has given us,
+across all features; your output belongs to the project.
+
 Use it to:
 
 - resolve who "the customer" is for this process — it is frequently not the end
@@ -40,7 +45,7 @@ invent organisational context to fill the gap.
 
 # Capability & Process Map Builder
 
-Reads every document staged for a feature, derives two connected models, and
+Reads every document staged for a project, derives two connected models, and
 renders them as one interactive HTML page:
 
 1. A **Business Capability Map** — a hierarchy (L1 → L2 → L3, optionally L4) of
@@ -62,19 +67,29 @@ All source documents are `.md` (the chatbot converts uploads on the way in).
 ## Where the inputs and output live (Scyne workspace layout)
 
 This skill runs inside its own working folder
-`./projects/<project>/<feature>/solutions/Capabilities/` — the Capabilities
-Process Architect agent passes you `<project>` and `<feature>` in its issue
-description and stages the inputs before invoking the skill.
+`./projects/<project>/solutions/Capabilities/` — the Capabilities Process
+Architect agent passes you `<project>` in its issue description and stages the
+inputs before invoking the skill. There is **no feature** at this level.
 
-- **Documents (input):** `solutions/Capabilities/documents/<category>/*.md`.
-  The agent copies **every `.md` under the feature folder** here, preserving the
-  folder name it came from as `<category>` — so both layouts work:
-  - the standard BA layout — `requirements/SOP/`, `requirements/Transcripts/`,
-    `requirements/Notes/`;
-  - a companion-style document tree — e.g. `companion/docs-md/process/`,
-    `.../solution-reference/`, `.../best-practice-refence/`,
-    `.../current-state/`.
+- **Documents (input):** `solutions/Capabilities/documents/<scope>/<category>/*.md`.
+  The agent copies **every `.md` the project has** here, at two levels:
+  - `documents/project/<category>/` — the project's own `documents/` tree:
+    client-wide policy, legislation, standards, current-state architecture.
+    These describe the organisation and outrank any single feature's view of it.
+  - `documents/<feature>/<category>/` — one folder per feature, holding that
+    feature's discovery documents with the folder they came from preserved as
+    `<category>`, so both layouts work:
+    - the standard BA layout — `requirements/SOP/`, `requirements/Transcripts/`,
+      `requirements/Notes/`;
+    - a companion-style document tree — e.g. `companion/docs-md/process/`,
+      `.../solution-reference/`, `.../best-practice-refence/`,
+      `.../current-state/`.
+
   `outputs/`, `solutions/` and `design/` are never staged as inputs.
+
+  **Read across all of them.** A capability the client exercises in three
+  features is one capability, not three — deduplicate by what the organisation
+  does, and cite every feature whose documents evidenced it.
 - **Reference catalogue (optional input):**
   `solutions/Capabilities/capability-reference/` — any house capability
   taxonomy or schema reference (e.g. a `capabilities.csv.md` under a
@@ -84,13 +99,13 @@ description and stages the inputs before invoking the skill.
   - `capability-map.json` — the capability hierarchy (machine-readable)
   - `process-model.json` — the L1/L2/L3 activities (machine-readable)
   - `capability-process.md` — the human-readable document (tables + Mermaid)
-  - (no HTML — the feature's single page is rendered separately, see Step 5)
+  - (no HTML — the project's single page is rendered separately, see Step 5)
 
-  All four names are fixed — the chatbot's approval preview and the HTML
+  All three names are fixed — the chatbot's approval preview and the HTML
   endpoint read them by exact path. Create `outputs/` if it does not exist.
 
 (All paths below are relative to the working folder
-`./projects/<project>/<feature>/solutions/Capabilities/`.)
+`./projects/<project>/solutions/Capabilities/`.)
 
 ---
 
@@ -101,11 +116,15 @@ Before reading anything, list what you actually have:
 ```bash
 ls documents/
 ls documents/*/
+ls documents/*/*/
 ls capability-reference/ 2>/dev/null
 ```
 
-Read **every** `.md` file in every category folder. Note each filename — it
-becomes a source tag on the capabilities and activities it supports.
+Read **every** `.md` file in every scope and category folder. Note each filename
+— it becomes a source tag on the capabilities and activities it supports. Note
+the scope too: `documents/project/…` is client-wide, `documents/<feature>/…`
+came from one feature's discovery, and where the two disagree the client-wide
+document wins.
 
 If `documents/` is empty, stop and report it — do not invent a map. If a single
 category is empty, continue and record it under **Assumptions & Gaps**.
@@ -162,10 +181,9 @@ Write the result to `outputs/capability-map.json`:
 ```json
 {
   "project": "<project>",
-  "feature": "<feature>",
-  "title": "<Feature name> — Capability Map",
+  "title": "<Client name> — Capability Map",
   "generatedOn": "YYYY-MM-DD",
-  "sources": ["process/Allocation of New Claims - SOP.pdf.md", "..."],
+  "sources": ["project/policy/Claims Handling Standard.md", "interim-benefit/SOP/Allocation of New Claims.md", "..."],
   "capabilities": [
     {
       "id": "2.1.3",
@@ -213,8 +231,7 @@ Write `outputs/process-model.json`:
 ```json
 {
   "project": "<project>",
-  "feature": "<feature>",
-  "title": "<Feature name> — Process Model",
+  "title": "<Client name> — Process Model",
   "generatedOn": "YYYY-MM-DD",
   "activities": [
     {
@@ -341,18 +358,19 @@ Australian English throughout (Behaviour, Authorise, Organisation, Prioritise).
 Run the shipped renderer from the **workspace root** — never hand-write the HTML:
 
 ```bash
-node scripts/render-capability-map.mjs <project> <feature> --validate-only
-node scripts/render-companion-app.mjs <project> <feature>
+node scripts/render-capability-map.mjs <project> --validate-only
+node scripts/render-companion-app.mjs <project>
 ```
 
 The first command reads the two JSON files and validates them, writing nothing.
 If it exits non-zero it names the file and field at fault — fix the JSON and
 re-run.
 
-The second renders the feature's **single page**. A feature has ONE HTML
-document covering every stage — personas, journeys, capabilities, process,
-stories, the product summary and the rest — and it is *progressive*: it renders
-from whatever the feature has produced so far, so run it every time you finish,
+The second renders the project's **single page**. A project has ONE HTML
+document covering every stage — personas, journeys, capabilities and process at
+project level, then the product summary, stories, mockups, data model,
+architecture and test cases for each feature — and it is *progressive*: it
+renders from whatever has been produced so far, so run it every time you finish,
 not once at the end. Never hand-write HTML; a hand-written file drifts from the
 data on the next render.
 
@@ -371,7 +389,8 @@ Before finishing, verify:
 - [ ] Every L3 capability appears in the Section 4 coverage table
 - [ ] Activities are in lifecycle order within each phase
 - [ ] Nothing was invented — every row traces to a named source file
-- [ ] All four output files exist, with the exact fixed names
+- [ ] A capability evidenced by several features appears ONCE, citing all of them
+- [ ] All three output files exist, with the exact fixed names
 - [ ] The renderer exited 0 and the HTML opens standalone
 
 ---
@@ -380,11 +399,33 @@ Before finishing, verify:
 
 Give a brief summary covering:
 
-- Documents read, by category
+- Documents read, by scope and category — say how many came from the project's
+  own `documents/` and how many from each feature
 - L1 domains and total capabilities, by level
 - Lifecycle phases, L2 steps and L3 activities
 - Maturity spread (how many capabilities at each current level) and the largest
   current → target gaps
 - Capabilities with no process evidence, and process activities with no
   capability — both are findings worth surfacing
-- The absolute path of the feature's single page, `generated-apps/<project>-<feature>/index.html`
+- The absolute path of the project's single page, `generated-apps/<project>/index.html`
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of these artefacts plus a
+**change instruction**, you are revising, not regenerating.
+
+- Preserve every capability, activity, ID and decision the instruction does not
+  touch. IDs in particular are referenced by the process model, the companion
+  app and any downstream architecture — renumbering them breaks all three.
+- Apply the change and its genuine consequences. A new L3 capability needs a
+  parent, a maturity pair, source evidence, and at least one activity that
+  realises it or an explicit note that it has none.
+- Add a `## Revision History` entry at the end of `capability-process.md`
+  recording what changed and why.
+- Do not reword, restructure or re-order anything the instruction did not ask
+  about. A regenerate-from-scratch produces a diff too large for a reviewer to
+  check, which defeats the approval gate that follows.
+- Re-run the validator afterwards. A revision that breaks the JSON contract is
+  worse than no revision.

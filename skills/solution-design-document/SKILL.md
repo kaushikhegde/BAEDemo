@@ -64,6 +64,13 @@ the inputs into this folder before invoking the skill.
 - **Data Model Impact (input):** `solutions/Design/DataModel/` — the Data
   Modeler's approved output (objects, custom fields, the ER diagram; the agent
   copies it here from `solutions/DataModel/outputs/`).
+- **Project context (input, optional):** `solutions/Design/project/` — the parent
+  PROJECT's client-wide documents (`project/documents/<category>/*.md`), persona
+  set (`project/personas.json`, `project/journey-map.json`) and capability model
+  (`project/capability-map.json`, `project/process-model.json`,
+  `project/capability-process.md`). All optional, never a gate. When present, name
+  components in the client's own vocabulary from the capability model, and cite
+  capability IDs so the design and the operating model line up.
 - **Output (you write here):** `solutions/Design/outputs/solution-design.md`
   — a single fixed filename so the chatbot's approval preview can read it.
   Create the `outputs/` folder if it does not exist yet.
@@ -594,3 +601,31 @@ After saving, give a brief summary covering:
 - Names of any Apex classes or LWC components introduced, each with a
   one-line justification
 - Any open assumptions or risks the team should resolve before build
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- The declarative-first ladder (OOB → low-code → code) applies to revisions too.
+  An instruction asking for "an Apex class to do X" is first tested against Flow
+  and standard configuration; if one of those serves, propose it and say why.
+- A changed component ripples into the component table, the Mermaid `flowchart`
+  and any requirement-to-component mapping. Update all three.
+- If the data model changed underneath this design, say so explicitly rather than
+  quietly designing against the new shape — the reviewer needs to know the design
+  moved because its input moved.

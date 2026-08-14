@@ -80,6 +80,21 @@ this folder before invoking the skill.
   — an org-specific object catalogue, existing schema export, or managed-package
   inventory, where the feature carries one. This is *additional* to the Service
   Cloud catalogue in **Appendix A**, which is always the baseline.
+- **Project context (input, optional):** `solutions/DataModel/project/` — what the
+  parent PROJECT knows, staged down so this feature is designed in the client's
+  terms rather than in isolation:
+  - `project/documents/<category>/*.md` — client-wide policy, legislation,
+    standards and current-state architecture applying to every feature
+  - `project/personas.json`, `project/journey-map.json`,
+    `project/personas-journeys.md` — the project's persona set and journeys
+  - `project/capability-map.json`, `project/process-model.json`,
+    `project/capability-process.md` — the project's capability and process model
+
+  All optional, never a gate. When present: use the **personas** to decide which
+  objects need record-level access and whose sharing model matters, and the
+  **capability model** to name objects and fields in the client's own vocabulary
+  instead of coining a parallel one. A field the client already has a word for
+  should carry that word.
 - **Output (you write here):** `solutions/DataModel/outputs/salesforce-data-model.md`
   — a single fixed filename so the chatbot's approval preview can read it.
   Create the `outputs/` folder if it does not exist yet.
@@ -781,3 +796,35 @@ erDiagram
 
 Verify the diagram parses before delivering — an ERD that fails to render is
 worse than a table.
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- A new field belongs in **four** places, not one: the object's field dictionary,
+  the ER diagram, the traceability matrix, and the object inventory's field count.
+  A revision that adds a row to one table and not the others is the failure mode
+  to avoid here.
+- API names are contracts. Never rename an existing `__c` field or object because
+  a better name occurred to you mid-revision — only when the instruction says to,
+  and then update every reference including the Mermaid `erDiagram`.
+- The standard-object-first discipline still applies. An instruction asking for
+  "a new object" is first tested against Case, Account, Contact and User; if a
+  standard object serves, say so and propose it instead.
+- If the change makes a previously rejected alternative viable, update the
+  rejected-alternatives section rather than leaving a contradiction.

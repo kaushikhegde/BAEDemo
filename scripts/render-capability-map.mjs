@@ -140,7 +140,7 @@ function normaliseActivities(doc, capIds) {
 }
 
 // ---------------------------------------------------------------------------
-// Brand. The companion app reads the same theme.json, so a feature branded once
+// Brand. The companion app reads the same theme.json, so a project branded once
 // looks the same in both. Fallback is the Scyne palette.
 // ---------------------------------------------------------------------------
 const THEME_FALLBACK = {
@@ -152,8 +152,8 @@ const THEME_FALLBACK = {
   fontFamily: "",
 };
 
-async function readTheme(project, feature) {
-  const file = path.join(WORKSPACE, "projects", project, feature, "design", "style-guides", "theme.json");
+async function readTheme(project) {
+  const file = path.join(WORKSPACE, "projects", project, "design", "style-guides", "theme.json");
   try {
     const t = JSON.parse(await fs.readFile(file, "utf8"));
     return { ...THEME_FALLBACK, ...t, _file: file };
@@ -1319,11 +1319,15 @@ async function main() {
   // artefacts into one document; this script stays the contract guard for the
   // two Capabilities JSON files, which is the part the agent cannot self-check.
   const validateOnly = argv.includes("--validate-only");
-  const [project, feature] = argv.filter((a) => !a.startsWith("--"));
-  if (!project || !feature) die(`usage: node scripts/render-capability-map.mjs <project> <feature> [--validate-only]`);
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) die(`project and feature must match ${SAFE_NAME} — got "${project}" / "${feature}".`);
+  // Capabilities describe the CLIENT, not one slice of work, so they live at
+  // project level. A trailing feature name is accepted and ignored rather than
+  // rejected, because older agent instructions still pass one.
+  const [project, ...rest] = argv.filter((a) => !a.startsWith("--"));
+  if (!project) die(`usage: node scripts/render-capability-map.mjs <project> [--validate-only]`);
+  if (!SAFE_NAME.test(project)) die(`project must match ${SAFE_NAME} — got "${project}".`);
+  if (rest.length) console.warn(`[render-capability-map] ignoring "${rest.join(" ")}" — the capability map is project-level now`);
 
-  const outDir = path.join(WORKSPACE, "projects", project, feature, "solutions", "Capabilities", "outputs");
+  const outDir = path.join(WORKSPACE, "projects", project, "solutions", "Capabilities", "outputs");
   const capDoc = await readJson(path.join(outDir, "capability-map.json"), "capability-map.json");
   const procDoc = await readJson(path.join(outDir, "process-model.json"), "process-model.json");
 
@@ -1347,19 +1351,19 @@ async function main() {
       activities: activities.length,
       sources: sources.length,
       html: null,
-      note: "validate-only — render the feature's single page with: node scripts/render-companion-app.mjs " +
-            `${project} ${feature}`,
+      note: "validate-only — render the project's single page with: node scripts/render-companion-app.mjs " +
+            `${project}`,
     }, null, 2));
     return;
   }
 
-  const rawTheme = await readTheme(project, feature);
+  const rawTheme = await readTheme(project);
   const theme = buildTheme(rawTheme);
 
   const html = renderHtml({
-    title: str(capDoc.title) || `${feature} — Capability & Process Map`,
+    title: str(capDoc.title) || `${project} — Capability & Process Map`,
     project: str(capDoc.project) || project,
-    feature: str(capDoc.feature) || feature,
+    feature: str(capDoc.feature) || "",
     generatedOn: str(capDoc.generatedOn) || new Date().toISOString().slice(0, 10),
     sources,
     capabilities,

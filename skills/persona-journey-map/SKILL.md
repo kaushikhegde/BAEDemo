@@ -2,7 +2,7 @@
 name: persona-journey-map
 description: >
   Identify the personas a solution serves and map each one's end-to-end journey
-  from a feature's discovery documents — transcripts, SOPs, policy docs, notes,
+  from a project's discovery documents — transcripts, SOPs, policy docs, notes,
   current-state architecture and, where they exist, the product summary and
   capability/process model. Produces an evidence-traced persona set, a
   stage-by-stage journey map with current-state pain and target-state
@@ -70,29 +70,47 @@ All source files are `.md` format.
 
 ## Where the inputs and output live (Scyne workspace layout)
 
+**This skill is PROJECT-level.** The people a client serves and the staff who
+serve them belong to the organisation, not to one slice of work — so the persona
+set is generated once per project and every feature reads it. Your inputs are
+every document the client has given us, across all features; your output belongs
+to the project.
+
 This skill runs inside its own working folder
-`./projects/<project>/<feature>/solutions/Experience/` — the Service Designer
-agent passes you the `<project>` and `<feature>` in its issue description, and
-stages the inputs into this folder before invoking the skill.
+`./projects/<project>/solutions/Experience/` — the Service Designer agent passes
+you the `<project>` in its issue description, and stages the inputs into this
+folder before invoking the skill. There is **no feature** at this level.
 
 > The folder is `Experience/`, not `ServiceDesign/`, deliberately —
 > `solutions/Design/` already belongs to the Architecture Lead's solution design
 > and the two must never be confused.
 
-- **Discovery documents (input, required):** `solutions/Experience/documents/<category>/`
-  — every `.md` under the feature except `outputs/`, `solutions/` and `design/`.
-  That is the same `requirements/{SOP,Transcripts,Notes}` corpus the BA and the
-  Capabilities Process Architect read, plus any reference document tree the
-  feature carries. Transcripts are the richest source of persona evidence — real
-  people describing real friction in their own words.
-- **Product summary (input, optional):** `solutions/Experience/productsummary/`
-  — use it to align persona names and roles with the requirements if it exists.
-  Do **not** block on it.
-- **Capability / process model (input, optional):** `solutions/Experience/capabilities/`
-  — the Capabilities Process Architect's `capability-process.md` and
-  `process-model.json`. When present, align journey stages to the L1 lifecycle
-  phases and cite capability IDs on the steps, so the journey and the process
-  model describe the same world.
+- **Discovery documents (input, required):** `solutions/Experience/documents/<scope>/<category>/`
+  — every `.md` the project has, at two levels:
+  - `documents/project/<category>/` — the project's own `documents/` tree:
+    client-wide policy, legislation, standards, service charters. These describe
+    the organisation and outrank any single feature's view of it.
+  - `documents/<feature>/<category>/` — one folder per feature, holding that
+    feature's `requirements/{SOP,Transcripts,Notes}` corpus (the same one the BA
+    and the Capabilities Process Architect read), plus any reference document
+    tree it carries.
+
+  Transcripts are the richest source of persona evidence — real people
+  describing real friction in their own words.
+
+  **Read across all of them and deduplicate by person, not by feature.** An
+  Eligibility Officer who appears in three features' transcripts is ONE persona
+  whose journey spans all three, not three near-identical personas. Cite every
+  feature whose documents evidenced them.
+- **Product summaries (input, optional):** `solutions/Experience/productsummary/`
+  — one `<feature>-product-summary.md` per feature that has run the BA. Use them
+  to align persona names and roles with the requirements. Do **not** block on them.
+- **Capability / process model (input, required):** `solutions/Experience/capabilities/`
+  — the Capabilities Process Architect's `capability-process.md`,
+  `capability-map.json` and `process-model.json`. Align journey stages to the L1
+  lifecycle phases and cite capability IDs on the steps, so the journey and the
+  process model describe the same world. This stage runs after the capability map
+  precisely so that alignment is possible.
 - **Outputs (you write here):** `solutions/Experience/outputs/`
   - `personas-journeys.md` — the reviewable deliverable (fixed name; the
     chatbot's approval preview reads this exact path)
@@ -100,7 +118,7 @@ stages the inputs into this folder before invoking the skill.
   - `journey-map.json` — companion-app shape, see **Appendix C**
 
 (All paths below are relative to the working folder
-`./projects/<project>/<feature>/solutions/Experience/`.)
+`./projects/<project>/solutions/Experience/`.)
 
 ---
 
@@ -109,13 +127,17 @@ stages the inputs into this folder before invoking the skill.
 Before reading anything, list the contents of every input folder:
 
 ```bash
-ls documents/
+ls documents/          # scopes: project/ and one folder per feature
+ls documents/*/
+ls documents/*/*/
 ls productsummary/
 ls capabilities/
 ```
 
-Note every filename — you cite them as sources on every persona and every
-journey step. If `documents/` is empty, stop and report that: personas cannot be
+Note every filename **and its scope** — you cite them as sources on every
+persona and every journey step, and `documents/project/…` (client-wide) carries
+more weight than `documents/<feature>/…` (one slice of work) when the two
+disagree. If `documents/` is empty, stop and report that: personas cannot be
 derived from nothing, and inventing them is the one thing this skill must not do.
 
 Read **every** `.md` file in every input folder before designing anything.
@@ -222,7 +244,7 @@ App Data Contract**. These are consumed by a build, not read by a person, so
 they must validate. After writing them, verify with:
 
 ```bash
-node scripts/validate-experience.mjs <project> <feature>
+node scripts/validate-experience.mjs <project>
 ```
 
 The validator checks required fields, ID uniqueness, that every journey's
@@ -341,7 +363,7 @@ journey
 | `outputs/personas.json` | N personas | Feeds the companion app's Personas perspective |
 | `outputs/journey-map.json` | N journeys, M steps | Feeds the companion app's Journeys view mode |
 
-Validated with `node scripts/validate-experience.mjs <project> <feature>` — [pass/fail].
+Validated with `node scripts/validate-experience.mjs <project>` — [pass/fail].
 
 ## 9. Assumptions & Open Questions
 
@@ -387,9 +409,9 @@ Before saving, verify:
 Save the three outputs to (relative to the working folder):
 
 ```
-./projects/<project>/<feature>/solutions/Experience/outputs/personas-journeys.md
-./projects/<project>/<feature>/solutions/Experience/outputs/personas.json
-./projects/<project>/<feature>/solutions/Experience/outputs/journey-map.json
+./projects/<project>/solutions/Experience/outputs/personas-journeys.md
+./projects/<project>/solutions/Experience/outputs/personas.json
+./projects/<project>/solutions/Experience/outputs/journey-map.json
 ```
 
 Write the **Mermaid journey diagram source inline** in the `.md` (it is the
@@ -683,8 +705,39 @@ journey data shape — this is that shape.
 ## Validation
 
 ```bash
-node scripts/validate-experience.mjs <project> <feature>
+node scripts/validate-experience.mjs <project>
 ```
 
 Exits non-zero listing the offending file and field. Run it until it passes
 before you finish — the companion app build has no other guard.
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- Persona `id` values and `avatarColor` are consumed by the companion app.
+  Never change an existing persona's `id`; a renamed persona keeps its id and
+  changes only its `name`.
+- A new or changed persona needs a journey, and a journey needs a `personaId`
+  that resolves. Every persona still needs exactly one journey.
+- Evidence is not optional in a revision either. A pain point added by
+  instruction still cites the document that supports it, or is labelled an
+  inference.
+- **Re-run `node scripts/validate-experience.mjs <project>` afterwards.** A
+  revision that breaks the JSON contract is worse than no revision — that
+  validator is the only guard before a companion-app build weeks later.

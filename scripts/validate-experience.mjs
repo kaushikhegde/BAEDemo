@@ -186,19 +186,24 @@ function validateJourneys(doc, personaIds) {
 }
 
 async function main() {
+  // Personas describe the CLIENT, not one slice of work, so they live at
+  // project level. A trailing feature name is accepted and ignored rather than
+  // rejected, because muscle memory and older agent instructions still pass one.
   const argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const [project, ...rest] = argv;
-  const feature = rest.join(" ");
-  if (!project || !feature) {
-    console.error("Usage: node scripts/validate-experience.mjs <project> <feature>");
+  if (!project) {
+    console.error("Usage: node scripts/validate-experience.mjs <project>");
     process.exit(1);
   }
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) {
-    console.error("[validate-experience] project/feature contain unexpected characters");
+  if (!SAFE_NAME.test(project)) {
+    console.error("[validate-experience] project name contains unexpected characters");
     process.exit(1);
+  }
+  if (rest.length) {
+    console.warn(`[validate-experience] ignoring "${rest.join(" ")}" — personas are project-level now`);
   }
 
-  const out = path.join(WORKSPACE, "projects", project, feature, "solutions", "Experience", "outputs");
+  const out = path.join(WORKSPACE, "projects", project, "solutions", "Experience", "outputs");
   const personasDoc = await readJson(path.join(out, "personas.json"), "personas.json");
   const journeysDoc = await readJson(path.join(out, "journey-map.json"), "journey-map.json");
 
@@ -206,7 +211,7 @@ async function main() {
   validateJourneys(journeysDoc, personaIds);
 
   if (problems.length) {
-    console.error(`\n[validate-experience] ${problems.length} problem(s) in ${project}/${feature}:\n`);
+    console.error(`\n[validate-experience] ${problems.length} problem(s) in ${project}:\n`);
     for (const p of problems) console.error(`  ✗ ${p}`);
     console.error(`\nFix these and re-run. The companion app build has no other guard.\n`);
     process.exit(2);
@@ -214,7 +219,7 @@ async function main() {
 
   const nJourneys = journeysDoc.journeys.length;
   const nSteps = journeysDoc.journeys.reduce((a, j) => a + j.stages.reduce((b, s) => b + (s.steps?.length || 0), 0), 0);
-  console.log(`[validate-experience] ${project}/${feature} OK — ${personaIds.length} personas, ${nJourneys} journeys, ${nSteps} steps`);
+  console.log(`[validate-experience] ${project} OK — ${personaIds.length} personas, ${nJourneys} journeys, ${nSteps} steps`);
 }
 
 main().catch((e) => {

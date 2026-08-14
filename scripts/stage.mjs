@@ -1,14 +1,19 @@
 #!/usr/bin/env node
-// Stage a feature's inputs for ANY pipeline stage, so its skill can be run
-// locally in a plain Claude Code session — WITHOUT Paperclip, the chatbot, or
-// the owning agent.
+// Stage inputs for ANY pipeline stage, so its skill can be run locally in a
+// plain Claude Code session — WITHOUT Paperclip, the chatbot, or the owning
+// agent.
 //
-//   node scripts/stage.mjs                                 list every feature + pipeline status
-//   node scripts/stage.mjs <project> <feature>             status for one feature
-//   node scripts/stage.mjs <project> <feature> <stage>     stage one stage, print its skill command
-//   node scripts/stage.mjs <project> <feature> all         stage every stage whose inputs are ready
+//   node scripts/stage.mjs                                  every project + pipeline status
+//   node scripts/stage.mjs <project>                        project status + its features
+//   node scripts/stage.mjs <project> <project-stage>        stage a PROJECT stage
+//   node scripts/stage.mjs <project> <feature>              status for one feature
+//   node scripts/stage.mjs <project> <feature> <stage>      stage a FEATURE stage
+//   node scripts/stage.mjs <project> all                    every project stage that is ready
+//   node scripts/stage.mjs <project> <feature> all          every feature stage that is ready
 //
-// Each stage replicates exactly what its agent does in Phase 1 step 2 (see
+// Two levels. PROJECT stages (capabilities, personas) describe the client
+// organisation and run once; FEATURE stages describe one slice of work. Each
+// stage replicates exactly what its agent does in Phase 1 step 2 (see
 // agent-instructions/<agent>.json) before invoking the skill. Idempotent — safe
 // to re-run; inputs are overwritten from their source of truth.
 //
@@ -25,155 +30,31 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { convertTree, report as reportConversion } from "./convert-to-md.mjs";
+import {
+  LEVEL, STAGES, ORDERED, ordered, NOT_SOURCE, SAFE_NAME, RENDER_CMD,
+  isProjectStage, projectDir, featureDir, resolveInput, exists,
+  listProjects, listFeatures, stageIsDone, unmetRequirements,
+} from "./pipeline.mjs";
 
 const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
 const KNOWN_FLAGS = ["--force", "--no-convert", "--keep-originals", "--from-requirements"];
 
-// Top-level folders under a feature that are OUTPUT, not source material.
-// Never staged as discovery documents, never converted.
-const NOT_SOURCE = new Set(["outputs", "solutions", "design", "original-files", "node_modules", ".git"]);
+const PROJECT_STAGE_KEYS = new Set(ordered(LEVEL.PROJECT).map(([k]) => k));
 
 const die = (msg) => {
   console.error(`\n[stage] ${msg}\n`);
   process.exit(1);
 };
 const rel = (p) => path.relative(WORKSPACE, p) || ".";
-const exists = async (p) => {
-  try { await fs.access(p); return true; } catch { return false; }
-};
-
-// ---------------------------------------------------------------------------
-// The pipeline
-// ---------------------------------------------------------------------------
-// `order` is the sequence the stages are meant to run in. `requires` is a HARD
-// prerequisite — staging refuses without it. `enriches` is opportunistic: the
-// stage runs regardless, but reads the input when it happens to be there.
-
-// The one page every stage feeds. Rendered after each stage, not once at the end.
-const RENDER_CMD = "node scripts/render-companion-app.mjs <project> <feature>";
-
-const STAGES = {
-  capabilities: {
-    order: 1,
-    label: "Capability & Process Map",
-    agent: "Capabilities Process Architect",
-    skill: "capability-process-map",
-    work: "solutions/Capabilities",
-    // `produces` paths are relative to the FEATURE directory, not to `work` —
-    // stageIsDone resolves them against the feature root, and it is also what
-    // decides whether a later stage reports this one's output as an available
-    // input. A path relative to `work` silently reports "never run".
-    produces: [
-      "solutions/Capabilities/outputs/capability-process.md",
-      "solutions/Capabilities/outputs/capability-map.json",
-      "solutions/Capabilities/outputs/process-model.json",
-    ],
-    requires: [],
-    then: "node scripts/render-capability-map.mjs <project> <feature> --validate-only",
-    stage: stageCapabilities,
-  },
-  personas: {
-    order: 2,
-    label: "Personas & Journey Map",
-    agent: "Service Designer",
-    skill: "persona-journey-map",
-    work: "solutions/Experience",
-    produces: [
-      "solutions/Experience/outputs/personas-journeys.md",
-      "solutions/Experience/outputs/personas.json",
-      "solutions/Experience/outputs/journey-map.json",
-    ],
-    requires: [],
-    then: "node scripts/validate-experience.mjs <project> <feature>",
-    stage: stagePersonas,
-  },
-  requirements: {
-    order: 3,
-    label: "Requirements & Product Summary",
-    agent: "BA",
-    skill: "requirement-generator",
-    work: "requirements",
-    produces: ["outputs/product-summary.md", "outputs/stories.json"],
-    requires: [],
-    stage: stageRequirements,
-  },
-  datamodel: {
-    order: 4,
-    label: "Salesforce Data Model",
-    agent: "Data Modeler",
-    skill: "salesforce-data-modeler",
-    work: "solutions/DataModel",
-    produces: ["solutions/DataModel/outputs/salesforce-data-model.md"],
-    requires: [{ path: "outputs/product-summary.md", from: "requirements", escape: "--from-requirements" }],
-    stage: stageDataModel,
-  },
-  design: {
-    order: 4.5,
-    optional: true,
-    label: "Solution Design (optional side stage)",
-    agent: "Architecture Lead",
-    skill: "solution-design-document",
-    work: "solutions/Design",
-    produces: ["solutions/Design/outputs/solution-design.md"],
-    requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
-    stage: stageDesign,
-  },
-  architecture: {
-    order: 5,
-    label: "Solution Architecture",
-    agent: "Solution Architect",
-    skill: "salesforce-service-cloud-architecture",
-    work: "solutions/Architecture",
-    produces: ["solutions/Architecture/outputs/solution-architecture.md"],
-    requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
-    stage: stageArchitecture,
-  },
-  qa: {
-    order: 6,
-    label: "Test Cases",
-    agent: "QA Architect",
-    skill: "requirements-test-case-generator",
-    work: "solutions/QA",
-    produces: ["solutions/QA/outputs/test-cases.md"],
-    requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
-    stage: stageQA,
-  },
-  ui: {
-    order: 6.5,
-    label: "UI Mockups",
-    agent: "UX Designer",
-    skill: "ui-mockup-generator",
-    work: "solutions/UI",
-    produces: ["solutions/UI/outputs/mockups.json"],
-    requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
-    then: "node scripts/render-mockups.mjs <project> <feature>",
-    stage: stageUI,
-  },
-  app: {
-    order: 7,
-    label: "Companion App",
-    agent: "Developer",
-    script: "node scripts/render-companion-app.mjs <project> <feature>",
-    work: "-",
-    produces: [],
-    // The only stage whose output lands outside the feature directory.
-    producesInWorkspace: ["generated-apps/<key>/index.html"],
-    requires: [],
-    stage: stageApp,
-  },
-};
-
-const ORDERED = Object.entries(STAGES).sort((a, b) => a[1].order - b[1].order);
 
 // ---------------------------------------------------------------------------
 // Helpers shared by the stage functions
 // ---------------------------------------------------------------------------
 
-// Every .md under the feature that is SOURCE material, tagged with the folder
-// it came from. That category becomes the skill's source tag, so it is
+// Every .md under a directory tree that is SOURCE material, tagged with the
+// folder it came from. That category becomes the skill's source tag, so it is
 // preserved exactly. `templates/` holds house-style examples, not content.
-async function findDocs(featureDir, { skipTemplates = true } = {}) {
+async function findDocs(root, { skipTemplates = true } = {}) {
   const out = [];
   const walk = async (dir, depth) => {
     for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -185,12 +66,31 @@ async function findDocs(featureDir, { skipTemplates = true } = {}) {
         if (skipTemplates && lower === "templates") continue;
         await walk(full, depth + 1);
       } else if (lower.endsWith(".md")) {
-        const category = path.dirname(full) === featureDir ? "root" : path.basename(path.dirname(full));
+        const category = path.dirname(full) === root ? "root" : path.basename(path.dirname(full));
         out.push({ file: full, category });
       }
     }
   };
-  await walk(featureDir, 0);
+  await walk(root, 0);
+  return out.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+// The project's own documents/ tree. Unlike findDocs this does NOT skip
+// `documents` (that IS the tree), and every file is source material.
+async function findProjectDocs(project) {
+  const root = path.join(projectDir(WORKSPACE, project), "documents");
+  const out = [];
+  const walk = async (dir) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.toLowerCase().endsWith(".md")) {
+        const category = path.dirname(full) === root ? "root" : path.basename(path.dirname(full));
+        out.push({ file: full, category });
+      }
+    }
+  };
+  await walk(root);
   return out.sort((a, b) => a.file.localeCompare(b.file));
 }
 
@@ -206,10 +106,14 @@ async function mkdirs(base, names) {
 // Copy one file, returning the report line. Overwrites: the source is truth.
 async function copyOne(src, destDir, staged, labelDir) {
   await fs.mkdir(destDir, { recursive: true });
-  const dest = path.join(destDir, path.basename(src));
-  await fs.copyFile(src, dest);
+  await fs.copyFile(src, path.join(destDir, path.basename(src)));
   staged.push(`${labelDir}/${path.basename(src)}  ← ${rel(src)}`);
 }
+
+const copyIf = async (src, destDir, staged, label) => {
+  if (await exists(src)) { await copyOne(src, destDir, staged, label); return true; }
+  return false;
+};
 
 // Copy every .md out of a source folder. Optional, so a missing folder is fine.
 async function copyMdTree(srcDir, destDir, staged, labelDir, { note } = {}) {
@@ -224,19 +128,100 @@ async function copyMdTree(srcDir, destDir, staged, labelDir, { note } = {}) {
   return files.length;
 }
 
-// Copy the discovery documents into documents/<category>/, preserving the tag.
-async function copyDocsByCategory(docs, documentsDir, staged) {
+async function copyDirMd(dir, destDir, staged, label) {
+  for (const f of (await fs.readdir(dir).catch(() => []))) {
+    const lower = f.toLowerCase();
+    if (lower.endsWith(".md") || lower.endsWith(".json")) {
+      await copyOne(path.join(dir, f), destDir, staged, label);
+    }
+  }
+}
+
+// Copy discovery documents into documents/<prefix>/<category>/, preserving the
+// source tag. `prefix` separates the project's own documents from each
+// feature's, so a skill can tell client-wide policy from feature discovery.
+async function copyDocsByCategory(docs, documentsDir, staged, prefix = null) {
   const byCategory = new Map();
   for (const d of docs) {
     if (!byCategory.has(d.category)) byCategory.set(d.category, []);
     byCategory.get(d.category).push(d.file);
   }
   for (const [category, files] of [...byCategory].sort()) {
-    const destDir = path.join(documentsDir, category);
+    const label = prefix ? `documents/${prefix}/${category}` : `documents/${category}`;
+    const destDir = path.join(documentsDir, ...(prefix ? [prefix, category] : [category]));
     await fs.mkdir(destDir, { recursive: true });
     for (const f of files) await fs.copyFile(f, path.join(destDir, path.basename(f)));
-    staged.push(`documents/${category}/  ← ${files.length} file(s)`);
+    staged.push(`${label}/  ← ${files.length} file(s)`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Read-up: what a PROJECT stage sees
+// ---------------------------------------------------------------------------
+// A project stage reads the project's own documents/ AND every feature's
+// discovery documents. That is deliberate: a client's capability map should
+// cover all the work discovered so far, not only what happened to be uploaded
+// at the project level — and it means a project whose documents all live under
+// features keeps working with no manual migration.
+async function stageAllDocuments(ctx, documentsDir, staged) {
+  let total = 0;
+
+  const projectDocs = await findProjectDocs(ctx.project);
+  if (projectDocs.length) {
+    await copyDocsByCategory(projectDocs, documentsDir, staged, "project");
+    total += projectDocs.length;
+  }
+
+  for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
+    const docs = await findDocs(featureDir(WORKSPACE, ctx.project, feature), { skipTemplates: true });
+    if (!docs.length) continue;
+    await copyDocsByCategory(docs, documentsDir, staged, feature);
+    total += docs.length;
+  }
+  return total;
+}
+
+// ---------------------------------------------------------------------------
+// Read-down: what a FEATURE stage sees of its parent project
+// ---------------------------------------------------------------------------
+// Opportunistic, never a gate. A project with nothing generated stages nothing
+// extra and every feature stage still runs.
+async function stageProjectDown(ctx, work, staged, { personasInto = "project", capabilitiesInto = "project" } = {}) {
+  const proot = projectDir(WORKSPACE, ctx.project);
+  const projectDest = path.join(work, "project");
+  await fs.mkdir(projectDest, { recursive: true });
+
+  const docs = await findProjectDocs(ctx.project);
+  if (docs.length) {
+    const destDir = path.join(projectDest, "documents");
+    for (const d of docs) {
+      const sub = path.relative(path.join(proot, "documents"), path.dirname(d.file));
+      const dir = path.join(destDir, sub);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.copyFile(d.file, path.join(dir, path.basename(d.file)));
+    }
+    staged.push(`project/documents/  ← ${docs.length} project document(s)`);
+  } else {
+    staged.push(`project/documents/  — none (optional: client-wide policy documents)`);
+  }
+
+  const personasDest = path.join(work, personasInto);
+  let exp = 0;
+  for (const f of ["personas.json", "journey-map.json", "personas-journeys.md"]) {
+    if (await copyIf(path.join(proot, "solutions", "Experience", "outputs", f), personasDest, [], "")) exp++;
+  }
+  staged.push(exp
+    ? `${personasInto}/  ← ${exp} file(s) from the project's personas & journeys`
+    : `${personasInto}/  — personas not run for this project yet (optional)`);
+
+  const capDest = path.join(work, capabilitiesInto);
+  let cap = 0;
+  for (const f of ["capability-map.json", "process-model.json", "capability-process.md"]) {
+    if (await copyIf(path.join(proot, "solutions", "Capabilities", "outputs", f), capDest, [], "")) cap++;
+  }
+  staged.push(cap
+    ? `${capabilitiesInto}/  ← ${cap} file(s) from the project's capability & process model`
+    : `${capabilitiesInto}/  — capability map not run for this project yet (optional)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,16 +229,14 @@ async function copyDocsByCategory(docs, documentsDir, staged) {
 // ---------------------------------------------------------------------------
 
 async function stageCapabilities(ctx) {
-  const { featureDir, work, staged, force } = ctx;
+  const { work, staged, force } = ctx;
   const dirs = await mkdirs(work, ["documents", "capability-reference", "outputs"]);
 
-  const docs = await findDocs(featureDir, { skipTemplates: true });
-  if (docs.length === 0) die(`no .md source documents under ${rel(featureDir)} — nothing for the capability map to read`);
-  await copyDocsByCategory(docs, dirs.documents, staged);
-
-  // The product summary is one more source when it exists — never a gate.
-  const summary = path.join(featureDir, "outputs", "product-summary.md");
-  if (await exists(summary)) await copyOne(summary, path.join(dirs.documents, "product-summary"), staged, "documents/product-summary");
+  const n = await stageAllDocuments(ctx, dirs.documents, staged);
+  if (n === 0) {
+    die(`no .md source documents for project ${ctx.project} — nothing for the capability map to read\n` +
+        `  Drop documents in projects/${ctx.project}/documents/ or in a feature's requirements/`);
+  }
 
   const refs = (await fs.readdir(dirs["capability-reference"]).catch(() => [])).filter((f) => f.toLowerCase().endsWith(".md"));
   staged.push(
@@ -264,65 +247,72 @@ async function stageCapabilities(ctx) {
 }
 
 async function stagePersonas(ctx) {
-  const { featureDir, work, staged } = ctx;
-  const dirs = await mkdirs(work, ["documents", "productsummary", "capabilities", "outputs"]);
+  const { work, staged } = ctx;
+  const dirs = await mkdirs(work, ["documents", "capabilities", "productsummary", "outputs"]);
 
-  const docs = await findDocs(featureDir, { skipTemplates: true });
-  if (docs.length === 0) die(`no .md source documents under ${rel(featureDir)} — personas must be evidenced, not invented`);
-  await copyDocsByCategory(docs, dirs.documents, staged);
+  const n = await stageAllDocuments(ctx, dirs.documents, staged);
+  if (n === 0) die(`no .md source documents for project ${ctx.project} — personas must be evidenced, not invented`);
 
-  const summary = path.join(featureDir, "outputs", "product-summary.md");
-  if (await exists(summary)) await copyOne(summary, dirs.productsummary, staged, "productsummary");
-  else staged.push(`productsummary/  — no product summary yet (optional; this stage is not gated on it)`);
-
-  // Capability model aligns journey stages to the L1 lifecycle phases.
-  const capOut = path.join(featureDir, "solutions", "Capabilities", "outputs");
+  // Journey stages align to the capability model's L1 lifecycle phases.
+  const capOut = path.join(projectDir(WORKSPACE, ctx.project), "solutions", "Capabilities", "outputs");
   let copied = 0;
   for (const f of ["capability-process.md", "process-model.json", "capability-map.json"]) {
-    const src = path.join(capOut, f);
-    if (await exists(src)) { await fs.copyFile(src, path.join(dirs.capabilities, f)); copied++; }
+    if (await copyIf(path.join(capOut, f), dirs.capabilities, [], "")) copied++;
   }
-  staged.push(copied ? `capabilities/  ← ${copied} file(s) from the capability map` : `capabilities/  — capability map not run yet (optional)`);
+  staged.push(copied ? `capabilities/  ← ${copied} file(s) from the capability map` : `capabilities/  — capability map missing`);
+
+  // Every feature's product summary is one more source when it exists.
+  let summaries = 0;
+  for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
+    const src = path.join(featureDir(WORKSPACE, ctx.project, feature), "outputs", "product-summary.md");
+    if (!(await exists(src))) continue;
+    await fs.mkdir(dirs.productsummary, { recursive: true });
+    await fs.copyFile(src, path.join(dirs.productsummary, `${feature}-product-summary.md`));
+    summaries++;
+  }
+  staged.push(summaries
+    ? `productsummary/  ← ${summaries} feature product summary/summaries`
+    : `productsummary/  — no product summaries yet (optional; this stage is not gated on them)`);
 }
 
 async function stageRequirements(ctx) {
-  const { featureDir, staged } = ctx;
+  const { featureDir: fdir, work, staged } = ctx;
   // The BA reads requirements/{SOP,Transcripts,Notes,UI}/ in place — there is no
-  // working folder to populate. Staging here is the conversion pass plus a
-  // readiness check, so a missing input surfaces now rather than mid-skill.
-  await fs.mkdir(path.join(featureDir, "outputs"), { recursive: true });
-  const reqDir = path.join(featureDir, "requirements");
+  // working folder to populate beyond the project read-down. Staging here is the
+  // conversion pass plus a readiness check, so a missing input surfaces now
+  // rather than mid-skill.
+  await fs.mkdir(path.join(fdir, "outputs"), { recursive: true });
+  const reqDir = path.join(fdir, "requirements");
   if (!(await exists(reqDir))) die(`no requirements/ folder at ${rel(reqDir)}`);
 
   for (const sub of ["SOP", "Transcripts", "Notes", "UI"]) {
-    const dir = path.join(reqDir, sub);
-    const files = (await fs.readdir(dir).catch(() => [])).filter((f) => !f.startsWith("."));
+    const files = (await fs.readdir(path.join(reqDir, sub)).catch(() => [])).filter((f) => !f.startsWith("."));
     staged.push(`requirements/${sub}/  — ${files.length} file(s)${files.length ? "" : "  (empty)"}`);
   }
-  const docs = await findDocs(featureDir);
+  const docs = await findDocs(fdir);
   if (docs.length === 0) die(`no .md files under ${rel(reqDir)} — the BA has nothing to read`);
 
   // Templates are the house style for THIS project and override ./examples/.
   for (const t of ["templates", "Templates"]) {
-    const dir = path.join(reqDir, t);
-    const files = (await fs.readdir(dir).catch(() => [])).filter((f) => !f.startsWith("."));
+    const files = (await fs.readdir(path.join(reqDir, t)).catch(() => [])).filter((f) => !f.startsWith("."));
     if (files.length) staged.push(`requirements/${t}/  — ${files.length} house-style template(s) (override ./examples/)`);
   }
+
+  await stageProjectDown(ctx, work, staged);
 }
 
 async function stageDataModel(ctx) {
-  const { featureDir, work, staged, force, flags } = ctx;
+  const { featureDir: fdir, work, staged, force, flags } = ctx;
   const dirs = await mkdirs(work, ["productsummary", "datamodel-reference", "outputs"]);
 
   if (flags.has("--from-requirements")) {
-    const docs = await findDocs(featureDir, { skipTemplates: true });
-    if (docs.length === 0) die(`--from-requirements given, but no .md files under ${rel(featureDir)}`);
+    const docs = await findDocs(fdir, { skipTemplates: true });
+    if (docs.length === 0) die(`--from-requirements given, but no .md files under ${rel(fdir)}`);
     for (const d of docs) await fs.copyFile(d.file, path.join(dirs.productsummary, path.basename(d.file)));
     staged.push(`productsummary/  ← ${docs.length} raw requirement file(s) (no approved summary)`);
   } else {
-    await copyOne(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
-    const stories = path.join(featureDir, "outputs", "stories.md");
-    if (await exists(stories)) await copyOne(stories, dirs.productsummary, staged, "productsummary");
+    await copyOne(path.join(fdir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
+    await copyIf(path.join(fdir, "outputs", "stories.md"), dirs.productsummary, staged, "productsummary");
   }
 
   // A curated per-feature catalogue wins over the global one.
@@ -333,227 +323,244 @@ async function stageDataModel(ctx) {
     const n = await copyMdTree(path.join(WORKSPACE, "datamodel-reference"), dirs["datamodel-reference"], staged, "datamodel-reference");
     if (n === 0) staged.push(`datamodel-reference/  — empty (the skill falls back to its inlined Appendix A)`);
   }
+
+  await stageProjectDown(ctx, work, staged);
 }
 
 async function stageDesign(ctx) {
-  const { featureDir, work, staged } = ctx;
+  const { featureDir: fdir, work, staged } = ctx;
   const dirs = await mkdirs(work, ["productsummary", "DataModel", "outputs"]);
-  await copyOne(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
-  await copyMdTree(path.join(featureDir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
+  await copyOne(path.join(fdir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
+  await copyMdTree(path.join(fdir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
     note: "data model not run yet (run the datamodel stage first for a grounded design)",
   });
+  await stageProjectDown(ctx, work, staged);
 }
 
 async function stageArchitecture(ctx) {
-  const { featureDir, work, staged } = ctx;
+  const { featureDir: fdir, work, staged } = ctx;
   const dirs = await mkdirs(work, ["productsummary", "DataModel", "landscape", "outputs"]);
 
-  await copyOne(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
-  const stories = path.join(featureDir, "outputs", "stories.md");
-  if (await exists(stories)) await copyOne(stories, dirs.productsummary, staged, "productsummary");
+  await copyOne(path.join(fdir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
+  await copyIf(path.join(fdir, "outputs", "stories.md"), dirs.productsummary, staged, "productsummary");
 
-  await copyMdTree(path.join(featureDir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
+  await copyMdTree(path.join(fdir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
     note: "data model not run yet (optional — the skill designs against requirement entities and records the dependency)",
   });
 
-  // Capability + process model give the architecture its capability-to-component map.
-  const capOut = path.join(featureDir, "solutions", "Capabilities", "outputs");
-  const cap = path.join(capOut, "capability-process.md");
-  if (await exists(cap)) await copyOne(cap, dirs.landscape, staged, "landscape");
-
   // Current-state / integration documents live in Notes when they exist at all.
-  const notes = path.join(featureDir, "requirements", "Notes");
+  const notes = path.join(fdir, "requirements", "Notes");
   const landscapeHits = (await fs.readdir(notes).catch(() => []))
     .filter((f) => f.toLowerCase().endsWith(".md") && /current.?state|integration|landscape|architect|system/i.test(f));
   for (const f of landscapeHits) await copyOne(path.join(notes, f), dirs.landscape, staged, "landscape");
-  if (!landscapeHits.length && !(await exists(cap))) staged.push(`landscape/  — empty (optional current-state / integration docs)`);
+  if (!landscapeHits.length) staged.push(`landscape/  — empty (optional current-state / integration docs)`);
+
+  await stageProjectDown(ctx, work, staged);
 }
 
 async function stageQA(ctx) {
-  const { featureDir, work, staged } = ctx;
+  const { featureDir: fdir, work, staged } = ctx;
   const dirs = await mkdirs(work, ["productsummary", "DataModel", "Architecture", "outputs"]);
 
-  await copyOne(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
+  await copyOne(path.join(fdir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
   // Acceptance criteria are the highest-value input to a test pack.
   for (const f of ["stories.md", "stories.json"]) {
-    const src = path.join(featureDir, "outputs", f);
-    if (await exists(src)) await copyOne(src, dirs.productsummary, staged, "productsummary");
+    await copyIf(path.join(fdir, "outputs", f), dirs.productsummary, staged, "productsummary");
   }
 
-  await copyMdTree(path.join(featureDir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
+  await copyMdTree(path.join(fdir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel", {
     note: "data model not run yet (optional — field types and picklists are what make boundary cases concrete)",
   });
 
   // Either or both may exist: the Solution Architect and Architecture Lead
   // produce different documents, and the pack reads whichever are there.
-  const a = await copyMdTree(path.join(featureDir, "solutions", "Architecture", "outputs"), dirs.Architecture, staged, "Architecture");
-  const d = await copyMdTree(path.join(featureDir, "solutions", "Design", "outputs"), dirs.Architecture, staged, "Architecture");
+  const a = await copyMdTree(path.join(fdir, "solutions", "Architecture", "outputs"), dirs.Architecture, staged, "Architecture");
+  const d = await copyMdTree(path.join(fdir, "solutions", "Design", "outputs"), dirs.Architecture, staged, "Architecture");
   if (a + d === 0) staged.push(`Architecture/  — neither architecture nor design run yet (optional)`);
-}
 
+  await stageProjectDown(ctx, work, staged);
+}
 
 // The mockup generator reads more inputs than any other stage: the discovery
 // documents for real terminology, personas and journeys for who and when,
 // capabilities for what it realises, the product summary for the stories, the
 // data model for field names, architecture for the surface, and the test cases
 // for the states a screen must be able to show.
+//
+// It now runs BEFORE the data model and test cases, so those two are usually
+// absent on the first pass. That is by design — the staleness walk offers a
+// refresh once they exist.
 async function stageUI(ctx) {
-  const { featureDir, work, staged } = ctx;
+  const { featureDir: fdir, work, staged } = ctx;
   const dirs = await mkdirs(work, ["documents", "personas", "capabilities", "productsummary", "DataModel", "Architecture", "QA", "outputs"]);
 
-  const docs = await findDocs(featureDir, { skipTemplates: true });
+  const docs = await findDocs(fdir, { skipTemplates: true });
   if (docs.length) await copyDocsByCategory(docs, dirs.documents, staged);
 
-  const copyIf = async (src, destDir, label) => {
-    if (await exists(src)) await copyOne(src, destDir, staged, label);
-  };
-  const copyDirMd = async (dir, destDir, label) => {
-    for (const f of (await fs.readdir(dir).catch(() => []))) {
-      if (f.toLowerCase().endsWith(".md") || f.toLowerCase().endsWith(".json")) {
-        await copyOne(path.join(dir, f), destDir, staged, label);
-      }
-    }
-  };
+  await copyIf(path.join(fdir, "outputs", "product-summary.md"), dirs.productsummary, staged, "productsummary");
+  await copyIf(path.join(fdir, "outputs", "stories.md"), dirs.productsummary, staged, "productsummary");
+  await copyDirMd(path.join(fdir, "outputs", "product-summaries"), dirs.productsummary, staged, "productsummary");
+  await copyDirMd(path.join(fdir, "solutions", "DataModel", "outputs"), dirs.DataModel, staged, "DataModel");
+  await copyDirMd(path.join(fdir, "solutions", "Architecture", "outputs"), dirs.Architecture, staged, "Architecture");
+  await copyIf(path.join(fdir, "solutions", "QA", "outputs", "test-cases.md"), dirs.QA, staged, "QA");
+  await copyDirMd(path.join(fdir, "solutions", "QA", "outputs", "test-cases"), dirs.QA, staged, "QA");
 
-  await copyIf(path.join(featureDir, "solutions", "Experience", "outputs", "personas.json"), dirs.personas, "personas");
-  await copyIf(path.join(featureDir, "solutions", "Experience", "outputs", "journey-map.json"), dirs.personas, "personas");
-  await copyIf(path.join(featureDir, "solutions", "Capabilities", "outputs", "capability-map.json"), dirs.capabilities, "capabilities");
-  await copyIf(path.join(featureDir, "solutions", "Capabilities", "outputs", "process-model.json"), dirs.capabilities, "capabilities");
-  await copyIf(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, "productsummary");
-  await copyIf(path.join(featureDir, "outputs", "stories.md"), dirs.productsummary, "productsummary");
-  await copyDirMd(path.join(featureDir, "outputs", "product-summaries"), dirs.productsummary, "productsummary");
-  await copyDirMd(path.join(featureDir, "solutions", "DataModel", "outputs"), dirs.DataModel, "DataModel");
-  await copyDirMd(path.join(featureDir, "solutions", "Architecture", "outputs"), dirs.Architecture, "Architecture");
-  await copyIf(path.join(featureDir, "solutions", "QA", "outputs", "test-cases.md"), dirs.QA, "QA");
-  await copyDirMd(path.join(featureDir, "solutions", "QA", "outputs", "test-cases"), dirs.QA, "QA");
-
-  const supplied = (await fs.readdir(path.join(featureDir, "requirements", "UI")).catch(() => []));
+  const supplied = (await fs.readdir(path.join(fdir, "requirements", "UI")).catch(() => []));
   staged.push(supplied.length
     ? `requirements/UI/  — ${supplied.length} supplied mockup(s): reflect these rather than inventing a layout`
     : `requirements/UI/  — empty (no client designs supplied; the skill designs from requirements)`);
+
+  // The UI skill reads personas/ and capabilities/ by name, so the project's
+  // generated artefacts land there rather than under project/.
+  await stageProjectDown(ctx, work, staged, { personasInto: "personas", capabilitiesInto: "capabilities" });
 }
 
 async function stageApp(ctx) {
-  const { featureDir, staged } = ctx;
-  // Nothing to copy: the renderer reads the feature's artefacts in place.
-  // Report what it will find, so a missing perspective is visible before the render.
-  for (const [key, def] of ORDERED) {
+  const { staged } = ctx;
+  for (const [key, def] of ordered(LEVEL.PROJECT)) {
     if (key === "app") continue;
-    const done = await stageIsDone(featureDir, def);
-    staged.push(`${done ? "included" : "MISSING "}  ${def.label}`);
+    const done = await stageIsDone(WORKSPACE, key, ctx.project, null);
+    staged.push(`${done ? "included" : "MISSING "}  ${def.label}  (project)`);
   }
-  const theme = path.join(featureDir, "design", "style-guides", "theme.json");
+  for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
+    const marks = [];
+    for (const [key, def] of ordered(LEVEL.FEATURE)) {
+      if (await stageIsDone(WORKSPACE, key, ctx.project, feature)) marks.push(def.label);
+    }
+    staged.push(`feature    ${feature}: ${marks.length ? marks.join(", ") : "nothing generated yet"}`);
+  }
+  const theme = path.join(projectDir(WORKSPACE, ctx.project), "design", "style-guides", "theme.json");
   staged.push(
     (await exists(theme))
       ? `branding   design/style-guides/theme.json`
-      : `branding   default Scyne palette (run: node scripts/extract-brand.mjs <url> ${ctx.project} "${ctx.feature}")`,
+      : `branding   default Scyne palette (run: node scripts/extract-brand.mjs <url> ${ctx.project})`,
   );
 }
+
+const STAGE_FNS = {
+  capabilities: stageCapabilities,
+  personas: stagePersonas,
+  requirements: stageRequirements,
+  ui: stageUI,
+  datamodel: stageDataModel,
+  architecture: stageArchitecture,
+  qa: stageQA,
+  design: stageDesign,
+  app: stageApp,
+};
 
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
-// `project`/`feature` are only needed for the app stage, whose output lands in
-// generated-apps/ rather than under the feature. Callers that only have the
-// feature directory can omit them; the app row then reports not-run, which is
-// what the staging report wants anyway (it lists feature inputs).
-async function stageIsDone(featureDir, def, project, feature) {
-  const outside = def.producesInWorkspace ?? [];
-  if (!def.produces.length && !outside.length) return false;
-  for (const p of def.produces) {
-    if (!(await exists(path.join(featureDir, p)))) return false;
-  }
-  if (outside.length) {
-    if (!project || !feature) return false;
-    for (const p of outside) {
-      const resolved = p.replace("<key>", `${project}-${feature}`);
-      if (!(await exists(path.join(WORKSPACE, resolved)))) return false;
+async function printAllProjects() {
+  const projects = await listProjects(WORKSPACE);
+  console.log(`\nUsage: npm run stage <project> [<feature>] <stage>\n`);
+  console.log(`Project stages (run once per client):\n`);
+  for (const [key, def] of ordered(LEVEL.PROJECT)) console.log(`  ${key.padEnd(14)}${def.label}`);
+  console.log(`\nFeature stages (run per slice of work):\n`);
+  for (const [key, def] of ordered(LEVEL.FEATURE)) console.log(`  ${key.padEnd(14)}${def.label}`);
+  console.log(`  ${"all".padEnd(14)}every stage at that level whose inputs are ready\n`);
+  if (!projects.length) return console.log(`No projects found under projects/.\n`);
+
+  console.log(`(· = not run, ✓ = produced its output)\n`);
+  for (const project of projects) {
+    const marks = [];
+    for (const [key] of ordered(LEVEL.PROJECT)) {
+      marks.push(`${key.slice(0, 4)}${(await stageIsDone(WORKSPACE, key, project, null)) ? "✓" : "·"}`);
     }
-  }
-  return true;
-}
-
-async function featureStatus(featureDir, project, feature) {
-  const rows = [];
-  for (const [key, def] of ORDERED) {
-    rows.push({ key, def, done: await stageIsDone(featureDir, def, project, feature) });
-  }
-  return rows;
-}
-
-async function listFeatures() {
-  const root = path.join(WORKSPACE, "projects");
-  const out = [];
-  for (const project of (await fs.readdir(root).catch(() => [])).sort()) {
-    const pdir = path.join(root, project);
-    if (!(await fs.stat(pdir).catch(() => null))?.isDirectory()) continue;
-    for (const feature of (await fs.readdir(pdir).catch(() => [])).sort()) {
-      const fdir = path.join(pdir, feature);
-      if (!(await fs.stat(fdir).catch(() => null))?.isDirectory()) continue;
-      out.push({ project, feature, dir: fdir });
+    console.log(`  ${project.padEnd(24)}${marks.join("  ")}`);
+    for (const feature of await listFeatures(WORKSPACE, project)) {
+      const fm = [];
+      for (const [key] of ordered(LEVEL.FEATURE)) {
+        fm.push(`${key.slice(0, 4)}${(await stageIsDone(WORKSPACE, key, project, feature)) ? "✓" : "·"}`);
+      }
+      console.log(`    ${feature.padEnd(22)}${fm.join("  ")}`);
     }
-  }
-  return out;
-}
-
-async function printAllFeatures() {
-  const features = await listFeatures();
-  console.log(`\nUsage: npm run stage <project> <feature> <stage>\n`);
-  console.log(`Stages, in pipeline order:\n`);
-  for (const [key, def] of ORDERED) {
-    console.log(`  ${key.padEnd(14)}${def.label}${def.optional ? "" : ""}`);
-  }
-  console.log(`  ${"all".padEnd(14)}every stage whose inputs are ready\n`);
-  if (!features.length) return console.log(`No features found under projects/.\n`);
-
-  console.log(`Features (${"·".repeat(1)} = not run, ${"✓"} = produced its output):\n`);
-  const head = ORDERED.map(([k]) => k.slice(0, 4).padEnd(4)).join(" ");
-  console.log(`  ${"".padEnd(38)}${head}`);
-  for (const f of features) {
-    const rows = await featureStatus(f.dir, f.project, f.feature);
-    const marks = rows.map((r) => (r.done ? "  ✓ " : "  · ").padEnd(5)).join("").trimEnd();
-    console.log(`  ${`${f.project} / ${f.feature}`.padEnd(38)}${marks}`);
   }
   console.log("");
 }
 
-async function printFeatureStatus(project, feature, featureDir) {
-  const rows = await featureStatus(featureDir, project, feature);
+async function printProjectStatus(project) {
+  console.log(`\n${project}\n`);
+  console.log(`  Project stages:`);
+  for (const [key, def] of ordered(LEVEL.PROJECT)) {
+    const done = await stageIsDone(WORKSPACE, key, project, null);
+    console.log(`   ${done ? "✓" : "·"} ${key.padEnd(14)}${def.label}`);
+  }
+  const features = await listFeatures(WORKSPACE, project);
+  console.log(`\n  Features (${features.length}):`);
+  if (!features.length) console.log(`    (none yet)`);
+  for (const feature of features) {
+    const done = [];
+    for (const [key, def] of ordered(LEVEL.FEATURE)) {
+      if (await stageIsDone(WORKSPACE, key, project, feature)) done.push(def.label);
+    }
+    console.log(`    ${feature.padEnd(24)}${done.length ? done.join(", ") : "nothing generated yet"}`);
+  }
+
+  const next = [];
+  for (const [key] of ordered(LEVEL.PROJECT)) {
+    if (key === "app") continue;
+    if (!(await stageIsDone(WORKSPACE, key, project, null))) { next.push(key); break; }
+  }
+  console.log(next.length
+    ? `\nNext:  npm run stage ${project} ${next[0]}\n`
+    : `\nBoth project stages have run. Pick a feature:  npm run stage ${project} "<feature>"\n`);
+}
+
+async function printFeatureStatus(project, feature) {
   console.log(`\n${project} / ${feature}\n`);
-  for (const { key, def, done } of rows) {
-    const mark = done ? "✓" : def.optional ? "·" : "·";
-    console.log(`  ${mark} ${key.padEnd(14)}${def.label}`);
+  for (const [key, def] of ordered(LEVEL.FEATURE)) {
+    const done = await stageIsDone(WORKSPACE, key, project, feature);
+    console.log(`  ${done ? "✓" : "·"} ${key.padEnd(14)}${def.label}`);
   }
-  const next = rows.find((r) => !r.done && !r.def.optional && r.key !== "app");
-  const appBuilt = rows.find((r) => r.key === "app")?.done;
-  if (next) {
-    console.log(`\nNext:  npm run stage ${project} "${feature}" ${next.key}\n`);
-  } else if (!appBuilt) {
-    console.log(`\nEvery stage has run. Build the companion app:\n  npm run stage ${project} "${feature}" app\n`);
-  } else {
-    // The page is progressive, so it is only current as of the last render —
-    // re-rendering is cheap and idempotent, so always offer it.
-    console.log(`\nEvery stage has run and the companion app is built.\nRe-render it to pick up any later edit:\n  ${RENDER_CMD.replace("<project>", project).replace("<feature>", `"${feature}"`)}\n`);
+  let next = null;
+  for (const [key, def] of ordered(LEVEL.FEATURE)) {
+    if (def.optional) continue;
+    if (!(await stageIsDone(WORKSPACE, key, project, feature))) { next = key; break; }
   }
+  if (next) console.log(`\nNext:  npm run stage ${project} "${feature}" ${next}\n`);
+  else console.log(`\nEvery feature stage has run. Re-render the project page:\n  ${RENDER_CMD.replace("<project>", project)}\n`);
 }
 
 // ---------------------------------------------------------------------------
 // Conversion — make every source document readable before staging
 // ---------------------------------------------------------------------------
 
-async function convertSources(featureDir, { force, keepOriginals }) {
-  // The skills only read .md. Convert .pdf/.docx/.xlsx/.txt in every source
-  // tree first, so a hand-placed PDF is not silently invisible to the model.
+// The skills only read .md. Convert .pdf/.docx/.xlsx/.txt in every source tree
+// first, so a hand-placed PDF is not silently invisible to the model.
+async function convertUnder(root, archiveBase, { force, keepOriginals }) {
   let any = false;
-  for (const entry of await fs.readdir(featureDir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || NOT_SOURCE.has(entry.name.toLowerCase())) continue;
-    const results = await convertTree(path.join(featureDir, entry.name), {
+  for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const lower = entry.name.toLowerCase();
+    // `documents/` IS source material at project level, so it is converted;
+    // everything else in NOT_SOURCE is output.
+    if (NOT_SOURCE.has(lower) && lower !== "documents") continue;
+    const results = await convertTree(path.join(root, entry.name), {
       force,
-      archiveRoot: keepOriginals ? null : path.join(featureDir, "original-files", entry.name),
+      archiveRoot: keepOriginals ? null : path.join(archiveBase, entry.name),
       onProgress: (f) => console.log(`  converting ${f} …`),
     });
     if (results.length) { reportConversion(results, (s) => console.log(s)); any = true; }
+  }
+  return any;
+}
+
+async function convertSources(ctx, opts) {
+  let any = false;
+  const proot = projectDir(WORKSPACE, ctx.project);
+  // Project stages read every feature too, so convert the whole project tree.
+  if (isProjectStage(ctx.stageKey)) {
+    any = (await convertUnder(proot, path.join(proot, "original-files"), opts)) || any;
+    for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
+      const fdir = featureDir(WORKSPACE, ctx.project, feature);
+      any = (await convertUnder(fdir, path.join(fdir, "original-files"), opts)) || any;
+    }
+  } else {
+    any = (await convertUnder(proot, path.join(proot, "original-files"), opts)) || any;
+    any = (await convertUnder(ctx.featureDir, path.join(ctx.featureDir, "original-files"), opts)) || any;
   }
   if (any) console.log("");
 }
@@ -564,34 +571,37 @@ async function convertSources(featureDir, { force, keepOriginals }) {
 
 async function runStage(key, ctx) {
   const def = STAGES[key];
-  const featureDir = ctx.featureDir;
+  const level = def.level;
 
   // Hard prerequisites.
-  for (const req of def.requires || []) {
-    if (await exists(path.join(featureDir, req.path))) continue;
-    if (req.escape && ctx.flags.has(req.escape)) continue;
+  const missing = await unmetRequirements(WORKSPACE, key, ctx.project, ctx.feature, ctx.flags);
+  if (missing.length) {
+    const m = missing[0];
+    const target = m.scope === "project" ? ctx.project : `${ctx.project} "${ctx.feature}"`;
     die(
-      `${key}: missing required input ${req.path}\n` +
-      `  Run the ${req.from} stage first:  npm run stage ${ctx.project} "${ctx.feature}" ${req.from}` +
-      (req.escape ? `\n  Or stage without it:            npm run stage ${ctx.project} "${ctx.feature}" ${key} -- ${req.escape}` : ""),
+      `${key}: missing required input ${m.scope}:${m.path}\n` +
+      `  Run the ${m.from} stage first:  npm run stage ${STAGES[m.from]?.level === LEVEL.PROJECT ? ctx.project : target} ${m.from}` +
+      (m.escape ? `\n  Or stage without it:            npm run stage ${target} ${key} -- ${m.escape}` : ""),
     );
   }
 
+  const root = level === LEVEL.PROJECT
+    ? projectDir(WORKSPACE, ctx.project)
+    : featureDir(WORKSPACE, ctx.project, ctx.feature);
+  const work = def.work === "-" ? root : path.join(root, def.work);
   const staged = [];
-  const work = def.work === "-" ? featureDir : path.join(featureDir, def.work);
+
+  await STAGE_FNS[key]({ ...ctx, work, staged, stageKey: key });
+
+  console.log(`\n── ${def.order}. ${def.label}  (${def.agent})   [${level}]`);
+  if (def.work !== "-") console.log(`   working folder: ${rel(work)}`);
+  console.log("");
 
   // The project definition is read by every skill straight from its stable
   // path, so it is never copied into a working folder — but a missing one
   // changes the output quality enough to be worth saying out loud.
-  const description = path.join(WORKSPACE, "projects", ctx.project, "description.md");
-  const hasDescription = await exists(description);
-
-  await def.stage({ ...ctx, work, staged });
-
-  console.log(`\n── ${def.order}. ${def.label}  (${def.agent})`);
-  if (def.work !== "-") console.log(`   working folder: ${rel(work)}`);
-  console.log("");
-  console.log(hasDescription
+  const description = path.join(projectDir(WORKSPACE, ctx.project), "description.md");
+  console.log((await exists(description))
     ? `   project definition: ${rel(description)}`
     : `   project definition: MISSING — projects/${ctx.project}/description.md\n` +
       `      Every skill reads it for who the client is and what they may do.\n` +
@@ -600,22 +610,22 @@ async function runStage(key, ctx) {
   for (const line of staged) console.log(`   ${line}`);
   console.log("");
 
-  const cmd = def.skill
-    ? `   /${def.skill}   project: ${ctx.project}, feature: ${ctx.feature}`
-    : `   ${def.script.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature}"`)}`;
+  const sub = (s) => s.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature ?? ""}"`);
+  const scope = level === LEVEL.PROJECT
+    ? `project: ${ctx.project}`
+    : `project: ${ctx.project}, feature: ${ctx.feature}`;
   console.log(def.skill ? `   Run in a Claude Code session at the workspace root:` : `   Run:`);
-  console.log(cmd);
+  console.log(def.skill ? `   /${def.skill}   ${scope}` : `   ${sub(def.script)}`);
   if (def.then) {
     console.log(`\n   Then verify:`);
-    console.log(`   ${def.then.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature}"`)}`);
+    console.log(`   ${sub(def.then)}`);
   }
-  // The feature has ONE page, and it is progressive: it renders whatever the
-  // feature has produced so far, so it is re-rendered after EVERY stage rather
-  // than once at the end. Skipping this is why a feature's page can show a
-  // stage that ran hours ago and miss the one that just finished.
+  // The project has ONE page, and it is progressive: it renders whatever has
+  // been produced so far, so it is re-rendered after EVERY stage rather than
+  // once at the end.
   if (key !== "app") {
-    console.log(`\n   Then update the feature's single page:`);
-    console.log(`   ${RENDER_CMD.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature}"`)}`);
+    console.log(`\n   Then update the project's single page:`);
+    console.log(`   ${sub(RENDER_CMD)}`);
   }
   console.log("");
 }
@@ -626,52 +636,61 @@ async function main() {
   for (const f of flags) if (!KNOWN_FLAGS.includes(f)) die(`unknown flag ${f}\nKnown: ${KNOWN_FLAGS.join(" ")}`);
 
   const positional = argv.filter((a) => !a.startsWith("--"));
-  if (positional.length === 0) return printAllFeatures();
+  if (positional.length === 0) return printAllProjects();
 
-  // <project> <feature...> [stage] — the feature name may contain spaces, so the
-  // stage is only the last token when it names a real stage.
   const [project, ...rest] = positional;
-  const last = rest[rest.length - 1];
-  const isStage = rest.length > 1 && (last === "all" || Object.hasOwn(STAGES, last));
-  const stageKey = isStage ? last : null;
-  const feature = (isStage ? rest.slice(0, -1) : rest).join(" ");
+  if (!SAFE_NAME.test(project)) die("project name contains unexpected characters");
 
-  if (!feature) return printAllFeatures();
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) die("project/feature contain unexpected characters");
-
-  const featureDir = path.join(WORKSPACE, "projects", project, feature);
-  if (!(await exists(featureDir))) {
-    const features = await listFeatures();
-    die(
-      `no such feature: projects/${project}/${feature}\n\nAvailable:\n` +
-      features.map((f) => `  ${f.project} / ${f.feature}`).join("\n"),
-    );
+  if (!(await exists(projectDir(WORKSPACE, project)))) {
+    const projects = await listProjects(WORKSPACE);
+    die(`no such project: projects/${project}\n\nAvailable:\n` + projects.map((p) => `  ${p}`).join("\n"));
   }
 
-  if (!stageKey) return printFeatureStatus(project, feature, featureDir);
+  // Resolve the LEVEL before the name. `npm run stage SAPN capabilities` has a
+  // single trailing token that names a project stage, so it is a stage — where
+  // the old feature-only parser would have read it as a feature name and failed.
+  let level = null, feature = null, stageKey = null;
+
+  if (rest.length === 0) return printProjectStatus(project);
+
+  if (rest.length === 1 && (PROJECT_STAGE_KEYS.has(rest[0]) || rest[0] === "all")) {
+    level = LEVEL.PROJECT;
+    stageKey = rest[0];
+  } else {
+    const last = rest[rest.length - 1];
+    const isStage = rest.length > 1 && (last === "all" || (Object.hasOwn(STAGES, last) && !PROJECT_STAGE_KEYS.has(last)));
+    stageKey = isStage ? last : null;
+    feature = (isStage ? rest.slice(0, -1) : rest).join(" ");
+    level = LEVEL.FEATURE;
+    if (!SAFE_NAME.test(feature)) die("feature name contains unexpected characters");
+    if (!(await exists(featureDir(WORKSPACE, project, feature)))) {
+      const features = await listFeatures(WORKSPACE, project);
+      die(`no such feature: projects/${project}/${feature}\n\nAvailable under ${project}:\n` +
+          (features.length ? features.map((f) => `  ${f}`).join("\n") : "  (none)"));
+    }
+    if (!stageKey) return printFeatureStatus(project, feature);
+  }
 
   const ctx = {
-    project, feature, featureDir, flags,
+    project, feature, level, stageKey,
+    featureDir: feature ? featureDir(WORKSPACE, project, feature) : null,
+    flags,
     force: flags.has("--force"),
   };
 
   if (!flags.has("--no-convert")) {
-    await convertSources(featureDir, { force: ctx.force, keepOriginals: flags.has("--keep-originals") });
+    await convertSources(ctx, { force: ctx.force, keepOriginals: flags.has("--keep-originals") });
   }
 
   if (stageKey === "all") {
-    // Stage everything whose hard prerequisites are already satisfied. A stage
-    // that is not ready is reported, not fatal — the point of `all` is to get
-    // as far as the feature's artefacts allow in one pass.
+    // Stage everything at this level whose hard prerequisites are already
+    // satisfied. A stage that is not ready is reported, not fatal.
     const ran = [];
-    for (const [key, def] of ORDERED) {
+    for (const [key, def] of ordered(level)) {
       if (def.optional) continue;
-      const missing = [];
-      for (const req of def.requires || []) {
-        if (!(await exists(path.join(featureDir, req.path)))) missing.push(req.path);
-      }
+      const missing = await unmetRequirements(WORKSPACE, key, project, feature, flags);
       if (missing.length) {
-        console.log(`\n── ${def.order}. ${def.label}  — SKIPPED, needs ${missing.join(", ")}`);
+        console.log(`\n── ${def.order}. ${def.label}  — SKIPPED, needs ${missing.map((m) => `${m.scope}:${m.path}`).join(", ")}`);
         continue;
       }
       await runStage(key, ctx);
@@ -679,6 +698,13 @@ async function main() {
     }
     console.log(`Staged: ${ran.join(", ") || "nothing"}\n`);
     return;
+  }
+
+  if (STAGES[stageKey].level !== level) {
+    die(`${stageKey} is a ${STAGES[stageKey].level} stage — ` +
+        (STAGES[stageKey].level === LEVEL.PROJECT
+          ? `run it as:  npm run stage ${project} ${stageKey}`
+          : `it needs a feature:  npm run stage ${project} "<feature>" ${stageKey}`));
   }
 
   await runStage(stageKey, ctx);

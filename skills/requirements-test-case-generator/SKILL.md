@@ -109,6 +109,20 @@ into this folder before invoking the skill.
 - **Solution architecture (input, optional):** `solutions/QA/Architecture/` — the
   Solution Architect's or Architecture Lead's output. Components, interface
   catalogue and error handling are what make integration and failure cases real.
+- **Project context (input, optional):** `solutions/QA/project/` — what the parent
+  PROJECT knows, staged down so the pack tests the client's real world:
+  - `project/documents/<category>/*.md` — client-wide policy, legislation and
+    standards applying to every feature. These are where the compliance and
+    obligation cases come from — a statutory deadline is a test case.
+  - `project/personas.json`, `project/journey-map.json` — the project's persona
+    set and journeys
+  - `project/capability-map.json`, `project/process-model.json`,
+    `project/capability-process.md` — the project's capability and process model
+
+  All optional, never a gate. When present, the **personas** decide which
+  permission sets and record-access paths each case is run as — a case with no
+  named persona is a case nobody can execute — and the **process model** tells you
+  which end-to-end flows deserve a scenario rather than a unit-level case.
 - **Output (you write here):** `solutions/QA/outputs/test-cases.md` — a single
   fixed filename so the chatbot's approval preview can read it. Create the
   `outputs/` folder if it does not exist yet.
@@ -1054,3 +1068,33 @@ Always output both directions.
 
 An orphan test either covers an implicit requirement worth documenting, or
 shouldn't exist. Resolve it rather than leaving it in.
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- Test case IDs are cited by the traceability matrix, by Jira/Xray imports that
+  may already exist, and possibly by a test run. Never renumber. A new case takes
+  the next free ID.
+- A changed requirement means updating the traceability matrix in **both**
+  directions, plus the coverage gap analysis. A revision that changes cases and
+  leaves the matrix stale is worse than one that changes nothing.
+- If the instruction resolves a requirement ambiguity you had flagged, move it out
+  of **Requirement Quality Issues** and say which interpretation won.
+- Regenerate `test-cases.csv` and `test-cases.feature` if they exist. A stale
+  export is the one a tester actually imports.

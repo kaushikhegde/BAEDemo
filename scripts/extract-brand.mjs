@@ -2,11 +2,12 @@
 // Extract a client's brand — palette, logo, wordmark, type — from a live URL and
 // write it as the companion app's theme.
 //
-//   node scripts/extract-brand.mjs <url> <project> <feature>
-//   node scripts/extract-brand.mjs <url> <project> <feature> --dry
+//   node scripts/extract-brand.mjs <url> <project>
+//   node scripts/extract-brand.mjs <url> <project> --dry
 //
-// Writes projects/<project>/<feature>/design/style-guides/theme.json, which is
-// the ONLY input the companion-app renderer takes for branding. Also writes
+// Writes projects/<project>/design/style-guides/theme.json, which is the ONLY
+// input the companion-app renderer takes for branding. One project renders one
+// companion app, so the theme is per project, not per feature. Also writes
 // brand-source.json beside it recording where each value came from, so a wrong
 // colour can be traced to the rule that picked it rather than re-guessed.
 //
@@ -353,21 +354,24 @@ async function main() {
   for (const f of flags) {
     if (!["--dry", "--no-logo", "--force"].includes(f)) die(`unknown flag ${f}`);
   }
-  const [rawUrl, project, ...featureParts] = argv.filter((a) => !a.startsWith("--"));
-  const feature = featureParts.join(" ");
+  // The brand is the CLIENT's, and one project renders one companion app, so the
+  // theme is per project. A trailing feature name is accepted and ignored rather
+  // than rejected, because older agent instructions still pass one.
+  const [rawUrl, project, ...rest] = argv.filter((a) => !a.startsWith("--"));
 
-  if (!rawUrl || !project || !feature) {
-    die(`Usage: node scripts/extract-brand.mjs <url> <project> <feature> [--dry] [--no-logo]\n\n` +
-        `  e.g. npm run brand -- https://www.sapowernetworks.com.au SAPN interiam-benifits`);
+  if (!rawUrl || !project) {
+    die(`Usage: node scripts/extract-brand.mjs <url> <project> [--dry] [--no-logo]\n\n` +
+        `  e.g. npm run brand -- https://www.sapowernetworks.com.au SAPN`);
   }
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) die("project/feature contain unexpected characters");
+  if (!SAFE_NAME.test(project)) die("project name contains unexpected characters");
+  if (rest.length) console.warn(`[extract-brand] ignoring "${rest.join(" ")}" — branding is project-level now`);
 
   let url;
   try { url = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`); } catch { die(`not a URL: ${rawUrl}`); }
   if (!/^https?:$/.test(url.protocol)) die(`only http(s) URLs are supported, got ${url.protocol}`);
 
-  const featureDir = path.join(WORKSPACE, "projects", project, feature);
-  try { await fs.access(featureDir); } catch { die(`no such feature: projects/${project}/${feature}`); }
+  const projectRoot = path.join(WORKSPACE, "projects", project);
+  try { await fs.access(projectRoot); } catch { die(`no such project: projects/${project}`); }
 
   console.log(`\n[extract-brand] reading ${url.href}\n`);
   const page = await get(url.href);
@@ -437,7 +441,7 @@ async function main() {
   console.log(`\n  other candidates considered:`);
   for (const c of palette._ranked.slice(1, 6)) console.log(`    ${c.hex}  score ${c.score}  ${c.from.join(", ")}`);
 
-  const outDir = path.join(featureDir, "design", "style-guides");
+  const outDir = path.join(projectRoot, "design", "style-guides");
   const themePath = path.join(outDir, "theme.json");
 
   if (flags.has("--dry")) {
@@ -459,7 +463,7 @@ async function main() {
 
   console.log(`\n  wrote ${rel(themePath)}`);
   console.log(`  wrote ${rel(path.join(outDir, "brand-source.json"))}   (why each value was chosen)`);
-  console.log(`\nRe-render the companion app to apply it:\n  npm run app ${project} "${feature}"\n`);
+  console.log(`\nRe-render the companion app to apply it:\n  npm run app ${project}\n`);
 }
 
 main().catch((e) => die(e.stack || String(e)));

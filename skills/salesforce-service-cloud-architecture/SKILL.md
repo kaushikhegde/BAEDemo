@@ -86,6 +86,22 @@ stages the inputs into this folder before invoking the skill.
   requirements and record the dependency under Open Questions.
 - **Landscape (input, optional):** `solutions/Architecture/landscape/` — existing
   system inventories, integration catalogues, identity or middleware standards.
+- **Project context (input, optional):** `solutions/Architecture/project/` — what
+  the parent PROJECT knows, staged down so this feature is architected in the
+  client's terms rather than in isolation:
+  - `project/documents/<category>/*.md` — client-wide policy, legislation,
+    standards and current-state architecture applying to every feature
+  - `project/personas.json`, `project/journey-map.json` — the project's persona
+    set and journeys
+  - `project/capability-map.json`, `project/process-model.json`,
+    `project/capability-process.md` — the project's capability and process model
+
+  All optional, never a gate. When present, the **capability model is your
+  capability-to-component map**: build that section from it directly rather than
+  re-deriving a capability list from the requirements, and cite the capability IDs
+  so the architecture and the operating model describe the same world. The
+  **personas** tell you which profiles, permission sets and licence types the
+  identity section has to cover.
 - **Output (you write here):** `solutions/Architecture/outputs/solution-architecture.md`
   — a single fixed filename so the chatbot's approval preview can read it.
   Create the `outputs/` folder if it does not exist yet.
@@ -1222,3 +1238,34 @@ flowchart LR
 - Use `-.->` for governance, dependency or non-runtime relationships and solid
   arrows for runtime flow
 - Verify every diagram parses before delivering
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- **Every custom component still needs its one-line justification for why Flow or
+  standard configuration was insufficient.** A component added by revision without
+  one is exactly the thing this skill exists to prevent.
+- A changed component ripples: the component inventory, the capability-to-component
+  map, any sequence or context diagram that names it, and the ADR that chose it.
+  Update all of them or explain why not.
+- If the instruction reverses an architecture decision, do not silently rewrite the
+  ADR — add a **superseding** ADR that references the original by number and says
+  what changed. The decision history is part of the deliverable.
+- Re-render every Mermaid diagram you touched; several exist and Phase 2 renders
+  all of them.

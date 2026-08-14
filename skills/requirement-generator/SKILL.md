@@ -78,7 +78,17 @@ Read every file in `./projects/<project>/<feature>/requirements/` (the chatbot w
 - `UI/ui-screen.*` (png/jpg) — wireframe or mockup. **OPTIONAL** — this folder may be empty. When present, reference by filename in UI/Screen Behaviour and attach to the relevant story. When empty, leave Section 5.2 (UI/Screen Behaviour) marked `N/A — no UI screens provided`, derive screen behaviour from the transcripts/SOP where the dialogue describes it, and do NOT block or treat the absence as a hard gap.
 - `Notes/*` — supporting context (uploaded notes, additional docs). Fold in but don't treat as the primary source.
 
-The sibling `./projects/<project>/<feature>/design/` folder (style-guides, example-screens) is read by the downstream **UI agent**, not this skill — ignore it here.
+The sibling `./projects/<project>/design/` folder (style-guides, example-screens) is read by the downstream **UI agent**, not this skill — ignore it here.
+
+### Project context (optional, but use it when it is there)
+
+The agent also stages what the parent PROJECT knows into `./projects/<project>/<feature>/requirements/project/`:
+
+- `project/documents/<category>/*.md` — client-wide policy, legislation, standards and current-state architecture that apply to every feature. Treat these like `SOP/`: context, constraints and assumptions, not stories. Where a client-wide document and a feature transcript disagree on an obligation, the client-wide document wins and the conflict goes in `gaps.md`.
+- `project/personas.json`, `project/journey-map.json`, `project/personas-journeys.md` — the project's persona set. **Reuse these persona names and abbreviations verbatim in your stories.** Coining a new name for a persona the project has already evidenced is the single most common way this pipeline produces documents that contradict each other. If a story needs a role the persona set does not carry, use it and record the gap.
+- `project/capability-map.json`, `project/process-model.json`, `project/capability-process.md` — the project's capability and process model. The process model carries the real L1/L2/L3 numbering; prefer it over inventing a process hierarchy for the story numbering.
+
+All of these are optional and none of them gate the run. Note in `gaps.md` which were present.
 
 ## House-style reference (per-project templates, with fallback)
 
@@ -251,3 +261,35 @@ There is no direct MCP tool to create Jira remote links to Confluence pages (no 
 Table: `story_number | jira_key | jira_url`. Confluence page URL. List any deviations (project key/name mismatch, missing epic, etc.) so the human can fix the rest manually.
 
 Do not transition statuses, attach images, or perform other writes unless the user asks.
+
+---
+
+## Revision mode
+
+When the invocation supplies a **previous version** of this deliverable plus a
+**change instruction**, you are revising, not regenerating.
+
+The discipline is a small diff. A regenerate-from-scratch produces a diff too
+large for a reviewer to check, which defeats the approval gate that follows —
+so preserve every section, decision, identifier and wording the instruction does
+not touch, and do not renumber, reorder or restyle anything it did not ask
+about.
+
+Apply the change **and its genuine consequences**, then record what changed in a
+`## Revision History` entry at the end of the document (date, instruction,
+sections touched).
+
+Specific to this skill:
+
+- **Story numbers are identifiers, not positions.** Never renumber existing
+  stories to close a gap. A story added between 2.4.1.3 and 2.4.1.4 becomes
+  2.4.1.5 at the end of the sequence; a deleted story leaves a hole.
+- A changed story means changing it in `stories.json`, `stories.md` **and** the
+  product summary's story table. Leaving the three out of step is the most common
+  failure of a partial revision.
+- Persona names come from the project's persona set. A revision is not licence to
+  coin a new one.
+- Keep the verbatim placeholders in sections 3.3.1, 7, 8, 9, 10 and 11 exactly as
+  they are, even if the instruction is about a nearby section.
+- Update `extraction.json` so the source mapping still explains where the changed
+  content came from.
