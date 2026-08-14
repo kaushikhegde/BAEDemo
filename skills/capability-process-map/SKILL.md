@@ -14,6 +14,30 @@ description: >
   of a project's documents.
 ---
 
+## Project definition — read this first
+
+Before reading any discovery document, read:
+
+```
+./projects/<project>/description.md
+```
+
+This is the **project definition**: who the client organisation is, what it is
+regulated or obliged to do, who its customers actually are, and what it cannot
+do. It is written once per project and applies to every feature under it.
+
+Use it to:
+
+- resolve who "the customer" is for this process — it is frequently not the end
+  consumer, and getting this wrong mis-frames every persona and every story;
+- avoid proposing anything the organisation is not permitted to do;
+- ground language, roles and obligations in the client's real operating model
+  rather than in generic industry assumptions.
+
+The file is **optional**. If it is absent, proceed on the discovery documents
+alone and note in your output that no project definition was supplied — do not
+invent organisational context to fill the gap.
+
 # Capability & Process Map Builder
 
 Reads every document staged for a feature, derives two connected models, and
@@ -60,7 +84,7 @@ description and stages the inputs before invoking the skill.
   - `capability-map.json` — the capability hierarchy (machine-readable)
   - `process-model.json` — the L1/L2/L3 activities (machine-readable)
   - `capability-process.md` — the human-readable document (tables + Mermaid)
-  - `capability-process.html` — rendered by a script, **do not hand-write it**
+  - (no HTML — the feature's single page is rendered separately, see Step 5)
 
   All four names are fixed — the chatbot's approval preview and the HTML
   endpoint read them by exact path. Create `outputs/` if it does not exist.
@@ -317,16 +341,20 @@ Australian English throughout (Behaviour, Authorise, Organisation, Prioritise).
 Run the shipped renderer from the **workspace root** — never hand-write the HTML:
 
 ```bash
-node scripts/render-capability-map.mjs <project> <feature>
+node scripts/render-capability-map.mjs <project> <feature> --validate-only
+node scripts/render-companion-app.mjs <project> <feature>
 ```
 
-It reads the two JSON files, validates them, and writes
-`solutions/Capabilities/outputs/capability-process.html` — a single
-self-contained page (no network calls) with the capability tree, the process
-explorer, filters, search and the capability ↔ activity cross-links.
-
+The first command reads the two JSON files and validates them, writing nothing.
 If it exits non-zero it names the file and field at fault — fix the JSON and
-re-run. Never fake the HTML by hand; a hand-written file will drift from the data.
+re-run.
+
+The second renders the feature's **single page**. A feature has ONE HTML
+document covering every stage — personas, journeys, capabilities, process,
+stories, the product summary and the rest — and it is *progressive*: it renders
+from whatever the feature has produced so far, so run it every time you finish,
+not once at the end. Never hand-write HTML; a hand-written file drifts from the
+data on the next render.
 
 ---
 
@@ -359,4 +387,4 @@ Give a brief summary covering:
   current → target gaps
 - Capabilities with no process evidence, and process activities with no
   capability — both are findings worth surfacing
-- The absolute path of `capability-process.html`
+- The absolute path of the feature's single page, `generated-apps/<project>-<feature>/index.html`

@@ -50,6 +50,9 @@ const exists = async (p) => {
 // prerequisite — staging refuses without it. `enriches` is opportunistic: the
 // stage runs regardless, but reads the input when it happens to be there.
 
+// The one page every stage feeds. Rendered after each stage, not once at the end.
+const RENDER_CMD = "node scripts/render-companion-app.mjs <project> <feature>";
+
 const STAGES = {
   capabilities: {
     order: 1,
@@ -59,7 +62,7 @@ const STAGES = {
     work: "solutions/Capabilities",
     produces: ["outputs/capability-process.md", "outputs/capability-map.json", "outputs/process-model.json"],
     requires: [],
-    then: "node scripts/render-capability-map.mjs <project> <feature>",
+    then: "node scripts/render-capability-map.mjs <project> <feature> --validate-only",
     stage: stageCapabilities,
   },
   personas: {
@@ -492,10 +495,23 @@ async function runStage(key, ctx) {
 
   const staged = [];
   const work = def.work === "-" ? featureDir : path.join(featureDir, def.work);
+
+  // The project definition is read by every skill straight from its stable
+  // path, so it is never copied into a working folder — but a missing one
+  // changes the output quality enough to be worth saying out loud.
+  const description = path.join(WORKSPACE, "projects", ctx.project, "description.md");
+  const hasDescription = await exists(description);
+
   await def.stage({ ...ctx, work, staged });
 
   console.log(`\n── ${def.order}. ${def.label}  (${def.agent})`);
   if (def.work !== "-") console.log(`   working folder: ${rel(work)}`);
+  console.log("");
+  console.log(hasDescription
+    ? `   project definition: ${rel(description)}`
+    : `   project definition: MISSING — projects/${ctx.project}/description.md\n` +
+      `      Every skill reads it for who the client is and what they may do.\n` +
+      `      Without it the output falls back to generic industry assumptions.`);
   console.log("");
   for (const line of staged) console.log(`   ${line}`);
   console.log("");
@@ -508,6 +524,14 @@ async function runStage(key, ctx) {
   if (def.then) {
     console.log(`\n   Then verify:`);
     console.log(`   ${def.then.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature}"`)}`);
+  }
+  // The feature has ONE page, and it is progressive: it renders whatever the
+  // feature has produced so far, so it is re-rendered after EVERY stage rather
+  // than once at the end. Skipping this is why a feature's page can show a
+  // stage that ran hours ago and miss the one that just finished.
+  if (key !== "app") {
+    console.log(`\n   Then update the feature's single page:`);
+    console.log(`   ${RENDER_CMD.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature}"`)}`);
   }
   console.log("");
 }

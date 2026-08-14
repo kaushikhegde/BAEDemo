@@ -18,6 +18,30 @@ description: >
   what needs testing.
 ---
 
+## Project definition — read this first
+
+Before reading any discovery document, read:
+
+```
+./projects/<project>/description.md
+```
+
+This is the **project definition**: who the client organisation is, what it is
+regulated or obliged to do, who its customers actually are, and what it cannot
+do. It is written once per project and applies to every feature under it.
+
+Use it to:
+
+- resolve who "the customer" is for this process — it is frequently not the end
+  consumer, and getting this wrong mis-frames every persona and every story;
+- avoid proposing anything the organisation is not permitted to do;
+- ground language, roles and obligations in the client's real operating model
+  rather than in generic industry assumptions.
+
+The file is **optional**. If it is absent, proceed on the discovery documents
+alone and note in your output that no project definition was supplied — do not
+invent organisational context to fill the gap.
+
 # Requirements-to-Test-Case Generator
 
 Turn requirement artefacts into test cases someone else can execute without

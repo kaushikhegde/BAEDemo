@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, extractBrand, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, extractBrand, saveProjectDefinition, postUiComment, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -422,6 +422,26 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: stage.gateMessage(proj, feat) }]);
           } else {
             throw e;
+          }
+        }
+      } else if (toolUse?.name === "save_project_definition") {
+        // Synchronous like extract_brand: it writes a file every skill reads, so
+        // the user gets confirmation of the path rather than a queued issue.
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const description = String(args?.description || "");
+        if (proj) setTargetProject(proj);
+        if (!proj || description.trim().length < 40) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I need a project and a couple of sentences of description to save. Which project is this for?` }]);
+        } else {
+          try {
+            const r = await saveProjectDefinition(proj, description);
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text:
+              `Saved the project definition for **${proj}** to \`${r.path}\` (${r.bytes.toLocaleString()} bytes).\n\n` +
+              `Every skill now reads this before any discovery document — requirements, personas, capabilities, architecture and test cases will all be framed by it.` }]);
+            setFeaturesRefreshKey((k) => k + 1);
+          } catch (e: any) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Could not save the project definition: ${e?.message ?? String(e)}` }]);
           }
         }
       } else if (toolUse?.name === "extract_brand") {

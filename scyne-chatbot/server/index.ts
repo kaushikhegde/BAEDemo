@@ -421,8 +421,9 @@ app.post("/api/capability-map/trigger", stageTrigger({
     `- projects/${p}/${f}/requirements/{SOP,Transcripts,Notes}/ (the same documents the BA reads)`,
     `- any other .md document tree under projects/${p}/${f}/ except outputs/, solutions/ and design/`,
     `- projects/${p}/${f}/outputs/product-summary.md (optional — use it as an extra source if it exists; do NOT block on it)`,
-    `- Outputs: solutions/Capabilities/outputs/{capability-map.json,process-model.json,capability-process.md,capability-process.html}`,
-    `- Render the HTML with: node scripts/render-capability-map.mjs ${p} ${f}`,
+    `- Outputs: solutions/Capabilities/outputs/{capability-map.json,process-model.json,capability-process.md}`,
+    `- Validate with: node scripts/render-capability-map.mjs ${p} ${f} --validate-only`,
+    `- Then update the feature's single page: node scripts/render-companion-app.mjs ${p} ${f}`,
   ],
 }));
 
@@ -433,17 +434,20 @@ app.get("/api/capability-map/:project/:feature", async (req, res) => {
   try {
     const { project, feature } = req.params;
     assertSafeProjectFeature(project, feature);
-    const file = path.join(WORKSPACE_PATH, "projects", project, feature, "solutions", "Capabilities", "outputs", "capability-process.html");
+    // A feature now has ONE page, progressively rendered from every stage's
+    // output. This route is kept so existing links keep working, but it serves
+    // that single page rather than a capabilities-only one.
+    const file = path.join(WORKSPACE_PATH, "generated-apps", `${project}-${feature}`, "index.html");
     let html: string;
     try {
       html = await fs.readFile(file, "utf8");
     } catch {
       return res.status(404).json({
         error: "not_generated",
-        message: `No capability map for ${project}/${feature} yet. Run the capability map stage first.`,
+        message: `No page for ${project}/${feature} yet. Run: node scripts/render-companion-app.mjs ${project} ${feature}`,
       });
     }
-    res.type("html").send(html);
+    res.set("Cache-Control", "no-store").type("html").send(html);
   } catch (e: any) {
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
   }
@@ -846,6 +850,58 @@ app.get("/api/runs/:runId/transcript", async (req, res) => {
 
 
 // 5. List available projects + features by scanning the workspace
+// ---------------------------------------------------------------------------
+// Project definition — projects/<project>/description.md
+//
+// Written once per project, read by EVERY skill before any discovery document.
+// It frames who the client organisation is, what it is regulated to do, and who
+// its customers actually are. Stored at project level, not per feature.
+// ---------------------------------------------------------------------------
+
+const SAFE_PROJECT = /^[A-Za-z0-9._ &-]+$/;
+
+app.get("/api/project-description/:project", async (req, res) => {
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { project } = req.params;
+    if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    const file = path.join(WORKSPACE_PATH, "projects", project, "description.md");
+    try {
+      const content = await fs.readFile(file, "utf8");
+      res.json({ project, exists: true, content });
+    } catch {
+      res.json({ project, exists: false, content: "" });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/project-description", async (req, res) => {
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { project, description } = req.body ?? {};
+    if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    if (typeof description !== "string" || description.trim().length < 40) {
+      return res.status(400).json({ error: "too_short", message: "A project definition needs at least a couple of sentences." });
+    }
+    const dir = path.join(WORKSPACE_PATH, "projects", project);
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, "description.md");
+
+    // Preserve a hand-written heading if the author supplied one.
+    const body = description.trim();
+    const content = body.startsWith("#") ? body + "\n" : `# ${project} — Project Definition\n\n${body}\n`;
+    await fs.writeFile(file, content, "utf8");
+    console.log(`[project-description] wrote ${file} (${content.length} bytes)`);
+    res.json({ ok: true, project, path: `projects/${project}/description.md`, bytes: content.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.get("/api/features", async (_req, res) => {
   try {
     const fs = await import("node:fs/promises");

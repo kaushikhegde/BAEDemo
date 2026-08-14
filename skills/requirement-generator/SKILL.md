@@ -3,6 +3,30 @@ name: requirement-generator
 description: Generate a Confluence Product Summary (with Mermaid process-flow diagrams) and Jira user stories from meeting transcripts, SOP/policy documents, and UI screens. Use when the user provides a project + feature and asks to produce requirements, user stories, a product summary, or Jira tickets.
 ---
 
+## Project definition — read this first
+
+Before reading any discovery document, read:
+
+```
+./projects/<project>/description.md
+```
+
+This is the **project definition**: who the client organisation is, what it is
+regulated or obliged to do, who its customers actually are, and what it cannot
+do. It is written once per project and applies to every feature under it.
+
+Use it to:
+
+- resolve who "the customer" is for this process — it is frequently not the end
+  consumer, and getting this wrong mis-frames every persona and every story;
+- avoid proposing anything the organisation is not permitted to do;
+- ground language, roles and obligations in the client's real operating model
+  rather than in generic industry assumptions.
+
+The file is **optional**. If it is absent, proceed on the discovery documents
+alone and note in your output that no project definition was supplied — do not
+invent organisational context to fill the gap.
+
 # Requirement Generator
 
 You are a senior Business Analyst. Your job is to turn raw discovery artifacts (meeting transcripts, policy docs, UI screen mockups) into two tightly-coupled deliverables:

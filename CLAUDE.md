@@ -89,8 +89,9 @@ Delivery Lead — routes by title prefix to the owning worker
    │      │          Notes} plus any reference doc tree) into documents/<category>/,
    │      │          runs the `capability-process-map` skill
    │      │          → outputs/{capability-map.json, process-model.json, capability-process.md},
-   │      │          renders outputs/capability-process.html via
-   │      │          `node scripts/render-capability-map.mjs <project> <feature>`,
+   │      │          validates via `node scripts/render-capability-map.mjs <project>
+   │      │          <feature> --validate-only`, then re-renders the feature's SINGLE
+   │      │          page via `node scripts/render-companion-app.mjs <project> <feature>`,
    │      │          attaches all four, raises an approval gate
    │      └─ PHASE 2 (after human approves): verifies the artefacts, posts the summary
    │                 + the interactive-view URL, closes. NOTHING is published.
@@ -168,7 +169,12 @@ The chatbot polls `/api/status/:issueId` every 3 seconds, surfaces comments as a
 requirement-generator/                         workspace root (cwd for all agents)
 ├── CLAUDE.md                                  this file
 ├── .mcp.json                                  project-scope MCP config (atlassian)
-├── projects/<project>/<feature>/
+├── projects/<project>/
+│   ├── description.md                         PROJECT DEFINITION — who the client is, what they
+│   │                                          are regulated to do, who their customers really are.
+│   │                                          Written once per project; read by EVERY skill before
+│   │                                          any discovery document. Optional but high-value.
+└── projects/<project>/<feature>/
 │   ├── requirements/
 │   │   ├── SOP/            (one or more .docx/.txt — SOP / policy docs)
 │   │   ├── Transcripts/    (one or more .docx/.txt/.md)
@@ -212,7 +218,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │           ├── documents/<category>/        (input — every .md under the feature, staged by category)
 │           ├── capability-reference/        (optional input — house capability taxonomy)
 │           └── outputs/                     (capability-map.json, process-model.json,
-│                                             capability-process.md, capability-process.html)
+│                                             capability-process.md)
 ├── datamodel-reference/    (STATIC global Salesforce PSS / Social-Insurance object catalogue — seeds each feature's solutions/DataModel/datamodel-reference/)
 ├── skills/                 (registered company skills — source of truth, registered with Paperclip by the bootstrap)
 │   ├── requirement-generator/SKILL.md
@@ -324,7 +330,7 @@ Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 
 **`capability-process-map`** (the Capabilities Process Architect, Phase 1 — working folder `solutions/Capabilities/`):
 - Inputs (staged by the agent): `documents/<category>/` — every `.md` under the feature except `outputs/`, `solutions/` and `design/`, i.e. the same `requirements/{SOP,Transcripts,Notes}` the BA reads, plus any reference document tree the feature carries. Optional `capability-reference/`.
-- Outputs: `solutions/Capabilities/outputs/` — `capability-map.json` (L1–L4 hierarchy, current/target maturity, lifecycle stage), `process-model.json` (L1 phase / L2 step / L3 activity with actor, service tier, components, capability IDs), `capability-process.md` (tables + Mermaid + coverage), and `capability-process.html` (rendered by `scripts/render-capability-map.mjs` — never hand-written).
+- Outputs: `solutions/Capabilities/outputs/` — `capability-map.json` (L1–L4 hierarchy, current/target maturity, lifecycle stage), `process-model.json` (L1 phase / L2 step / L3 activity with actor, service tier, components, capability IDs), and `capability-process.md` (tables + Mermaid + coverage). It writes **no HTML of its own** — the feature's single page is rendered by `scripts/render-companion-app.mjs`.
 - No prerequisite stage, and no Confluence/Jira publishing.
 
 **`salesforce-service-cloud-architecture`** (the Solution Architect — working folder `solutions/Architecture/`):
@@ -374,7 +380,7 @@ open http://127.0.0.1:5173
 | POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue. Gated: `409 no_product_summary` only — the data model is optional enrichment |
 | POST   | `/api/test-cases/trigger`         | Creates a `Generate test cases — …` issue. Gated: `409 no_product_summary` only — the data model and architecture are optional enrichment |
 | POST   | `/api/personas/trigger`           | Creates a `Generate personas — …` issue. No pipeline prerequisite; `409 no_documents` only. Publishes, so it carries the Confluence space key |
-| GET    | `/api/capability-map/:project/:feature` | Serves the rendered `capability-process.html` (self-contained page); `404 not_generated` before the stage has run |
+| GET    | `/api/capability-map/:project/:feature` | Serves the feature's SINGLE page `generated-apps/<project>-<feature>/index.html`; `404 not_generated` before it has been rendered. Kept as an alias so older links resolve |
 | GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links. Stage labels adapt to the flow (BA / Data Modeler / Architecture Lead / Developer) |
 | POST   | `/api/approve/:approvalId`        | Resolves an approval gate; wakes the gate's own issue assignee. Atlassian auto-provisioning is keyed on the keys in the issue description: requirements ensures Jira project + Confluence space; data-model/solution-design ensure just the space; Build UI carries no keys → skipped |
 | POST   | `/api/reject/:approvalId`         | Rejects an approval gate                                                  |
@@ -382,6 +388,8 @@ open http://127.0.0.1:5173
 | GET    | `/api/history`                    | All completed pipeline runs (requirements, data model, solution design) with their Confluence + Jira links (History view) |
 | GET    | `/api/runs/:issueId`              | Compact agent run summaries (agent · status · duration) for the run tree (Activity panel) |
 | GET    | `/api/features`                   | Lists `projects/<project>/<feature>/` available on disk                   |
+| GET    | `/api/project-description/:project` | Reads `projects/<project>/description.md`; `{exists:false}` when absent |
+| POST   | `/api/project-description`        | Writes it. Rejects a project name outside `[A-Za-z0-9._ &-]` and a body under 40 chars |
 | GET    | `/api/artifacts`                  | Reads the BA's `outputs/*` plus `solutions/DataModel/outputs/{datamodel-impact,salesforce-data-model}.md`, `solutions/Design/outputs/solution-design.md`, `solutions/Architecture/outputs/solution-architecture.md`, `solutions/QA/outputs/test-cases.md`, `solutions/Experience/outputs/personas-journeys.md` and `solutions/Capabilities/outputs/capability-process.md` for the approval-card preview |
 | POST   | `/api/upload`                     | File upload (audio recordings, attachments) — wired to multer + Gemini Files |
 | POST   | `/api/ui-agent/trigger`           | Triggers the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead)     |
@@ -410,6 +418,7 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
 - `trigger_solution_architecture` — fires the solution architecture flow (`Generate solution architecture — …`). Gated on the product summary only. **Distinct from `trigger_solution_design`** — if the user just says "do the architecture", the bot asks which one rather than guessing.
 - `trigger_test_cases` — fires the test-case flow (`Generate test cases — …`). Gated on the product summary only; the data model and architecture enrich the pack when present.
 - `trigger_personas` — fires the persona + journey flow (`Generate personas — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Its `personas.json` / `journey-map.json` feed the companion app.
+- `save_project_definition` — writes `projects/<project>/description.md` from the user's own words. The system prompt lists which projects have one and which do not, and tells the bot to ask once — never to block a run on it.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
 
 The system prompt teaches the dependency chain (requirements → data model → solution design) so the bot proactively explains and offers the missing prerequisite rather than firing a stage that would just block.
@@ -692,7 +701,15 @@ Three Node scripts power the UI / a11y / capability agents:
 - `scripts/stage.mjs <project> <feature> <stage>` — the local, Paperclip-free path. Replicates each agent's Phase 1 staging for every stage, converts source documents to markdown first, refuses a stage whose hard prerequisite is missing (naming the stage that would satisfy it), and prints the exact skill command to run next. With no `<stage>` it reports which stages a feature has run; with no arguments, that grid for every feature. Replaced `stage-datamodel.mjs`, which covered only the Data Modeler.
 - `scripts/extract-brand.mjs <url> <project> <feature>` — reads a client's site and writes `design/style-guides/theme.json` (palette, wordmark, font stack, logo as a data URI) plus `brand-source.json` recording why each value was chosen. Server-side only: the companion app itself makes zero network requests. Refuses to overwrite a hand-authored theme without `--force`.
 - `scripts/validate-experience.mjs <project> <feature>` — used by the **Service Designer**. Validates `solutions/Experience/outputs/{personas.json,journey-map.json}` against the companion-app contract: required fields, unique IDs, `avatarColor` in the app's palette, satisfaction scores as integers 1–5, no semicolons in persona bullets (the app's CSV loader splits on them), no `:`/`;` in journey step names (breaks the Mermaid `journey` parser), every journey's `personaId` resolving to a persona, every "moment that matters" resolving to a step, and every persona having exactly one journey. Reports **every** problem in one run and exits non-zero. This is the only guard between this stage and a companion-app build that happens weeks later.
-- `scripts/render-capability-map.mjs <project> <feature>` — used by the **Capabilities Process Architect**. Reads `solutions/Capabilities/outputs/{capability-map.json,process-model.json}`, validates them (non-zero exit naming the offending file/field), and writes `capability-process.html` — one self-contained page (inline CSS/JS, data as a JSON island, no network requests) with the capability tree, the L1/L2/L3 process explorer, actor/tier/capability filters, a coverage table and a source index. The agent never hand-writes the HTML, so every run looks the same.
+- `scripts/render-capability-map.mjs <project> <feature>` — used by the **Capabilities Process Architect**. Reads `solutions/Capabilities/outputs/{capability-map.json,process-model.json}`, validates them (non-zero exit naming the offending file/field), and — with `--validate-only`, which is how the pipeline calls it — exits without writing anything. It is the **contract guard** for the two Capabilities JSON files, which is the part the agent cannot self-check. Its own page renderer is retained in the file but is no longer wired into the pipeline: a feature has ONE page, rendered by `scripts/render-companion-app.mjs`.
+  > **It reads the same `design/style-guides/theme.json` the companion app reads**, so a feature branded once (`npm run brand`) renders in the client's palette, wordmark and font in *both* artefacts; a feature with no theme falls back to the Scyne palette. Re-run this renderer after `npm run brand`, or the map keeps the old colours.
+  > **The page deliberately mirrors the house design system** in `../companion-app/icwa-social-insurance-solution-guide` (React 19 + Tailwind 4 + Framer Motion), reproduced in vanilla CSS/JS because the output must stay a single file with zero network requests — which rules out React, a Tailwind build and a webfont. Match `src/components/CapabilityPerspective.tsx` and `src/components/ProcessPerspective.tsx` when changing this page; the two artefacts go to the same client in the same pack.
+  > - **Capabilities** = filter sidebar + L1 section → L2 area card → L3 tile. **Filters dim to 30% rather than hiding**, so the shape of the map never changes under the reader.
+  > - **Process** = a three-level **drill-down**, NOT a list: phase cards (icon, `01` sequence, *N steps · N activities*) → step cards → activity cards, with breadcrumbs and a Back button. Capped at 3/2 columns inside `max-w-7xl`.
+  > - **The sidebar renders on Capabilities only.** Process navigates by drill-down, so filters there would be dead weight; the maturity/gap/coverage cuts live on the Coverage table instead.
+  > - Motion, using the reference's own numbers: 0.2s view fade/slide (exit-then-enter), 0.22s accordion and level change (deeper levels slide in from the right), 0.36s spring slide-over, 0.04s per-card stagger. All disabled under `prefers-reduced-motion`.
+  > - Phase icons are keyword-matched from the phase name (`PHASE_ICON_RULES`) with a neutral fallback, so any feature's lifecycle gets a sensible icon — the reference hardcodes its own phase names, which would not transfer.
+  > Client logos are drawn for light backgrounds, so in dark mode the wordmark gets a white plate rather than a CSS filter, which would wreck the brand colours inside the mark.
 
 The chatbot doesn't call these directly; the agents do (via the `Bash` tool in their Claude Code sessions). The one exception is `render-companion-app.mjs`, which `/api/preview/:project/:feature/:action` shells out to when the user asks to refresh the preview.
 

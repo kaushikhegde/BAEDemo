@@ -283,3 +283,21 @@ export function recordingSocketUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws/record`;
 }
+
+/** Write projects/<project>/description.md — the project definition every skill reads. */
+export async function saveProjectDefinition(project: string, description: string): Promise<{ ok: boolean; project: string; path: string; bytes: number }> {
+  const r = await fetch("/api/project-description", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, description }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `save failed (${r.status})`);
+  return r.json();
+}
+
+/** Read it back, for showing the current definition in chat. */
+export async function getProjectDefinition(project: string): Promise<{ project: string; exists: boolean; content: string }> {
+  const r = await fetch(`/api/project-description/${encodeURIComponent(project)}`);
+  if (!r.ok) throw new Error(`read failed (${r.status})`);
+  return r.json();
+}

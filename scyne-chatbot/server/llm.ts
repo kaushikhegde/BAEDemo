@@ -13,6 +13,22 @@ export const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const WORKSPACE = WORKSPACE_PATH;
 
 /** Scan ./projects/<project>/<feature>/ structure on demand. */
+/** Which projects already carry a projects/<project>/description.md. */
+async function listProjectDefinitions(): Promise<Record<string, boolean>> {
+  const projectsDir = path.join(WORKSPACE, "projects");
+  const out: Record<string, boolean> = {};
+  try {
+    for (const p of await fs.readdir(projectsDir, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue;
+      out[p.name] = await fs
+        .access(path.join(projectsDir, p.name, "description.md"))
+        .then(() => true)
+        .catch(() => false);
+    }
+  } catch {}
+  return out;
+}
+
 async function listAvailable(): Promise<Record<string, { name: string; counts: Record<string, number> }[]>> {
   const projectsDir = path.join(WORKSPACE, "projects");
   const out: Record<string, { name: string; counts: Record<string, number> }[]> = {};
@@ -63,14 +79,32 @@ function buildSystemPrompt(
   featuresBlock: string,
   target?: { project: string | null; feature: string | null } | null,
   uiContext?: UiContext,
+  definitions?: Record<string, boolean>,
 ): string {
+  const defEntries = Object.entries(definitions ?? {});
+  const missingDefs = defEntries.filter(([, has]) => !has).map(([p]) => p);
+  const haveDefs = defEntries.filter(([, has]) => has).map(([p]) => p);
+  const defBlock = defEntries.length === 0 ? "" : `
+## Project definitions
+
+A project definition lives at \`projects/<project>/description.md\`. It describes the CLIENT ORGANISATION — who they are, what they do, what they are regulated or obliged to do, who their customers really are, and what they cannot do. **Every skill reads it before any discovery document**, so it materially changes the quality of requirements, personas, capabilities, architecture and test cases.
+
+- Projects that HAVE a definition: ${haveDefs.length ? haveDefs.join(", ") : "(none yet)"}
+- Projects with NO definition: ${missingDefs.length ? missingDefs.join(", ") : "(none)"}
+
+Rules:
+1. When the user picks a project with **no** definition and is about to run ANY generation stage, ask for one first, in one short sentence, and say plainly why it matters: without it every skill falls back to generic industry assumptions. Offer to proceed anyway if they would rather not.
+2. When the user supplies a description, summary, background or "about the client" text for a project — pasted, dictated or typed — call \`save_project_definition\` with their words. Do NOT summarise or shorten it.
+3. Never block a workflow on a missing definition. Ask once, accept the answer, move on.
+4. The definition is per PROJECT, not per feature. Do not ask for it again for a second feature under the same project.
+`;
   const uiBlock = uiContext?.active
     ? `\n## A live UI preview is ACTIVE for ${uiContext.project}/${uiContext.feature}\n\nThe right pane is showing a running, editable UI build. For EACH user message decide the intent:\n- **A question or request for information** ("what does this screen do?", "why is it laid out this way?", "is it responsive?", "what's left to do?") → just answer in text. Do NOT touch the build.\n- **A change to the UI** ("make the header navy", "add a back button", "move the table up", "use bigger fonts") → call \`comment_on_ui_build\` with kind="modify" and a clear \`instruction\`.\n- **Approval** ("looks good", "ship it", "approve", "that's perfect") → call \`comment_on_ui_build\` with kind="approve".\n- **Push to GitHub** ("push to github <url>", "publish it to <repo>") → call \`comment_on_ui_build\` with kind="push" and \`repo_url\`.\n- **A request to run another workflow stage** ("generate the data model", "run the solution design", "regenerate the requirements") → this is NOT a UI change. Call the matching trigger tool (\`trigger_data_model\` / \`trigger_solution_design\` / \`trigger_requirement_generation\`) as normal — the UI preview stays alive and the user can come back to it afterwards.\n\nWhen unsure whether it's a question or a change, prefer answering in text and ask a one-line clarifying question. Never silently turn a question into a modify instruction.\n`
     : "";
   const targetBlock = target?.project && target?.feature
     ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
     : "";
-  return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.
+  return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.${defBlock}
 
 Inputs live under a project + feature hierarchy:
 
@@ -220,6 +254,18 @@ const triggerTool: Tool = {
           confluence_page_title: { type: SchemaType.STRING, description: "Override the default Confluence page title." },
         },
         required: ["project", "feature"],
+      },
+    },
+    {
+      name: "save_project_definition",
+      description: "Save the project definition for a PROJECT (not a feature) to projects/<project>/description.md. The project definition describes the client organisation: who they are, what they do, what they are regulated or obliged to do, who their customers actually are, and what they cannot do. EVERY skill reads this file before any discovery document, so it materially changes the quality of requirements, personas, capabilities, architecture and test cases. Call this when the user supplies or dictates a description, summary, background, 'about the client', or project definition for a project. If the project has no definition yet and the user is about to run any generation stage, ASK for one first and explain why it matters — but never block them if they decline. Pass the description as markdown; do not summarise or shorten what the user gave you.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name, e.g. SAPN. Required." },
+          description: { type: SchemaType.STRING, description: "The project definition in markdown. Use the user's own words and detail — do not compress it. Required." },
+        },
+        required: ["project", "description"],
       },
     },
     {
@@ -419,7 +465,8 @@ export async function chat(
   uiContext?: UiContext,
 ) {
   const tree = await listAvailable();
-  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext);
+  const definitions = await listProjectDefinitions();
+  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext, definitions);
 
   const history = toGeminiHistory(messages);
   const lastUser = history.pop();
