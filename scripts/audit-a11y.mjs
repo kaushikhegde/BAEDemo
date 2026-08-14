@@ -2,13 +2,16 @@
 // Run WCAG 2.0 AA accessibility checks against a generated app.
 //
 // Usage:
-//   node scripts/audit-a11y.mjs <project-feature-key>
+//   node scripts/audit-a11y.mjs <project>
 //
 // Behaviour:
 //   1. Reads generated-apps/registry.json for the {port, appPath}.
 //   2. Runs @axe-core/cli against the dev URL (WCAG 2.0 A + AA tags).
 //   3. Runs pa11y against the dev URL (WCAG2AA standard, JSON reporter).
-//   4. Writes generated-apps/<key>/audit.json with consolidated violations.
+//   4. Writes generated-apps/<project>/audit.json with consolidated violations.
+//
+// The registry is keyed by PROJECT: one companion app per project, covering
+// every feature. A "<project>-<feature>" key is from before that change.
 //
 // Exit code is 0 on successful audit (even if violations exist); 1 only on tool failure.
 
@@ -21,7 +24,7 @@ const ROOT = resolve(new URL("..", import.meta.url).pathname);
 const REGISTRY_PATH = join(ROOT, "generated-apps", "registry.json");
 
 function usage() {
-  console.error("usage: audit-a11y.mjs <project-feature-key>");
+  console.error("usage: audit-a11y.mjs <project>");
   process.exit(2);
 }
 

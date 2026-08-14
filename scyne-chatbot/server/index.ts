@@ -204,6 +204,13 @@ function deriveProjectKey(project: string): string {
 // refusal distinguish "this feature is empty" from "the sources are still
 // .docx/.pdf and were never converted", which are different user actions.
 const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules"]);
+/**
+ * Directories under projects/<project>/ that belong to the PROJECT, not to a
+ * feature. Kept in step with PROJECT_OWN_DIRS in scripts/pipeline.mjs — the CLI
+ * and the chatbot must agree on what a feature is.
+ */
+const PROJECT_OWN_DIRS = new Set(["solutions", "documents", "design", "original-files", "outputs"]);
+
 async function countFeatureDocs(project: string, feature: string): Promise<{ md: number; other: number }> {
   const root = path.join(WORKSPACE_PATH, "projects", project, feature);
   let md = 0;
@@ -229,6 +236,28 @@ async function countFeatureDocs(project: string, feature: string): Promise<{ md:
   return { md, other };
 }
 
+/**
+ * Every readable document the PROJECT has: its own `documents/` tree plus every
+ * feature's discovery documents. The project-level stages read all of it, so
+ * the gate has to see all of it too — a project whose documents all live under
+ * features must not be told it has none.
+ */
+async function countProjectDocs(project: string): Promise<{ md: number; other: number }> {
+  const root = path.join(WORKSPACE_PATH, "projects", project);
+  let total = { md: 0, other: 0 };
+  const add = (d: { md: number; other: number }) => { total.md += d.md; total.other += d.other; };
+
+  let entries: any[] = [];
+  try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return total; }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    if (e.name === "documents") { add(await countFeatureDocs(project, "documents")); continue; }
+    if (SKIP_DIRS.has(e.name) || e.name === "solutions" || e.name === "design" || e.name === "original-files") continue;
+    add(await countFeatureDocs(project, e.name));
+  }
+  return total;
+}
+
 // 2b/2c/2d. The downstream stages (data model, solution design, capability map)
 // share one trigger shape: validate target → run the stage's pre-flight (a
 // prerequisite artefact on disk, or — when the stage has no prerequisite — that
@@ -239,6 +268,10 @@ function stageTrigger(stage: {
   logTag: string;
   titlePrefix: string; // must match a FLOWS prefix + the Delivery Lead's classifier
   intro: string;
+  // PROJECT stages (capability map, personas) describe the client organisation
+  // and carry no feature: their gate reads every document the project has, and
+  // their issue title and description name only the project.
+  level?: "project" | "feature";
   // A stage either gates on a prerequisite file (data model, solution design) or
   // omits it entirely (capability map) and gates on "the feature has documents".
   // One path, or several of which ANY satisfies the gate. The alternatives
@@ -253,18 +286,31 @@ function stageTrigger(stage: {
   confluence?: boolean; // include the Confluence space key in the description
   inputs: (project: string, feature: string) => string[];
 }) {
+  const isProject = stage.level === "project";
   return async (req: express.Request, res: express.Response) => {
     try {
       const project = String(req.body?.project || "").trim();
-      const feature = String(req.body?.feature || "").trim();
-      if (!project || !feature) return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
-      assertSafeProjectFeature(project, feature);
+      // A project stage ignores any feature the caller sends: the artefact
+      // describes the client, not one slice of work.
+      const feature = isProject ? "" : String(req.body?.feature || "").trim();
+      if (!project || (!isProject && !feature)) {
+        return res.status(400).json({
+          error: "missing_target",
+          message: isProject ? "project is required" : "project and feature are required",
+        });
+      }
+      if (isProject) assertSafeProject(project); else assertSafeProjectFeature(project, feature);
+
+      const gateRoot = isProject
+        ? path.join(WORKSPACE_PATH, "projects", project)
+        : path.join(WORKSPACE_PATH, "projects", project, feature);
+
       if (stage.gateFile) {
         const candidates = Array.isArray(stage.gateFile) ? stage.gateFile : [stage.gateFile];
         let satisfied = false;
         for (const c of candidates) {
           try {
-            await fs.access(path.join(WORKSPACE_PATH, "projects", project, feature, c));
+            await fs.access(path.join(gateRoot, c));
             satisfied = true;
             break;
           } catch { /* try the next alternative */ }
@@ -273,7 +319,7 @@ function stageTrigger(stage: {
           return res.status(409).json({ error: stage.gateErrorCode, message: stage.gateMessage(project, feature) });
         }
       } else {
-        const docs = await countFeatureDocs(project, feature);
+        const docs = isProject ? await countProjectDocs(project) : await countFeatureDocs(project, feature);
         if (docs.md === 0) {
           return res.status(409).json({ error: stage.gateErrorCode, ...docs, message: stage.gateMessage(project, feature, docs) });
         }
@@ -289,10 +335,12 @@ function stageTrigger(stage: {
       const description = [
         stage.intro,
         ``,
-        `## Project + Feature`,
+        isProject ? `## Project` : `## Project + Feature`,
         `- Project: ${project}`,
-        `- Feature: ${feature}`,
-        `- Feature name: ${feature_name}`,
+        ...(isProject ? [] : [
+          `- Feature: ${feature}`,
+          `- Feature name: ${feature_name}`,
+        ]),
         ...(stage.confluence === false ? [] : [
           ``,
           `## Parameters`,
@@ -302,7 +350,10 @@ function stageTrigger(stage: {
         `## Inputs`,
         ...stage.inputs(project, feature),
       ].join("\n");
-      const issue = await paperclip.createIssue(`${stage.titlePrefix} — ${feature_name} (${project}/${feature})`, description);
+      const title = isProject
+        ? `${stage.titlePrefix} — ${project}`
+        : `${stage.titlePrefix} — ${feature_name} (${project}/${feature})`;
+      const issue = await paperclip.createIssue(title, description);
       res.json(issue);
     } catch (e: any) {
       console.error(`[${stage.logTag}] failed:`, e);
@@ -389,47 +440,56 @@ app.post("/api/test-cases/trigger", stageTrigger({
 // discovery documents the BA reads), but unlike the capability map it DOES
 // publish, so it carries the Confluence space key. Its personas.json /
 // journey-map.json are a build contract for the companion app.
+// 2f. Personas — a PROJECT stage. The people a client serves belong to the
+// organisation, not to one slice of work, so the persona set is generated once
+// and every feature reads it. Gated on the CAPABILITY MAP: journey stages align
+// to its L1 lifecycle phases, which is why the wizard runs the two in sequence.
 app.post("/api/personas/trigger", stageTrigger({
   logTag: "personas/trigger",
+  level: "project",
   titlePrefix: "Generate personas",
-  intro: "Generated by the Scyne chatbot. Identify the personas the solution serves, map each one's journey, and publish to Confluence. The personas.json / journey-map.json outputs are consumed by the companion app.",
-  gateErrorCode: "no_documents",
-  gateMessage: (p, f, docs) =>
-    docs && docs.other > 0
-      ? `No readable documents for ${p}/${f}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
-      : `No documents found for ${p}/${f}. Upload at least one SOP, transcript or note before generating personas.`,
-  inputs: (p, f) => [
-    `Working folder: projects/${p}/${f}/solutions/Experience/ — stage the inputs there, then run the skill.`,
-    `- projects/${p}/${f}/requirements/{SOP,Transcripts,Notes}/ (the same documents the BA reads; copy into solutions/Experience/documents/<category>/, skipping templates/)`,
-    `- projects/${p}/${f}/outputs/product-summary.md (optional — copy into solutions/Experience/productsummary/; do NOT block on it)`,
-    `- projects/${p}/${f}/solutions/Capabilities/outputs/ (optional — copy capability-process.md + process-model.json into solutions/Experience/capabilities/ to align journey stages to L1 phases)`,
+  intro: "Generated by the Scyne chatbot. Identify the personas this CLIENT serves, map each one's journey, and publish to Confluence. The personas.json / journey-map.json outputs are consumed by the companion app.",
+  gateFile: path.join("solutions", "Capabilities", "outputs", "capability-map.json"),
+  gateErrorCode: "no_capability_map",
+  gateMessage: (p) =>
+    `No capability map found for ${p}. Journey stages align to its L1 lifecycle phases, so generate + approve the capability map first, then run the personas.`,
+  inputs: (p) => [
+    `Working folder: projects/${p}/solutions/Experience/ — stage the inputs there, then run the skill.`,
+    `- Stage with: node scripts/stage.mjs ${p} personas (converts to markdown and stages every input below)`,
+    `- projects/${p}/documents/ (the project's own client-wide documents)`,
+    `- every feature's requirements/{SOP,Transcripts,Notes}/ (copy into solutions/Experience/documents/<feature>/<category>/, skipping templates/)`,
+    `- projects/${p}/solutions/Capabilities/outputs/ (REQUIRED — copy into solutions/Experience/capabilities/ to align journey stages to L1 phases)`,
+    `- each feature's outputs/product-summary.md (optional — copy into solutions/Experience/productsummary/; do NOT block on it)`,
+    `- Deduplicate by PERSON, not by feature: one Eligibility Officer across three features is ONE persona citing all three`,
     `- Outputs: solutions/Experience/outputs/{personas-journeys.md,personas.json,journey-map.json}`,
-    `- Validate before raising the gate: node scripts/validate-experience.mjs ${p} ${f}`,
+    `- Validate before raising the gate: node scripts/validate-experience.mjs ${p}`,
   ],
 }));
 
-// 2g. Capability map — the one stage with NO prerequisite: it reads the same
-// discovery documents the BA reads, so it can run before requirements. It also
-// publishes nothing (confluence: false), which keeps /api/approve from trying to
-// provision an Atlassian space when the gate is approved.
+// 2g. Capability map — a PROJECT stage with no prerequisite. It reads every
+// document the client has (the project's own documents/ plus every feature's
+// discovery documents), so it can run before requirements. It publishes nothing
+// (confluence: false), which keeps /api/approve from trying to provision an
+// Atlassian space when the gate is approved.
 app.post("/api/capability-map/trigger", stageTrigger({
   logTag: "capability-map/trigger",
+  level: "project",
   titlePrefix: "Generate capability map",
-  intro: "Generated by the Scyne chatbot. Produce the Business Capability Map, the L1/L2/L3 Process Model and the interactive HTML view. Local artefacts only — nothing is published to Confluence or Jira.",
+  intro: "Generated by the Scyne chatbot. Produce the Business Capability Map and the L1/L2/L3 Process Model for this PROJECT, from every document the client has. Local artefacts only — nothing is published to Confluence or Jira.",
   gateErrorCode: "no_documents",
-  gateMessage: (p, f, docs) =>
+  gateMessage: (p, _f, docs) =>
     docs && docs.other > 0
-      ? `No readable documents for ${p}/${f}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
-      : `No documents found for ${p}/${f}. Upload at least one SOP, transcript or note (or a reference document tree) before generating the capability map.`,
+      ? `No readable documents for ${p}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
+      : `No documents found for ${p}. Upload at least one SOP, transcript or note (or a reference document tree) before generating the capability map.`,
   confluence: false,
-  inputs: (p, f) => [
-    `Working folder: projects/${p}/${f}/solutions/Capabilities/ — stage the documents there, then run the skill.`,
-    `- projects/${p}/${f}/requirements/{SOP,Transcripts,Notes}/ (the same documents the BA reads)`,
-    `- any other .md document tree under projects/${p}/${f}/ except outputs/, solutions/ and design/`,
-    `- projects/${p}/${f}/outputs/product-summary.md (optional — use it as an extra source if it exists; do NOT block on it)`,
+  inputs: (p) => [
+    `Working folder: projects/${p}/solutions/Capabilities/ — stage the documents there, then run the skill.`,
+    `- Stage with: node scripts/stage.mjs ${p} capabilities (converts to markdown and stages every document the project has)`,
+    `- projects/${p}/documents/ (the project's own client-wide policy, legislation and standards)`,
+    `- every feature's requirements/{SOP,Transcripts,Notes}/ and any other .md tree, except outputs/, solutions/ and design/`,
     `- Outputs: solutions/Capabilities/outputs/{capability-map.json,process-model.json,capability-process.md}`,
-    `- Validate with: node scripts/render-capability-map.mjs ${p} ${f} --validate-only`,
-    `- Then update the feature's single page: node scripts/render-companion-app.mjs ${p} ${f}`,
+    `- Validate with: node scripts/render-capability-map.mjs ${p} --validate-only`,
+    `- Then update the project's single page: node scripts/render-companion-app.mjs ${p}`,
   ],
 }));
 
@@ -455,42 +515,58 @@ app.post("/api/ui-mockups/trigger", stageTrigger({
     `Working folder: projects/${p}/${f}/solutions/UI/ — stage the inputs there, then run the skill.`,
     `- projects/${p}/description.md (the project definition — read it before any discovery document)`,
     `- projects/${p}/${f}/requirements/{SOP,Transcripts,Notes}/ (copy into solutions/UI/documents/<category>/; real field names and terminology)`,
-    `- projects/${p}/${f}/solutions/Experience/outputs/{personas.json,journey-map.json} (optional — copy into solutions/UI/personas/; the journey steps decide the screen set)`,
-    `- projects/${p}/${f}/solutions/Capabilities/outputs/*.json (optional — copy into solutions/UI/capabilities/)`,
+    `- Stage with: node scripts/stage.mjs ${p} "${f}" ui (stages every input below, including the project's)`,
+    `- projects/${p}/solutions/Experience/outputs/{personas.json,journey-map.json} (PROJECT-level; copy into solutions/UI/personas/; the journey steps decide the screen set)`,
+    `- projects/${p}/solutions/Capabilities/outputs/*.json (PROJECT-level; copy into solutions/UI/capabilities/)`,
+    `- projects/${p}/documents/ (PROJECT-level client-wide documents; copy into solutions/UI/project/documents/)`,
     `- projects/${p}/${f}/outputs/product-summary.md + outputs/stories.md + outputs/product-summaries/*.md (optional — copy into solutions/UI/productsummary/)`,
-    `- projects/${p}/${f}/solutions/DataModel/outputs/ (optional — copy any .md into solutions/UI/DataModel/; stops the mockups inventing fields)`,
+    `- projects/${p}/${f}/solutions/DataModel/outputs/ (optional, and usually ABSENT — this stage now runs BEFORE the data model; copy any .md into solutions/UI/DataModel/ when it exists)`,
     `- projects/${p}/${f}/solutions/Architecture/outputs/ and solutions/Design/outputs/ (optional — copy any .md into solutions/UI/Architecture/)`,
-    `- projects/${p}/${f}/solutions/QA/outputs/ (optional — copy any .md into solutions/UI/QA/; the failure paths are the STATES each screen must show)`,
+    `- projects/${p}/${f}/solutions/QA/outputs/ (optional, and usually ABSENT — this stage now runs BEFORE the test pack; the failure paths are the STATES each screen must show, so derive them from the acceptance criteria until it exists)`,
     `- projects/${p}/${f}/requirements/UI/ (client-supplied designs — AUTHORITATIVE when present; reflect them rather than inventing a layout)`,
     `- Output: solutions/UI/outputs/mockups.json (you author the JSON only — never hand-write HTML)`,
-    `- Render with: node scripts/render-mockups.mjs ${p} ${f} (non-zero exit names the offending screen/field — fix the JSON and re-run)`,
-    `- Then update the feature's single page so its UI tab picks the screens up: node scripts/render-companion-app.mjs ${p} ${f}`,
+    `- Render with: node scripts/render-mockups.mjs ${p} "${f}" (non-zero exit names the offending screen/field — fix the JSON and re-run)`,
+    `- Then update the project's single page so its UI tab picks the screens up: node scripts/render-companion-app.mjs ${p}`,
   ],
 }));
 
 // 2e. Serve the rendered capability map. The architect writes a self-contained
 // page (inline CSS/JS, no network requests), so it can be handed straight to the
 // browser — the chatbot links to it rather than iframing it.
+// A PROJECT now has ONE page, progressively rendered from every stage's output
+// across every feature. These routes are kept so existing links keep working —
+// both the project form and the older project/feature form — but they redirect
+// to the canonical companion-app URL rather than serving a second copy from a
+// path where the page's relative links (mockups/…) would not resolve. The
+// existence check stays, so a link followed before the page has been rendered
+// still gets the explanatory 404 rather than a redirect loop.
+async function redirectToCompanionApp(res: express.Response, project: string) {
+  const file = path.join(WORKSPACE_PATH, "generated-apps", project, "index.html");
+  try {
+    await fs.access(file);
+  } catch {
+    return res.status(404).json({
+      error: "not_generated",
+      message: `No page for ${project} yet. Run: node scripts/render-companion-app.mjs ${project}`,
+    });
+  }
+  res.redirect(302, `/api/companion-app/${encodeURIComponent(project)}/`);
+}
+
+app.get("/api/capability-map/:project", async (req, res) => {
+  try {
+    assertSafeProject(req.params.project);
+    await redirectToCompanionApp(res, req.params.project);
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.get("/api/capability-map/:project/:feature", async (req, res) => {
   try {
     const { project, feature } = req.params;
     assertSafeProjectFeature(project, feature);
-    // A feature now has ONE page, progressively rendered from every stage's
-    // output. This route is kept so existing links keep working, but it now
-    // redirects to the canonical companion-app URL rather than serving a second
-    // copy from a path where the page's relative links (mockups/…) would not
-    // resolve. The existence check stays, so a link followed before the page has
-    // been rendered still gets the explanatory 404 rather than a redirect loop.
-    const file = path.join(WORKSPACE_PATH, "generated-apps", `${project}-${feature}`, "index.html");
-    try {
-      await fs.access(file);
-    } catch {
-      return res.status(404).json({
-        error: "not_generated",
-        message: `No page for ${project}/${feature} yet. Run: node scripts/render-companion-app.mjs ${project} ${feature}`,
-      });
-    }
-    res.redirect(302, `/api/companion-app/${encodeURIComponent(project)}/${encodeURIComponent(feature)}/`);
+    await redirectToCompanionApp(res, project);
   } catch (e: any) {
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
   }
@@ -960,6 +1036,11 @@ app.get("/api/features", async (_req, res) => {
         result[p.name] = [];
         for (const s of features) {
           if (!s.isDirectory()) continue;
+          // A project directory holds features PLUS the project's own folders.
+          // Only the former are features — without this, `solutions/`,
+          // `documents/` and `design/` appear in the target picker as soon as a
+          // project generates anything.
+          if (PROJECT_OWN_DIRS.has(s.name.toLowerCase())) continue;
           const subPath = path.join(projectsDir, p.name, s.name);
           const subs = await fs.readdir(subPath, { withFileTypes: true });
           const counts: Record<string, number> = {};
@@ -986,19 +1067,27 @@ app.get("/api/artifacts", async (req, res) => {
   try {
     const project = String(req.query.project || "").trim();
     const feature = String(req.query.feature || "").trim();
-    if (!project || !feature) {
-      return res.status(400).json({ error: "missing_target", message: "project and feature query params are required" });
+    if (!project) {
+      return res.status(400).json({ error: "missing_target", message: "project query param is required" });
     }
-    assertSafeProjectFeature(project, feature);
+    // The capability map and personas are project-level, so a project-only call
+    // is valid — it returns those two and nothing feature-scoped. That is what
+    // the approval card needs when the gate belongs to a project stage.
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
 
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
     const ws = WORKSPACE_PATH;
-    const featureRoot = path.join(ws, "projects", project, feature);
+    const projectRoot = path.join(ws, "projects", project);
+    const featureRoot = feature ? path.join(projectRoot, feature) : null;
     // BA artefacts live in outputs/; the downstream stages each write into
     // their own solutions/<Stage>/outputs/ working folder.
     const read = async (...rel: string[]) => {
+      if (!featureRoot) return null;
       try { return await fs.readFile(path.join(featureRoot, ...rel), "utf8"); } catch { return null; }
+    };
+    const readProject = async (...rel: string[]) => {
+      try { return await fs.readFile(path.join(projectRoot, ...rel), "utf8"); } catch { return null; }
     };
     const [productSummary, storiesJson, storiesMd, gaps, dataModel, salesforceDataModel, solutionDesign, solutionArchitecture, testCases, capabilityMap, personas] = await Promise.all([
       read("outputs", "product-summary.md"),
@@ -1010,8 +1099,8 @@ app.get("/api/artifacts", async (req, res) => {
       read("solutions", "Design", "outputs", "solution-design.md"),
       read("solutions", "Architecture", "outputs", "solution-architecture.md"),
       read("solutions", "QA", "outputs", "test-cases.md"),
-      read("solutions", "Capabilities", "outputs", "capability-process.md"),
-      read("solutions", "Experience", "outputs", "personas-journeys.md"),
+      readProject("solutions", "Capabilities", "outputs", "capability-process.md"),
+      readProject("solutions", "Experience", "outputs", "personas-journeys.md"),
     ]);
     let stories: any[] = [];
     if (storiesJson) {
@@ -1049,6 +1138,14 @@ const upload = multer({
 function assertSafeProjectFeature(project: string, feature: string) {
   if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) {
     const err: any = new Error("Invalid project or feature name");
+    err.status = 400;
+    throw err;
+  }
+}
+
+function assertSafeProject(project: string) {
+  if (!SAFE_NAME.test(project)) {
+    const err: any = new Error("Invalid project name");
     err.status = 400;
     throw err;
   }
@@ -1195,32 +1292,61 @@ app.post("/api/projects", async (req, res) => {
 app.post("/api/ui-agent/trigger", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
+    // The companion app is PROJECT-level: one page covering every feature. A
+    // `feature` in the body is context (which feature prompted the build), not
+    // scope, so it is recorded and otherwise ignored.
     const feature = String(req.body?.feature || "").trim();
-    if (!project || !feature) return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
-    assertSafeProjectFeature(project, feature);
+    if (!project) return res.status(400).json({ error: "missing_target", message: "project is required" });
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
 
-    // Quick local check so we can fail fast with a clear error in the chat.
-    const summaryPath = path.join(WORKSPACE_PATH, "projects", project, feature, "outputs", "product-summary.md");
-    try {
-      await fs.access(summaryPath);
-    } catch {
+    // Quick local check so we can fail fast with a clear error in the chat. The
+    // page is progressive, so ANY artefact is enough — refusing until the
+    // requirements exist would block a project that has only its capability map.
+    const hasSomething = await (async () => {
+      const candidates = [
+        path.join("solutions", "Capabilities", "outputs", "capability-map.json"),
+        path.join("solutions", "Experience", "outputs", "personas.json"),
+      ];
+      for (const c of candidates) {
+        try { await fs.access(path.join(WORKSPACE_PATH, "projects", project, c)); return true; } catch { /* next */ }
+      }
+      const docs = await countProjectDocs(project);
+      if (docs.md === 0) return false;
+      // Documents alone are not an artefact — look for at least one feature output.
+      let entries: any[] = [];
+      try { entries = await fs.readdir(path.join(WORKSPACE_PATH, "projects", project), { withFileTypes: true }); } catch { return false; }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith(".") || SKIP_DIRS.has(e.name)) continue;
+        try {
+          await fs.access(path.join(WORKSPACE_PATH, "projects", project, e.name, "outputs", "product-summary.md"));
+          return true;
+        } catch { /* next feature */ }
+      }
+      return false;
+    })();
+    if (!hasSomething) {
       return res.status(409).json({
-        error: "no_requirements",
-        message: `No requirements found for ${project}/${feature}. Run the BA flow first, or drop a product-summary.md under outputs/.`,
+        error: "no_artefacts",
+        message: `Nothing generated for ${project} yet. Run the capability map, personas or requirements first — the page renders whatever exists.`,
       });
     }
 
-    const title = `Build UI — ${project}/${feature}`;
+    const title = `Build UI — ${project}`;
     const description = [
       `project: ${project}`,
-      `feature: ${feature}`,
+      ...(feature ? [`feature: ${feature}   (context only — the page covers every feature)`] : []),
       `intent: build_ui`,
       ``,
-      `Inputs:`,
-      `- projects/${project}/${feature}/design/style-guides/`,
-      `- projects/${project}/${feature}/design/example-screens/`,
-      `- projects/${project}/${feature}/outputs/product-summary.md`,
-      `- projects/${project}/${feature}/outputs/stories.json`,
+      `Inputs (project level):`,
+      `- projects/${project}/design/style-guides/`,
+      `- projects/${project}/solutions/Capabilities/outputs/`,
+      `- projects/${project}/solutions/Experience/outputs/`,
+      ``,
+      `Inputs (every feature under the project):`,
+      `- projects/${project}/<feature>/outputs/`,
+      `- projects/${project}/<feature>/solutions/{UI,DataModel,Architecture,QA,Design}/outputs/`,
+      ``,
+      `Render with: node scripts/render-companion-app.mjs ${project}`,
     ].join("\n");
 
     // Assigned to the Delivery Lead (existing pattern). The Delivery Lead dispatches the Developer directly, then the UX Auditor.
@@ -1243,8 +1369,8 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
 // canonical URL carries a trailing slash and the bare form redirects to it.
 // Without that, `mockups/scr-001.html` would resolve one segment too high and
 // 404 — silently, in an iframe.
-async function sendCompanionFile(res: express.Response, project: string, feature: string, relPath: string) {
-  const root = path.join(WORKSPACE_PATH, "generated-apps", `${project}-${feature}`);
+async function sendCompanionFile(res: express.Response, project: string, relPath: string) {
+  const root = path.join(WORKSPACE_PATH, "generated-apps", project);
   const file = path.join(root, relPath);
   // Defence in depth: relPath is already whitelisted by each route's pattern.
   if (!file.startsWith(root + path.sep)) return res.status(400).json({ error: "bad_path" });
@@ -1255,8 +1381,8 @@ async function sendCompanionFile(res: express.Response, project: string, feature
     return res.status(404).json({
       error: "not_generated",
       message: relPath === "index.html"
-        ? `No companion app for ${project}/${feature}. Run: node scripts/render-companion-app.mjs ${project} ${feature}`
-        : `${relPath} has not been rendered for ${project}/${feature}. Run: node scripts/render-mockups.mjs ${project} ${feature}`,
+        ? `No companion app for ${project}. Run: node scripts/render-companion-app.mjs ${project}`
+        : `${relPath} has not been rendered for ${project}. Run: node scripts/render-mockups.mjs ${project} "<feature>"`,
     });
   }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -1266,33 +1392,33 @@ async function sendCompanionFile(res: express.Response, project: string, feature
   res.send(html);
 }
 
-app.get("/api/companion-app/:project/:feature", async (req, res) => {
+app.get("/api/companion-app/:project", async (req, res) => {
   try {
-    const { project, feature } = req.params;
-    assertSafeProjectFeature(project, feature);
+    const { project } = req.params;
+    assertSafeProject(project);
     // Express matches this route with or without the trailing slash. Only the
     // directory form makes the page's relative links resolve, so send the bare
     // form there rather than serving a page whose UI tab is quietly broken.
     if (!req.path.endsWith("/")) return res.redirect(302, req.baseUrl + req.path + "/");
-    await sendCompanionFile(res, project, feature, "index.html");
+    await sendCompanionFile(res, project, "index.html");
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-// The mockup pages link back with `../index.html`, which lands here.
-app.get("/api/companion-app/:project/:feature/index.html", async (req, res) => {
+// The mockup pages link back with `../../index.html`, which lands here.
+app.get("/api/companion-app/:project/index.html", async (req, res) => {
   try {
-    const { project, feature } = req.params;
-    assertSafeProjectFeature(project, feature);
-    await sendCompanionFile(res, project, feature, "index.html");
+    const { project } = req.params;
+    assertSafeProject(project);
+    await sendCompanionFile(res, project, "index.html");
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-// The UI mockups, one page per screen plus their index.
-app.get("/api/companion-app/:project/:feature/mockups/:file", async (req, res) => {
+// The UI mockups: one directory per feature, one page per screen plus an index.
+app.get("/api/companion-app/:project/mockups/:feature/:file", async (req, res) => {
   try {
     const { project, feature } = req.params;
     assertSafeProjectFeature(project, feature);
@@ -1300,26 +1426,49 @@ app.get("/api/companion-app/:project/:feature/mockups/:file", async (req, res) =
     if (!/^[A-Za-z0-9._-]+\.html$/.test(file)) {
       return res.status(400).json({ error: "bad_file", message: "mockup pages are .html only" });
     }
-    await sendCompanionFile(res, project, feature, path.join("mockups", file));
+    // The renderer slugs the feature into the directory name, so a feature with
+    // spaces or capitals resolves here too.
+    const dir = String(feature).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    await sendCompanionFile(res, project, path.join("mockups", dir, file));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-// 7b. Preview registry lookup for the iframe pane.
+// 7b. Preview registry lookup for the iframe pane. Keyed by project — there is
+// one companion app per project, covering every feature. The feature-scoped
+// form is kept so an older client (or a saved link) still resolves.
+async function readRegistryEntry(project: string) {
+  const registryPath = path.join(WORKSPACE_PATH, "generated-apps", "registry.json");
+  let registry: Record<string, any> = {};
+  try {
+    registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
+  } catch {
+    return { error: "no_registry" as const, entry: null };
+  }
+  const entry = registry[project];
+  if (!entry) return { error: "no_entry" as const, entry: null };
+  return { error: null, entry };
+}
+
+app.get("/api/preview/:project", async (req, res) => {
+  try {
+    const { project } = req.params;
+    assertSafeProject(project);
+    const { error, entry } = await readRegistryEntry(project);
+    if (error) return res.status(404).json({ error });
+    res.json(entry);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.get("/api/preview/:project/:feature", async (req, res) => {
   try {
     const { project, feature } = req.params;
     assertSafeProjectFeature(project, feature);
-    const registryPath = path.join(WORKSPACE_PATH, "generated-apps", "registry.json");
-    let registry: Record<string, any> = {};
-    try {
-      registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
-    } catch {
-      return res.status(404).json({ error: "no_registry" });
-    }
-    const entry = registry[`${project}-${feature}`];
-    if (!entry) return res.status(404).json({ error: "no_entry" });
+    const { error, entry } = await readRegistryEntry(project);
+    if (error) return res.status(404).json({ error });
     res.json(entry);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -1367,7 +1516,7 @@ app.post("/api/preview/:project/:feature/:action", async (req, res) => {
         message: "The companion app is a static page — there is no dev server to stop.",
       });
     }
-    const result = await runHelper("render-companion-app.mjs", [project, feature]);
+    const result = await runHelper("render-companion-app.mjs", [project]);
     if (!result.ok) {
       return res.status(500).json({
         error: "render_failed",
@@ -1389,12 +1538,13 @@ app.post("/api/preview/:project/:feature/:action", async (req, res) => {
 app.post("/api/brand/extract", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
-    const feature = String(req.body?.feature || "").trim();
     const url = String(req.body?.url || "").trim();
-    if (!project || !feature || !url) {
-      return res.status(400).json({ error: "missing_input", message: "project, feature and url are required" });
+    if (!project || !url) {
+      return res.status(400).json({ error: "missing_input", message: "project and url are required" });
     }
-    assertSafeProjectFeature(project, feature);
+    // Branding is per project: one companion app, one palette. A `feature` in
+    // the body is accepted and ignored so an older client keeps working.
+    assertSafeProject(project);
 
     // Only http(s), and never a URL the script would have to resolve relative to
     // the server — this endpoint takes a target from chat input.
@@ -1406,7 +1556,7 @@ app.post("/api/brand/extract", async (req, res) => {
       return res.status(400).json({ error: "bad_url", message: "Only http(s) URLs can be read." });
     }
 
-    const extract = await runHelper("extract-brand.mjs", [parsed.href, project, feature, "--force"]);
+    const extract = await runHelper("extract-brand.mjs", [parsed.href, project, "--force"]);
     if (!extract.ok) {
       return res.status(502).json({
         error: "extract_failed",
@@ -1416,19 +1566,19 @@ app.post("/api/brand/extract", async (req, res) => {
 
     // Read back what was written rather than parsing stdout — the file is the
     // contract the renderer reads, so reporting it keeps the two from drifting.
-    const styleDir = path.join(WORKSPACE_PATH, "projects", project, feature, "design", "style-guides");
+    const styleDir = path.join(WORKSPACE_PATH, "projects", project, "design", "style-guides");
     const readJson = async (name: string) => {
       try { return JSON.parse(await fs.readFile(path.join(styleDir, name), "utf8")); } catch { return null; }
     };
     const theme = await readJson("theme.json");
     const source = await readJson("brand-source.json");
 
-    // Re-render only if the feature already has a companion app; a first render
+    // Re-render only if the project already has a companion app; a first render
     // belongs to the Build UI flow, not to a branding change.
     let rerendered = false;
     try {
-      await fs.access(path.join(WORKSPACE_PATH, "generated-apps", `${project}-${feature}`, "index.html"));
-      rerendered = (await runHelper("render-companion-app.mjs", [project, feature])).ok;
+      await fs.access(path.join(WORKSPACE_PATH, "generated-apps", project, "index.html"));
+      rerendered = (await runHelper("render-companion-app.mjs", [project])).ok;
     } catch { /* no app built yet */ }
 
     res.json({

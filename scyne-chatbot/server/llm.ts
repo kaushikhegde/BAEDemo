@@ -12,6 +12,9 @@ export const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 const WORKSPACE = WORKSPACE_PATH;
 
+/** Kept in step with PROJECT_OWN_DIRS in scripts/pipeline.mjs and server/index.ts. */
+const PROJECT_OWN_DIRS = new Set(["solutions", "documents", "design", "original-files", "outputs"]);
+
 /** Scan ./projects/<project>/<feature>/ structure on demand. */
 /** Which projects already carry a projects/<project>/description.md. */
 async function listProjectDefinitions(): Promise<Record<string, boolean>> {
@@ -40,6 +43,9 @@ async function listAvailable(): Promise<Record<string, { name: string; counts: R
       out[p.name] = [];
       for (const s of features) {
         if (!s.isDirectory()) continue;
+        // Project-own folders are not features. Without this the LLM offers
+        // "solutions" and "documents" as things the user can generate against.
+        if (PROJECT_OWN_DIRS.has(s.name.toLowerCase())) continue;
         const subPath = path.join(projectsDir, p.name, s.name);
         const subs = await fs.readdir(subPath, { withFileTypes: true });
         const counts: Record<string, number> = {};
