@@ -552,7 +552,8 @@ async function convertSources(ctx, opts) {
   let any = false;
   const proot = projectDir(WORKSPACE, ctx.project);
   // Project stages read every feature too, so convert the whole project tree.
-  if (isProjectStage(ctx.stageKey)) {
+  // ctx.level is authoritative for "baseline", which is not in STAGES.
+  if (ctx.level === LEVEL.PROJECT || isProjectStage(ctx.stageKey)) {
     any = (await convertUnder(proot, path.join(proot, "original-files"), opts)) || any;
     for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
       const fdir = featureDir(WORKSPACE, ctx.project, feature);
@@ -736,4 +737,12 @@ async function main() {
   await runStage(stageKey, ctx);
 }
 
-main().catch((e) => die(e.stack || String(e)));
+// An unexpected throw here is a BUG IN THIS SCRIPT, not something the caller
+// did wrong — and an agent that sees a raw stack trace will try to debug it,
+// burning a lot of tokens reading tooling that is not its job. Label it plainly
+// so the agent reports it and stops.
+main().catch((e) => die(
+  `INTERNAL ERROR in stage.mjs — this is a bug in the tooling, not in your inputs.\n` +
+  `  Do NOT try to fix this script. Report the text below verbatim and stop.\n\n` +
+  (e?.stack || String(e)),
+));

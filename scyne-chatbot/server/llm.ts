@@ -32,6 +32,29 @@ async function listProjectDefinitions(): Promise<Record<string, boolean>> {
   return out;
 }
 
+/**
+ * Which projects already carry design/style-guides/theme.json.
+ *
+ * Without this the bot has no idea branding was ever extracted, so it asks "got
+ * their website?" for a project branded during the wizard — and worse, it asks
+ * it in response to a completely unrelated request, because the branding
+ * question belongs to the create-project flow.
+ */
+async function listProjectBranding(): Promise<Record<string, boolean>> {
+  const projectsDir = path.join(WORKSPACE, "projects");
+  const out: Record<string, boolean> = {};
+  try {
+    for (const p of await fs.readdir(projectsDir, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue;
+      out[p.name] = await fs
+        .access(path.join(projectsDir, p.name, "design", "style-guides", "theme.json"))
+        .then(() => true)
+        .catch(() => false);
+    }
+  } catch {}
+  return out;
+}
+
 async function listAvailable(): Promise<Record<string, { name: string; counts: Record<string, number> }[]>> {
   const projectsDir = path.join(WORKSPACE, "projects");
   const out: Record<string, { name: string; counts: Record<string, number> }[]> = {};
@@ -81,11 +104,54 @@ function formatFeatures(tree: Record<string, { name: string; counts: Record<stri
 
 type UiContext = { active: boolean; project?: string | null; feature?: string | null } | null;
 
+/**
+ * A deliberately small prompt for the retry after an empty turn.
+ *
+ * Gemini 2.5 Flash intermittently returns a candidate with ZERO parts —
+ * finishReason STOP, totalTokenCount === promptTokenCount, nothing generated —
+ * against the full ~9.6k-token prompt. Measured on "add a feature called X to
+ * SAPN" it failed 6 of 6, while the SAME 18 tool declarations with a short
+ * system prompt returned the function call 4 of 4. The tools are not the
+ * problem; the prompt length is.
+ *
+ * So the fallback keeps the tools and the disk state and drops the prose. It is
+ * worse at nuance, which is why it is a fallback and not the default — but a
+ * blunt answer beats the silence the user got when they typed a feature name
+ * twice and nothing happened.
+ */
+function buildCompactPrompt(
+  featuresBlock: string,
+  target?: { project: string | null; feature: string | null } | null,
+): string {
+  return [
+    "You are Scyne's delivery assistant. Be brief and act on the request.",
+    "",
+    "Projects and features currently on disk:",
+    featuresBlock,
+    target?.project ? `\nActive target: ${target.project}${target.feature ? " / " + target.feature : ""}` : "",
+    "",
+    "Call the matching tool when the user asks for an action:",
+    "- add/create a feature -> create_feature (needs project + feature)",
+    "- create a project/client -> create_project",
+    "- set up / build the baseline -> bootstrap_project",
+    "- capability map -> trigger_capability_map | personas or journeys -> trigger_personas",
+    "- requirements or product summary -> trigger_requirement_generation",
+    "- data model -> trigger_data_model | architecture -> trigger_solution_architecture",
+    "- test cases -> trigger_test_cases | wireframes/mockups -> trigger_ui_mockups",
+    "- change something already generated -> revise_artefact",
+    "- just picking a project/feature -> set_target",
+    "",
+    "PROJECT-level tools (capability map, personas, bootstrap, ui build) take a project and NO feature.",
+    "If the request is a question rather than an action, answer it in one or two sentences.",
+  ].filter(Boolean).join("\n");
+}
+
 function buildSystemPrompt(
   featuresBlock: string,
   target?: { project: string | null; feature: string | null } | null,
   uiContext?: UiContext,
   definitions?: Record<string, boolean>,
+  branding?: Record<string, boolean>,
 ): string {
   const defEntries = Object.entries(definitions ?? {});
   const missingDefs = defEntries.filter(([, has]) => !has).map(([p]) => p);
@@ -104,6 +170,22 @@ Rules:
 3. Never block a workflow on a missing definition. Ask once, accept the answer, move on.
 4. The definition is per PROJECT, not per feature. Do not ask for it again for a second feature under the same project.
 `;
+  const brandEntries = Object.entries(branding ?? {});
+  const branded = brandEntries.filter(([, has]) => has).map(([p]) => p);
+  const unbranded = brandEntries.filter(([, has]) => !has).map(([p]) => p);
+  const brandBlock = brandEntries.length === 0 ? "" : `
+## Branding already on disk
+
+- Projects that ALREADY have a palette (\`design/style-guides/theme.json\`): ${branded.length ? branded.join(", ") : "(none)"}
+- Projects with NO palette yet: ${unbranded.length ? unbranded.join(", ") : "(none)"}
+
+**Never ask for a client's website for a project in the first list** — the palette was extracted when the project was created, and asking again reads as though nothing was saved. Only offer \`extract_brand\` when the user asks to change the branding, or for a project in the second list. Never raise branding in reply to a request about requirements, personas, a data model or any other stage; it is unrelated.
+
+## A feature you do not recognise
+
+If the user names a feature that is NOT listed under a project that IS listed, that is a MISSING FEATURE under a known project — not a new project. Say the feature does not exist yet and offer \`create_feature\` for it. Do NOT call \`create_project\`, and do NOT ask for a website or a client description: the project already exists and already has both.
+`;
+
   // The companion app is project-level, so a live preview often has no feature.
   const uiScope = uiContext?.feature ? `${uiContext.project}/${uiContext.feature}` : `${uiContext?.project ?? ""}`;
   const uiBlock = uiContext?.active
@@ -112,7 +194,7 @@ Rules:
   const targetBlock = target?.project && target?.feature
     ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
     : "";
-  return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.${defBlock}
+  return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.${defBlock}${brandBlock}
 
 Inputs live under a project + feature hierarchy:
 
@@ -591,12 +673,36 @@ function toGeminiHistory(history: AnthropicMsg[]) {
 }
 
 function normalize(response: any) {
-  const parts = response?.candidates?.[0]?.content?.parts ?? [];
+  const cand = response?.candidates?.[0];
+  const parts = cand?.content?.parts ?? [];
   const blocks: any[] = [];
   for (const p of parts) {
     if (typeof p.text === "string" && p.text.length) blocks.push({ type: "text", text: p.text });
     if (p.functionCall) blocks.push({ type: "tool_use", name: p.functionCall.name, input: p.functionCall.args || {} });
   }
+
+  // Gemini can return a candidate with NO usable parts — MAX_TOKENS consumed
+  // entirely by thinking, a SAFETY/RECITATION stop, or a malformed function
+  // call. The frontend renders text and dispatches tool_use; given neither it
+  // did nothing at all, so the user typed a feature name twice and got silence
+  // with no folder created and nothing to explain why. Never return an empty
+  // turn: say something, and log the reason so it is diagnosable.
+  if (blocks.length === 0) {
+    const reason = cand?.finishReason ?? response?.promptFeedback?.blockReason ?? "unknown";
+    console.warn(
+      `[llm] empty response — finishReason=${reason}` +
+      ` parts=${parts.length} candidates=${response?.candidates?.length ?? 0}` +
+      ` usage=${JSON.stringify(response?.usageMetadata ?? {})}` +
+      (cand?.safetyRatings ? ` safety=${JSON.stringify(cand.safetyRatings)}` : "")
+    );
+    const human = reason === "MAX_TOKENS"
+      ? "I ran out of room before I could answer — that usually means the conversation has grown long. Try saying it again in a few words."
+      : reason === "SAFETY" || reason === "RECITATION"
+        ? "My response was filtered before it reached you. Try rephrasing that."
+        : "I didn't manage to produce a reply to that — say it once more, ideally as a full sentence (e.g. \"add a feature called customer-data\").";
+    return { content: [{ type: "text", text: human }], degraded: true, finishReason: reason };
+  }
+
   return { content: blocks };
 }
 
@@ -607,24 +713,52 @@ export async function chat(
 ) {
   const tree = await listAvailable();
   const definitions = await listProjectDefinitions();
-  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext, definitions);
+  const branding = await listProjectBranding();
+  const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext, definitions, branding);
 
   const history = toGeminiHistory(messages);
   const lastUser = history.pop();
   const userText = lastUser?.parts?.find((p: any) => typeof p.text === "string")?.text ?? "";
 
-  const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    systemInstruction: systemPrompt,
-    tools: [triggerTool],
-  });
-
-  const chatSession = model.startChat({ history });
-
-  const response = await retryWithBackoff(async () => {
-    const r = await chatSession.sendMessage(userText);
+  const send = (system: string) => retryWithBackoff(async () => {
+    const m = genAI.getGenerativeModel({ model: MODEL_NAME, systemInstruction: system, tools: [triggerTool] });
+    // Hand startChat a FRESH COPY, and drop any Content with no parts.
+    //
+    // startChat() appends the model's reply to the array it was given. When the
+    // model returns an empty candidate, what gets appended is a Content with
+    // zero parts — and the next startChat on that same array is rejected by the
+    // SDK with "Each Content should have at least one part". That is why the
+    // retry after an empty turn always failed: it threw before it ever reached
+    // the model, so a user asking to add a feature got silence twice.
+    const safeHistory = history
+      .filter((h: any) => Array.isArray(h?.parts) && h.parts.length > 0)
+      .map((h: any) => ({ ...h, parts: [...h.parts] }));
+    const r = await m.startChat({ history: safeHistory }).sendMessage(userText);
     return r.response;
   });
 
-  return normalize(response);
+  // An empty turn — finishReason STOP, zero parts, and usage showing
+  // totalTokenCount === promptTokenCount, i.e. the model generated nothing at
+  // all — happens intermittently against a ~9.6k-token system prompt with this
+  // many tools. It is NOT a schema fault: the same declaration called in
+  // isolation returns the functionCall every time.
+  //
+  // It is transient, so retry the identical message rather than surfacing a
+  // dead turn. This is what made "add a feature" appear broken: the model
+  // silently produced nothing, the frontend had no text to render and no tool
+  // to dispatch, and the user retyped the name into a void.
+  //
+  // `retryWithBackoff` inside send() only covers transport errors; this covers
+  // a 200 OK that carries no content.
+  let out = normalize(await send(systemPrompt));
+
+  // Retrying the SAME prompt does not help — measured 0/6 on the failing input.
+  // Retrying with the compact prompt does, because prompt length is the cause.
+  if ((out as any).degraded) {
+    console.warn("[llm] empty turn — retrying with the compact prompt");
+    const compact = normalize(await send(buildCompactPrompt(formatFeatures(tree), target)));
+    if (!(compact as any).degraded) return compact;
+  }
+
+  return out;
 }

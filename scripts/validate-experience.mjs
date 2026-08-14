@@ -34,6 +34,21 @@ const PALETTE = new Set([
 const problems = [];
 const bad = (file, msg) => problems.push(`${file}: ${msg}`);
 
+// Advice, not a blocker.
+//
+// This file is the BUILD CONTRACT for the companion app, so it must fail on
+// anything that would break the build: ids that don't resolve, scores outside
+// the 1–5 the chart renders, characters that break the CSV loader or the Mermaid
+// journey parser. It must NOT fail on editorial quantity.
+//
+// It used to. "below 8 steps the map is a summary" made an agent with six
+// evidenced steps invent two more — "Confirm caller details…", "Check with team
+// leader…" — to get past the gate. A validator that makes a model fabricate
+// evidence is worse than no validator, in a skill whose whole discipline is that
+// every step cites a source. Counts are now reported and the build continues.
+const notes = [];
+const note = (file, msg) => notes.push(`${file}: ${msg}`);
+
 const isStr = (v) => typeof v === "string" && v.trim().length > 0;
 const isStrArray = (v) => Array.isArray(v) && v.every(isStr);
 
@@ -62,7 +77,7 @@ function validatePersonas(doc) {
   }
   const { personas } = doc;
   if (personas.length === 0) bad(F, "no personas — the skill must not produce an empty set");
-  if (personas.length > 7) bad(F, `${personas.length} personas — more than 7 means the set is segmenting on job titles (see Step 3)`);
+  if (personas.length > 7) note(F, `${personas.length} personas — more than 7 often means the set is segmenting on job titles (see Step 3)`);
 
   const seen = new Set();
   personas.forEach((p, i) => {
@@ -82,7 +97,7 @@ function validatePersonas(doc) {
     }
     for (const f of ["today", "tomorrow"]) {
       if (!isStrArray(p[f])) { bad(F, `${at}: "${f}" must be an array of non-empty strings`); continue; }
-      if (p[f].length < 3 || p[f].length > 5) bad(F, `${at}: "${f}" has ${p[f].length} items, expected 3–5`);
+      if (p[f].length < 3 || p[f].length > 5) note(F, `${at}: "${f}" has ${p[f].length} items — 3–5 reads best, but any count builds`);
       // The app's CSV loader joins these with "; " — a semicolon inside an item
       // silently splits it into two bullets on the way through.
       p[f].forEach((v, j) => { if (v.includes(";")) bad(F, `${at}: ${f}[${j}] contains a semicolon, which the CSV loader treats as an item separator`); });
@@ -124,7 +139,7 @@ function validateJourneys(doc, personaIds) {
     if (!Array.isArray(j.stages) || j.stages.length === 0) {
       return bad(F, `${at}: "stages" must be a non-empty array`);
     }
-    if (j.stages.length < 3) bad(F, `${at}: ${j.stages.length} stage(s) — a journey with fewer than 3 is a summary, not a map`);
+    if (j.stages.length < 3) note(F, `${at}: ${j.stages.length} stage(s) — fewer than 3 reads as a summary, but any count builds`);
 
     const stepIds = new Set();
     let stepCount = 0;
@@ -138,6 +153,13 @@ function validateJourneys(doc, personaIds) {
         const pat = `${sat}.steps[${pi}]${isStr(step?.id) ? ` (${step.id})` : ""}`;
         for (const f of ["id", "name", "actor", "doing", "thinking", "feeling"]) {
           if (!isStr(step?.[f])) bad(F, `${pat}: "${f}" must be a non-empty string`);
+        }
+        // `feeling` is the label plotted on the satisfaction chart, centred on a
+        // 186px column. The renderer truncates anything longer, so a sentence
+        // here is not a build failure — it just reads as an ellipsis with a
+        // tooltip instead of a word. One or two words is the intent.
+        if (isStr(step?.feeling) && step.feeling.length > 24) {
+          note(F, `${pat}: "feeling" is ${step.feeling.length} chars — one or two words plot best; longer is truncated on the chart`);
         }
         if (isStr(step?.id)) {
           if (stepIds.has(step.id)) bad(F, `${pat}: duplicate step id "${step.id}" within this journey`);
@@ -160,15 +182,15 @@ function validateJourneys(doc, personaIds) {
       });
     });
 
-    if (stepCount < 8) bad(F, `${at}: ${stepCount} steps — below 8 the map is a summary (see Appendix B)`);
+    if (stepCount < 8) note(F, `${at}: ${stepCount} steps — fewer than 8 reads as a summary. Do NOT invent steps to raise this; an evidenced 6 beats a padded 8.`);
 
     // Moments that matter must point at real steps, and be a subset — the whole
     // point is prioritisation, so "everything matters" is the same as nothing.
     const moments = j.momentsThatMatter;
     if (!Array.isArray(moments) || moments.length === 0) {
-      bad(F, `${at}: "momentsThatMatter" must list 3–5 steps — without them the map gives no way to prioritise`);
+      note(F, `${at}: no "momentsThatMatter" — 3–5 gives the map a way to prioritise, but any count builds`);
     } else {
-      if (moments.length > 5) bad(F, `${at}: ${moments.length} moments that matter — keep it to 3–5`);
+      if (moments.length > 5) note(F, `${at}: ${moments.length} moments that matter — 3–5 keeps the focus, but any count builds`);
       moments.forEach((m, mi) => {
         if (!isStr(m?.stepId)) return bad(F, `${at}.momentsThatMatter[${mi}]: "stepId" required`);
         if (!stepIds.has(m.stepId)) bad(F, `${at}.momentsThatMatter[${mi}]: stepId "${m.stepId}" does not resolve to a step in this journey`);
@@ -209,6 +231,13 @@ async function main() {
 
   const personaIds = validatePersonas(personasDoc);
   validateJourneys(journeysDoc, personaIds);
+
+  if (notes.length) {
+    console.warn(`\n[validate-experience] ${notes.length} note(s) — advisory, the build is NOT blocked:\n`);
+    for (const n of notes) console.warn(`  · ${n}`);
+    console.warn(`\n  These are editorial observations about length and count. Do NOT invent\n` +
+                 `  content to silence them — an evidenced 6 steps beats a padded 8.\n`);
+  }
 
   if (problems.length) {
     console.error(`\n[validate-experience] ${problems.length} problem(s) in ${project}:\n`);

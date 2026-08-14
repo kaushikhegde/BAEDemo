@@ -1860,8 +1860,24 @@ ${(() => {
       // two curves are close so the labels never collide with the target line
       if(s.step.feeling){
         var below = Math.abs(yT - yF) < 26 || yT < yF;
-        var t = add("text", { x:cx(i), y: below ? yT + 22 : yT - 14, class:"jd-feel" });
-        t.textContent = s.step.feeling;
+        // Stagger adjacent labels by a row. Two neighbours whose scores are
+        // equal would otherwise sit at exactly the same y and collide even
+        // after truncation.
+        var stagger = (i % 2) ? 13 : 0;
+        var t = add("text", { x:cx(i), y: below ? yT + 22 + stagger : yT - 14 - stagger, class:"jd-feel" });
+        // The feeling field is specified as one or two words, but a run that
+        // writes a full sentence must still render legibly rather than smearing
+        // across its neighbours. text-anchor is middle, so the budget is the
+        // column pitch; ~5.4px per char at 11px bold italic. The full text stays
+        // available as a tooltip, and the a11y label already carries the shape.
+        var maxChars = Math.max(8, Math.floor((JD_COL + JD_GAP) / 5.4));
+        var full = String(s.step.feeling);
+        t.textContent = full.length > maxChars ? full.slice(0, maxChars - 1).replace(/[\s,;:—-]+$/, "") + "…" : full;
+        if(t.textContent !== full){
+          var tip = document.createElementNS(ns, "title");
+          tip.textContent = full;
+          t.appendChild(tip);
+        }
       }
     });
     return svg;

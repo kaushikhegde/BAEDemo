@@ -1,4 +1,4 @@
-export type MessageKind = "user" | "assistant" | "agent" | "decision";
+export type MessageKind = "user" | "assistant" | "agent" | "decision" | "links";
 
 export interface UIMessage {
   id: string;
@@ -19,6 +19,12 @@ export interface UIMessage {
     note?: string;    // the reviewer's feedback, on changes_requested
     at: string;       // ISO timestamp
   };
+  /**
+   * Set on `kind: "links"` — Confluence/Jira URLs announced at the point in the
+   * conversation where they were published, rather than pinned under the whole
+   * transcript where they lose their connection to the run that produced them.
+   */
+  links?: { confluence: string[]; jira: string[] };
 }
 
 export interface IssueProgress {

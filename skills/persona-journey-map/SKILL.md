@@ -393,8 +393,15 @@ Before saving, verify:
 - [ ] Satisfaction scores are integers 1–5, and today/target differ where the
       solution actually changes something. A journey where every step improves by
       the same amount has not been thought about.
-- [ ] Moments that matter are identified and are a subset of the steps — three to
-      five, not every step.
+- [ ] Moments that matter are identified and are a subset of the steps —
+      typically three to five, not every step.
+- [ ] **No step, stage, persona or moment exists to hit a number.** A journey has
+      as many steps as the evidence supports — four, six, eleven, any. If
+      `validate-experience.mjs` reports a count as low, that is an *advisory
+      note*, not a failure: it does not block the build and you must NOT invent a
+      step to silence it. An evidenced six beats a padded eight, and a fabricated
+      step in an evidence-traced artefact is the one error this skill cannot
+      tolerate. Every step still cites its source.
 - [ ] Every "tomorrow" improvement traces to something the solution genuinely
       does. Aspirations that nothing in the requirements delivers belong in
       Assumptions, not in the persona.

@@ -8,7 +8,6 @@ import { ApprovalCard } from "./components/ApprovalCard";
 import { StagePill } from "./components/StagePill";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { LiveTranscript } from "./components/LiveTranscript";
-import { LinksPanel } from "./components/LinksPanel";
 import { RunsPanel } from "./components/RunsPanel";
 import { AttachmentButton } from "./components/AttachmentButton";
 import { RecordMeetingPanel } from "./components/RecordMeetingPanel";
@@ -51,6 +50,38 @@ const SUGGESTED_PROMPTS = [
 const MESSAGES_KEY = "scyne_chat_messages";
 const HISTORY_KEY = "scyne_chat_history";
 
+/**
+ * Drop "Published" cards whose links were all announced earlier in the same
+ * transcript.
+ *
+ * Repairs stores written before the ref was seeded from the restored messages:
+ * every refresh appended another copy of the same links, so a transcript
+ * refreshed five times carries five identical cards. Keeps the FIRST occurrence,
+ * which is the one that sits next to the run that published it.
+ */
+function dedupeLinkMessages(list: UIMessage[]): UIMessage[] {
+  const seen = new Set<string>();
+  const out: UIMessage[] = [];
+  for (const m of list) {
+    if (m.kind === "links" && m.links) {
+      const urls = [...(m.links.confluence ?? []), ...(m.links.jira ?? [])];
+      const fresh = urls.filter((u) => !seen.has(u));
+      if (fresh.length === 0) continue;          // wholly duplicate card — drop it
+      urls.forEach((u) => seen.add(u));
+      out.push(fresh.length === urls.length ? m : {
+        ...m,
+        links: {
+          confluence: (m.links.confluence ?? []).filter((u) => fresh.includes(u)),
+          jira: (m.links.jira ?? []).filter((u) => fresh.includes(u)),
+        },
+      });
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 function loadMessages(): UIMessage[] {
   if (typeof window === "undefined") return [buildGreeting(false)];
   const resuming = !!window.localStorage.getItem("scyne_parent_issue_id");
@@ -58,7 +89,7 @@ function loadMessages(): UIMessage[] {
     const raw = window.localStorage.getItem(MESSAGES_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed as UIMessage[];
+      if (Array.isArray(parsed) && parsed.length > 0) return dedupeLinkMessages(parsed as UIMessage[]);
     }
   } catch { /* corrupt store — fall back to a fresh greeting */ }
   return [buildGreeting(resuming)];
@@ -174,6 +205,22 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [chipsKey, setChipsKey] = useState(0);
   const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string; headline: string; dedupeKey: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Links already announced in the transcript, so a 3s poll does not repeat them.
+  //
+  // Seeded from the RESTORED messages, not left empty. A useRef starts fresh on
+  // every mount while `messages` is rehydrated from localStorage — so after a
+  // refresh the poll saw links that were already in the transcript as brand new
+  // and appended another "Published" card, once per refresh, accumulating
+  // forever. The ref initialiser runs on first render only, which is exactly
+  // when the restored transcript is available.
+  const seenLinkUrls = useRef<Set<string>>(
+    new Set(
+      messages.flatMap((m) =>
+        m.kind === "links" && m.links ? [...(m.links.confluence ?? []), ...(m.links.jira ?? [])] : []
+      )
+    )
+  );
+
 
   // Remember the last Build UI run this browser triggered, so the chat's
   // modify/approve/push path can find it again after parentIssueId moves on to
@@ -277,6 +324,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (s.target?.project) {
           setTargetProject((p) => p ?? s.target!.project);
           if (s.target.feature) setTargetFeature((f) => f ?? s.target!.feature);
+        }
+        // Announce published links WHERE they happened. They used to render in
+        // a panel pinned under the whole transcript, which detached them from
+        // the run that produced them and left them stranded at the bottom.
+        const conf = (s.links?.confluence ?? []).filter((u) => !seenLinkUrls.current.has(u));
+        const jira = (s.links?.jira ?? []).filter((u) => !seenLinkUrls.current.has(u));
+        if (conf.length || jira.length) {
+          [...conf, ...jira].forEach((u) => seenLinkUrls.current.add(u));
+          setMessages((m) => [...m, {
+            id: crypto.randomUUID(), role: "assistant", kind: "links",
+            text: "Published", links: { confluence: conf, jira },
+          }]);
         }
         // Best-effort: refresh the compact agent run summaries alongside status.
         getRuns(parentIssueId).then((r) => { if (!cancelled) setRuns(r); }).catch(() => {});
@@ -658,6 +717,23 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't reach the UI agent: ${e?.message ?? e}` }]);
           }
         }
+      } else if (toolUse) {
+        // A tool the LLM knows about but this chain does not handle. Without
+        // this branch the turn ends silently: no text was rendered (the model
+        // emitted a tool call instead of prose) and no handler ran, so the user
+        // sees their own message and nothing else. Say so rather than vanish.
+        console.warn("[chat] unhandled tool:", toolUse.name, toolUse.input);
+        setMessages((m) => [...m, {
+          id: crypto.randomUUID(), role: "assistant",
+          text: `I tried to run **${toolUse.name}**, but this build has no handler wired up for it. That's a bug on our side — tell me what you wanted in plain words and I'll do it another way.`,
+        }]);
+      } else if (!textOut) {
+        // Neither prose nor a tool call. The server now backstops this, so
+        // reaching here means an older server or a shape we don't recognise.
+        setMessages((m) => [...m, {
+          id: crypto.randomUUID(), role: "assistant",
+          text: `I didn't get a usable reply to that — say it once more, ideally as a full sentence.`,
+        }]);
       }
     } catch (e: any) {
       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Hit an error: ${e?.message ?? e}` }]);
@@ -730,6 +806,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setStatusError(null);
     setRuns([]);
     clearChatPersistence();
+    // Otherwise a fresh session would never re-announce links it already saw.
+    seenLinkUrls.current.clear();
     if (typeof window !== "undefined") window.localStorage.removeItem("scyne_ui_issue_id");
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
@@ -885,9 +963,6 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             {pendingApprovals.map((a) => (
               <ApprovalCard key={a.id} approval={a} project={targetProject} feature={targetFeature} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
             ))}
-            {status && (status.links.confluence.length > 0 || status.links.jira.length > 0) && (
-              <LinksPanel links={status.links} />
-            )}
             {pendingUiPrompt && (
               <Card elevation={2} className="p-4 flex flex-col gap-3 bg-white/80">
                 <div>

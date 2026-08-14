@@ -1,5 +1,6 @@
 import { Check, PencilLine } from "lucide-react";
 import { MiniMarkdown } from "./MiniMarkdown";
+import { LinksPanel } from "./LinksPanel";
 import type { UIMessage } from "../types";
 
 function DecisionRecord({ m }: { m: UIMessage }) {
@@ -54,6 +55,16 @@ function DecisionRecord({ m }: { m: UIMessage }) {
 
 export function MessageBubble({ m }: { m: UIMessage }) {
   if (m.kind === "decision" && m.decision) return <DecisionRecord m={m} />;
+  if (m.kind === "links" && m.links) {
+    return (
+      <div className="flex justify-start gap-3 animate-slide-up">
+        <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-transparent" />
+        <div className="max-w-[88%] w-full">
+          <LinksPanel links={m.links} />
+        </div>
+      </div>
+    );
+  }
 
   const mine = m.role === "user";
   if (mine) {
