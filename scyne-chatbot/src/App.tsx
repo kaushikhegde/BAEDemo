@@ -205,6 +205,27 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [chipsKey, setChipsKey] = useState(0);
   const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string; headline: string; dedupeKey: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The composer is a FIXED dock, so the transcript has to reserve room for it.
+  // That reserve used to be hard-coded (h-[calc(100vh-16rem)] / pb-44) against
+  // an assumed ~10rem composer — but it grows: the suggestion chips wrap to a
+  // second row, the target picker gains a counts badge, the textarea expands.
+  // Once it passed the assumption the dock started covering the last messages.
+  // Measure it instead, and reserve only the EXTRA beyond the original baseline
+  // so the layout is unchanged at the old size.
+  const composerRef = useRef<HTMLDivElement>(null);
+  const COMPOSER_BASELINE = 160; // px the old 16rem / pb-44 already allowed for
+  const [composerH, setComposerH] = useState(COMPOSER_BASELINE);
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height;
+      if (h) setComposerH(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const composerExtra = Math.max(0, Math.round(composerH - COMPOSER_BASELINE));
   // Links already announced in the transcript, so a 3s poll does not repeat them.
   //
   // Seeded from the RESTORED messages, not left empty. A useRef starts fresh on
@@ -292,7 +313,10 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, status]);
+    // `composerExtra` is a dependency because a taller composer shrinks the
+    // transcript: without re-pinning, growing the dock scrolls the newest
+    // message back out of view — the same symptom this fix is removing.
+  }, [messages, status, composerExtra]);
 
   // Persist the chat transcript + LLM history so a refresh resumes the
   // conversation. The right-hand workflow panel rehydrates separately from
@@ -929,12 +953,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         </main>
       ) : (
       <>
-      <main className="px-6 lg:px-8 pt-6 pb-44 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <main className="px-6 lg:px-8 pt-6 pb-44 grid grid-cols-1 lg:grid-cols-12 gap-6" style={{ paddingBottom: `calc(11rem + ${composerExtra}px)` }}>
         {/* Left: chat */}
         <section className="lg:col-span-4 flex flex-col gap-4">
           <div
             ref={scrollRef}
-            className="h-[calc(100vh-16rem)] overflow-y-auto scroll-smooth pr-2 space-y-4"
+            className="overflow-y-auto scroll-smooth pr-2 space-y-4"
+            style={{ height: `calc(100vh - 16rem - ${composerExtra}px)` }}
           >
             {showSuggestions && (
               <div className="flex items-start gap-3 mb-2">
@@ -1167,6 +1192,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       <div className="fixed inset-x-0 bottom-4 z-20 pointer-events-none">
         <div className="px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card
+            ref={composerRef}
             glass
             elevation={3}
             className="lg:col-span-4 pointer-events-auto rounded-2xl p-3 flex flex-col gap-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background transition-shadow"
