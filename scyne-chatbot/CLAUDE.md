@@ -72,40 +72,39 @@ scyne-chatbot/
 
 ## Backend endpoints
 
-All defined in `server/index.ts`. The frontend calls them through `src/api.ts`.
+All defined in `server/index.ts`; the frontend calls them through `src/api.ts`.
+**The authoritative table is in `../CLAUDE.md`** — it is one list and duplicating
+it here is how the two drift. What matters on this side:
 
-| Method | Path                                | Purpose                                                                   |
-| ------ | ----------------------------------- | ------------------------------------------------------------------------- |
-| POST   | `/api/chat`                         | Proxies the conversation to Gemini. Returns Anthropic-shaped blocks (`{content:[{type:"text"|"tool_use",...}]}`) so the frontend doesn't care which model is behind. |
-| POST   | `/api/trigger`                      | Creates a `Generate requirements — …` issue assigned to the Delivery Lead with `status:"todo"`. Body merges with `.env` defaults. **Pre-flight:** returns `409 {error:"missing_inputs", emptyFolders}` if SOP/Transcripts/UI are empty. |
-| POST   | `/api/data-model/trigger`           | Creates a `Generate data model — …` issue. **Pre-flight:** `409 {error:"no_product_summary"}` if `outputs/product-summary.md` is missing. |
-| POST   | `/api/solution-design/trigger`      | Creates a `Generate solution design — …` issue. **Pre-flight:** `409 {error:"no_data_model"}` if `solutions/DataModel/outputs/` holds neither `salesforce-data-model.md` nor `datamodel-impact.md`. Optional side stage — not part of the recommended order. |
-| POST   | `/api/capability-map/trigger`       | Creates a `Generate capability map — …` issue. **No pipeline prerequisite** — reads the same SOP/Transcripts/Notes as the BA. **Pre-flight:** `409 {error:"no_documents"}` only when the feature has no `.md` anywhere outside `outputs/`, `solutions/`, `design/`. Emits no Confluence key, so `/api/approve` skips provisioning. |
-| POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue (Solution Architect → SAD). **Pre-flight:** `409 {error:"no_product_summary"}` only. Deliberately NOT gated on the data model. |
-| POST   | `/api/test-cases/trigger`           | Creates a `Generate test cases — …` issue (QA Architect → test pack). **Pre-flight:** `409 {error:"no_product_summary"}` only. |
-| POST   | `/api/personas/trigger`             | Creates a `Generate personas — …` issue (Service Designer → persona set + journey maps). **No pipeline prerequisite** — reads the same discovery documents as the BA. **Pre-flight:** `409 {error:"no_documents"}` only. Unlike the capability map it DOES publish, so it carries the Confluence space key. |
-| POST   | `/api/ui-mockups/trigger`           | Creates a `Generate UI mockups — …` issue (UX Designer → wireframes). **No pipeline prerequisite** — the skill needs the product summary *or* the discovery documents, so the only pre-flight is `409 {error:"no_documents"}`. Emits no Confluence key, so `/api/approve` skips provisioning. **Not the same as `/api/ui-agent/trigger`**, which builds the companion app page. |
-| POST   | `/api/brand/extract`                | Fetches a URL server-side via `scripts/extract-brand.mjs`, writes `design/style-guides/theme.json` + `brand-source.json` for the feature, and re-renders the companion app if one exists. Synchronous — no Paperclip issue, no agent. Body `{project, feature, url}`; http(s) only. Returns the theme (minus the logo data URI) so the chat can report the palette back for correction. |
-| GET    | `/api/capability-map/:project/:feature` | Serves the feature's SINGLE page (`generated-apps/<project>-<feature>/index.html`) as `text/html`, `no-store`. `404 {error:"not_generated"}` before it has been rendered. Kept as an alias so older links from the approval card still resolve. |
-| GET    | `/api/status/:issueId`              | The polling endpoint. Returns `{tree, stage, flatIssues, activity, approvals, links, workProducts}`. Walks the parent + all descendants. `stage.label` adapts to the flow's worker. |
-| POST   | `/api/approve/:approvalId`          | Resolves an approval gate; explicitly wakes the gate's own issue assignee (BA / Data Modeler / Architecture Lead). Atlassian auto-provisioning runs only for the requirements flow. |
-| POST   | `/api/reject/:approvalId`           | Rejects an approval gate.                                                  |
-| POST   | `/api/request-changes/:approvalId`  | Reviewer feedback loop: rejects the gate with the feedback, comments it on the issue, flips the issue to `todo`, and wakes its assignee to regenerate — works for any worker, not just the BA. Body `{issueId, feedback}`. |
-| GET    | `/api/history`                      | All completed pipeline runs (requirements, data model, solution design) across sessions, each with extracted Confluence + Jira links. Used by `HistoryView`. |
-| GET    | `/api/runs/:issueId`                | Compact agent run summaries (agent · status · duration) for the parent + descendant issues. Used by `RunsPanel` in the Activity panel. No tool counts (claude_local tool calls live in the run log, not run events). |
-| GET    | `/api/features`                     | Scans `projects/` on disk and returns `{<project>: [{name, counts}]}`. Used by `TargetPicker`. |
-| GET    | `/api/project-description/:project` | Reads the project definition (`projects/<project>/description.md`). Returns `{project, exists, content}`. |
-| POST   | `/api/project-description`          | Writes it. `400 bad_project` for an unsafe name, `400 too_short` under 40 characters. Adds an `# <project> — Project Definition` heading unless the body already starts with one. |
-| GET    | `/api/artifacts`                    | Reads the BA's `outputs/{product-summary.md,stories.json,stories.md,gaps.md}` plus `solutions/DataModel/outputs/{salesforce-data-model,datamodel-impact}.md`, `solutions/Design/outputs/solution-design.md` and `solutions/Capabilities/outputs/capability-process.md`. Used by `ArtifactsPreview` inside the approval card. |
-| POST   | `/api/upload`                       | Multer-handled upload. Routes the file into the correct `projects/<p>/<f>/requirements/<sub>/` folder via `fileRouter`. Supports passing audio to `geminiFiles` for transcription. |
-| POST   | `/api/ui-agent/trigger`             | Creates a `Build UI — <project>/<feature>` issue assigned to the Delivery Lead. Delivery Lead detects the title prefix and dispatches the Developer directly, then the UX Auditor once the build completes. |
-| GET    | `/api/companion-app/:project/:feature` | Serves the rendered `generated-apps/<project>-<feature>/index.html` as `text/html` with `Cache-Control: no-store`. `404 {error:"not_generated"}` before the Developer has rendered it. This is what the preview iframe points at. **The bare form 302s to the trailing-slash form** — the page links into the sibling `mockups/` directory relatively (so the pack also works from disk), and a relative link on a URL without a trailing slash resolves one segment too high. |
-| GET    | `/api/companion-app/:project/:feature/index.html` | The same page. Exists because the mockup pages link back with `../index.html`. |
-| GET    | `/api/companion-app/:project/:feature/mockups/:file` | Serves one rendered mockup page from `generated-apps/<project>-<feature>/mockups/`. `.html` only (`400 bad_file` otherwise); `404 not_generated` before `render-mockups.mjs` has run. |
-| GET    | `/api/preview/:project/:feature`    | Resolves the registry entry for the generated companion app. `devUrl` now points at `/api/companion-app/…` rather than a dev server, so `PreviewPane` and `scripts/audit-a11y.mjs` are unchanged. |
-| POST   | `/api/preview/:project/:feature/:action` | `start` re-renders the companion app (`render-companion-app.mjs`); `stop` is a reported no-op, since a static page has no server. The React dev-server path lives in `scripts/legacy-react-scaffold/`. |
-| POST   | `/api/ui-agent/comment`             | Adds a follow-up comment on the UI-build issue (e.g. iteration prompts).  |
-| WS     | `ws://127.0.0.1:4000/recording`     | Browser ↔ backend audio stream. Client pushes PCM frames; backend pipes them into Gemini Live and pushes transcript chunks back. Used by `RecordMeetingPanel`. |
+- **Two levels.** `/api/capability-map/trigger`, `/api/personas/trigger`,
+  `/api/project/bootstrap` and `/api/ui-agent/trigger` take a **project** and no
+  feature. Everything else in the pipeline takes both. `stageTrigger({level:
+  "project", …})` is what makes the difference: it skips the feature, gates on the
+  project's documents (its own plus every feature's), and titles the issue
+  `<prefix> — <project>`.
+- **`/api/revise`** is the other half of the chat's job. It resolves the artefact
+  through `pipeline.stageFor()`, refuses `409 not_generated` for a stage that has
+  not run, and passes the reviewer's `instruction` through **verbatim** into the
+  issue description.
+- **`/api/suggestions`** and **`/api/staleness`** both compute from
+  `scripts/pipeline.mjs`, imported directly. That is deliberate: the chips must
+  never offer a stage the CLI would refuse, and the only way to guarantee that is
+  to read the same graph.
+- **`/api/upload/project`** converts to markdown *on arrival* rather than at
+  staging time, because `/api/project/bootstrap` gates on the project having at
+  least one `.md` — a client who uploaded only PDFs would otherwise be told they
+  have no documents.
+- **`/api/features`** excludes the project's own folders (`solutions`,
+  `documents`, `design`, `original-files`, `outputs`). Without that filter they
+  appear in the target picker as selectable features the moment a project
+  generates anything. `server/llm.ts` applies the same filter for the same reason;
+  `PROJECT_OWN_DIRS` is declared in three places and they must stay in step.
+- **Companion-app routes are project-keyed**, with the older `:project/:feature`
+  forms kept as aliases so saved links and the current frontend resolve. The
+  canonical URL carries a **trailing slash** — the page links into the sibling
+  `mockups/` directory relatively so the pack works from disk too, and a relative
+  link on a URL without a trailing slash resolves one segment too high, silently,
+  in an iframe.
 
 The Paperclip client (`server/paperclip.ts`) wraps just the calls the chatbot needs. Notable methods:
 
@@ -158,24 +157,26 @@ The prompt instructs a discovery flow:
 
 **Tools exposed to the LLM** (all defined in `server/llm.ts`):
 
-| Tool                            | When the bot calls it                                                                           |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `set_target`                    | When the user picks a project + feature but isn't ready to fire yet. Pins the scope so the right-pane TargetPicker reflects it. No Paperclip side effect. |
-| `trigger_requirement_generation`| When the user is ready to generate Product Summary + Jira stories. Creates a `Generate requirements — …` issue assigned to the Delivery Lead. |
-| `trigger_data_model`            | When the user asks for the data model / object impact / ER diagram. Creates a `Generate data model — …` issue. Backend 409s `no_product_summary` if requirements aren't done — the bot then offers to run them first. |
-| `trigger_solution_design`       | When the user asks for the solution design / SDD / architecture. Creates a `Generate solution design — …` issue. Backend 409s `no_data_model` if the data model isn't done — the bot then offers to run it first. |
-| `trigger_capability_map`        | When the user asks for a capability map, capability model, business capabilities, process model, L1/L2/L3 processes or operating model. Creates a `Generate capability map — …` issue. **No prerequisite** — never offer to run requirements first for this one; the only 409 is `no_documents`. |
-| `trigger_solution_architecture` | When the user asks for a solution architecture, SAD, HLD/LLD, target architecture, component design or integration architecture. Creates a `Generate solution architecture — …` issue. Only 409 is `no_product_summary`. **Not the same as `trigger_solution_design`** — the prompt tells the bot to ask which one when the request is ambiguous. |
-| `trigger_test_cases`            | When the user asks for test cases, a test plan/pack, QA or UAT scripts, acceptance tests, BDD scenarios or a traceability matrix. Creates a `Generate test cases — …` issue. Only 409 is `no_product_summary`. |
-| `trigger_personas`              | When the user asks who the users are, to identify personas, to map a customer/user journey, for a journey or experience map, a service blueprint, the as-is vs to-be experience, or moments that matter. Creates a `Generate personas — …` issue. **No prerequisite**; only 409 is `no_documents`. Its `personas.json` / `journey-map.json` are a build contract for the companion app. |
-| `trigger_ui_mockups`            | When the user asks to generate UI mockups, design the screens, produce wireframes, mock up the pages or build a prototype. Creates a `Generate UI mockups — …` issue → UX Designer. **No pipeline prerequisite**; only 409 is `no_documents`. **Not `trigger_ui_build`** — mockups are wireframes of the client's future screens; the UI build renders the companion app page. The prompt tells the bot to ask which one when the request is ambiguous. |
-| `save_project_definition`       | When the user supplies or dictates a description, summary, background or "about the client" text for a PROJECT. Writes `projects/<project>/description.md`, which every skill reads before any discovery document. The system prompt lists which projects have one, so the bot asks once for a project that does not — and never blocks a run on it. |
-| `trigger_ui_build`              | When the user (after requirements are done) asks the bot to build the UI. Creates a `Build UI — …` issue assigned to the Delivery Lead, which dispatches the Developer then the UX Auditor directly. |
-| `comment_on_ui_build`           | Only when a UI preview is live (the chat sends `uiContext.active`): the LLM classifies each message and calls this with `kind=modify\|approve\|push` for change/approve/push requests, while answering plain questions in text. |
-
-The pipeline is gated **requirements → data model → solution design**; the system prompt teaches the bot to offer the missing prerequisite instead of firing a stage that would just block. The **capability map** sits outside that chain — it has no prerequisite and publishes nothing, so the bot fires it whenever asked.
-
-The tool schemas are in the same file. The frontend reads `args.project` + `args.feature` directly and POSTs them to `/api/trigger`. Backend merges with `.env` defaults.
+| Tool | Level | When the bot calls it |
+| --- | --- | --- |
+| `create_project` | project | "Create a new project / client". Writes the tree, the definition, and the branding if a website was given. |
+| `bootstrap_project` | project | Once the documents are uploaded. ONE call that runs the capability map then the personas — the bot must not also call the two triggers. |
+| `create_feature` | project | "Add a feature". Scaffolds it; the personas and capability map are inherited, not re-run. |
+| `trigger_capability_map` | project | Capability map / process model / operating model. No feature parameter. |
+| `trigger_personas` | project | Personas / journeys / service blueprint. No feature parameter. `409 no_capability_map`. |
+| `trigger_requirement_generation` | feature | Product Summary + Jira stories. |
+| `trigger_ui_mockups` | feature | Wireframes. **Not `trigger_ui_build`** — the prompt tells the bot to ask which when ambiguous. |
+| `trigger_data_model` | feature | Data model / ERD / objects. `409 no_product_summary`. |
+| `trigger_solution_architecture` | feature | SAD / HLD / target architecture. **Not `trigger_solution_design`.** |
+| `trigger_test_cases` | feature | Test pack / UAT / traceability matrix. |
+| `trigger_solution_design` | feature | The optional SDD. `409 no_data_model`. Offered only when asked for by name. |
+| `revise_artefact` | either | **Any change to something already generated.** The instruction goes through verbatim. |
+| `trigger_ui_build` | project | The companion app page. |
+| `set_target` | — | Keeps the target picker in sync when the user names a project/feature. |
+| `save_project_definition` | project | When the user supplies "about the client" text for an existing project. |
+| `extract_brand` | project | A pasted URL → the project's `theme.json`, then a re-render. |
+| `control_dev_server` | project | `start` = re-render the companion app; `stop` = reported no-op. |
+| `comment_on_ui_build` | — | Only while a UI preview is live: modify / approve / push. |
 
 ### Adding a new tool
 
