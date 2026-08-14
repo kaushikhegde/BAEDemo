@@ -6,9 +6,9 @@
 //   node scripts/render-mockups.mjs <project> <feature>
 //
 // Reads   projects/<project>/<feature>/solutions/UI/outputs/mockups.json
-//         projects/<project>/<feature>/design/style-guides/theme.json  (optional)
-// Writes  generated-apps/<project>-<feature>/mockups/index.html
-//         generated-apps/<project>-<feature>/mockups/<screen-id>.html
+//         projects/<project>/design/style-guides/theme.json  (optional, project-level)
+// Writes  generated-apps/<project>/mockups/<feature>/index.html
+//         generated-apps/<project>/mockups/<feature>/<screen-id>.html
 //
 // Exits non-zero naming the offending screen and field when the data is
 // unusable — the agent fixes the JSON and re-runs rather than hand-writing HTML.
@@ -58,8 +58,8 @@ function textColour(c, surface) {
   return target;
 }
 
-async function loadTheme(featureRoot) {
-  const file = path.join(featureRoot, "design", "style-guides", "theme.json");
+async function loadTheme(projectRoot) {
+  const file = path.join(projectRoot, "design", "style-guides", "theme.json");
   let t = { ...FALLBACK };
   try { t = { ...FALLBACK, ...JSON.parse(await fs.readFile(file, "utf8")) }; } catch { /* defaults */ }
   const brand = HEX.test(t.brand || "") ? t.brand : FALLBACK.brand;
@@ -331,7 +331,7 @@ footer{padding:1.5rem var(--pad);color:var(--muted);font-size:.78rem;border-top:
 // first. EVERY page carries a Companion app link — a reviewer who opens a
 // single screen from an email must be able to get back to the pack. The hrefs
 // are relative so they resolve both from disk (file://) and when the chatbot
-// serves the tree under /api/companion-app/<project>/<feature>/.
+// serves the tree under /api/companion-app/<project>/.
 function shell(t, title, eyebrow, links, body) {
   const logo = t.logoSrc ? `<img class="logo-img" src="${t.logoSrc}" alt=""/>` : `<span class="logo-text">${esc(t.logoText)}</span>`;
   const nav = links
@@ -402,7 +402,7 @@ ${notes}
 </script>`;
   return shell(t, s.name, `${doc.project} · ${doc.feature} · mockup`, [
     { href: "index.html", label: "All screens" },
-    { href: "../index.html", label: "Companion app" },
+    { href: "../../index.html", label: "Companion app" },
   ], body);
 }
 
@@ -423,7 +423,7 @@ function indexPage(t, doc, screens) {
 <p class="lede">${screens.length} screen${screens.length === 1 ? "" : "s"} derived from this feature's requirements, personas, capabilities, data model and test cases. These are wireframes for review — layout and content, not final visual design.</p>
 <div class="grid">${cards}</div>`;
   return shell(t, `${doc.feature} — UI Mockups`, `${doc.project} · ${doc.feature}`, [
-    { href: "../index.html", label: "Companion app" },
+    { href: "../../index.html", label: "Companion app" },
   ], body);
 }
 
@@ -446,8 +446,8 @@ async function main() {
   doc.project = str(doc.project) || project;
   doc.feature = str(doc.feature) || feature;
 
-  const theme = await loadTheme(featureRoot);
-  const outDir = path.join(WORKSPACE, "generated-apps", `${project}-${feature}`, "mockups");
+  const theme = await loadTheme(path.join(WORKSPACE, "projects", project));
+  const outDir = path.join(WORKSPACE, "generated-apps", project, "mockups", slug(feature));
   await fs.mkdir(outDir, { recursive: true });
 
   for (const s of screens) {
@@ -466,7 +466,7 @@ async function main() {
     storiesCovered: stories.length,
     theme: theme.logoSrc ? { brand: theme.brand, logo: "embedded" } : { brand: theme.brand, logo: "text" },
   }, null, 2));
-  console.log(`\n[render-mockups] now re-render the companion app so its UI tab picks these up:\n  node scripts/render-companion-app.mjs ${project} ${feature}\n`);
+  console.log(`\n[render-mockups] now re-render the companion app so its UI tab picks these up:\n  node scripts/render-companion-app.mjs ${project}\n`);
 }
 
 main().catch((e) => die(e?.stack || e?.message || String(e)));

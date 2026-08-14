@@ -36,6 +36,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+// One definition of "what counts as a feature", shared with the CLI and the
+// server — otherwise `solutions/` and `documents/` show up as features here.
+import { listFeatures as listFeatureDirs } from "./pipeline.mjs";
 
 const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
@@ -107,7 +110,7 @@ function inline(s) {
   return t;
 }
 
-function mdToHtml(md, diagrams, diagramsSkipped) {
+function mdToHtml(md, diagrams, diagramsSkipped, idScope = "") {
   const lines = String(md).replace(/\r\n/g, "\n").split("\n");
   const out = [];
   let i = 0;
@@ -171,7 +174,7 @@ function mdToHtml(md, diagrams, diagramsSkipped) {
     if (h) {
       closeList();
       const lvl = h[1].length;
-      out.push(`<h${lvl} id="${slug(h[2]).slice(0, 60)}">${inline(h[2])}</h${lvl}>`);
+      out.push(`<h${lvl} id="${idScope}${slug(h[2]).slice(0, 60)}">${inline(h[2])}</h${lvl}>`);
       i++; continue;
     }
 
@@ -262,6 +265,38 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+/**
+ * Namespace an inlined SVG's internal ids.
+ *
+ * mermaid-cli emits fixed ids for every diagram it renders — `my-svg` on the
+ * root, plus `my-svg-drop-shadow`, arrowhead markers, gradients and clip paths
+ * in `<defs>`. Inlining several diagrams into ONE page therefore produces one
+ * duplicate id per diagram per def, which is a WCAG 4.1.1 failure and, worse,
+ * makes every `url(#…)` reference resolve to the FIRST diagram's def — so later
+ * diagrams silently borrow the first one's markers.
+ *
+ * It went unnoticed while a page carried a handful of diagrams. A project page
+ * carries every feature's, so it scales with the client.
+ */
+function uniquifySvgIds(svg, n) {
+  const ids = new Set();
+  for (const m of svg.matchAll(/\sid="([^"]+)"/g)) ids.add(m[1]);
+  if (!ids.size) return svg;
+  let out = svg;
+  for (const id of ids) {
+    const scoped = `d${n}-${id}`;
+    const q = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out
+      .replace(new RegExp(`(\\sid=")${q}(")`, "g"), `$1${scoped}$2`)
+      // url(#id), url("#id"), url('#id')
+      .replace(new RegExp(`url\\((['"]?)#${q}\\1\\)`, "g"), `url($1#${scoped}$1)`)
+      // href="#id" / xlink:href="#id" / aria-labelledby / clip-path attributes
+      .replace(new RegExp(`((?:xlink:)?href=")#${q}(")`, "g"), `$1#${scoped}$2`)
+      .replace(new RegExp(`(aria-labelledby=")${q}(")`, "g"), `$1${scoped}$2`);
+  }
+  return out;
+}
+
 // Pre-render every mermaid block to INLINE SVG. Inline (not <img src>) so the
 // page stays one file and the diagram inherits the page's fonts and colours.
 async function renderDiagrams(sources, { skip }) {
@@ -286,7 +321,7 @@ async function renderDiagrams(sources, { skip }) {
     svg = svg.replace(/<\?xml[^>]*\?>/g, "").replace(/<!DOCTYPE[^>]*>/gi, "");
     svg = svg.replace(/<svg /, `<svg role="img" aria-label="${esc(diagramLabel(src))}" class="mermaid-svg" preserveAspectRatio="xMidYMid meet" `);
     svg = svg.replace(/ width="[^"]*"/, "").replace(/ height="[^"]*"/, "");
-    out.set(key, svg);
+    out.set(key, uniquifySvgIds(svg, n));
   }
   await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
   process.stdout.write(" ".repeat(40) + "\r");
@@ -514,14 +549,39 @@ async function readCollection(dir, kind) {
   return out;
 }
 
-async function loadArtefacts(featureRoot) {
+/**
+ * PROJECT-level artefacts — the ones that describe the client organisation
+ * rather than one slice of work. Generated once, read by every feature.
+ */
+async function loadProjectArtefacts(projectRoot) {
+  const R = (...p) => path.join(projectRoot, ...p);
+  const [capabilityMap, processModel, personas, journeyMap, description] = await Promise.all([
+    readJson(R("solutions", "Capabilities", "outputs", "capability-map.json")),
+    readJson(R("solutions", "Capabilities", "outputs", "process-model.json")),
+    readJson(R("solutions", "Experience", "outputs", "personas.json")),
+    readJson(R("solutions", "Experience", "outputs", "journey-map.json")),
+    readText(R("description.md")),
+  ]);
+  return {
+    capabilities: Array.isArray(capabilityMap?.capabilities) ? capabilityMap.capabilities : [],
+    activities: Array.isArray(processModel?.activities) ? processModel.activities : [],
+    personas: Array.isArray(personas?.personas) ? personas.personas : [],
+    journeys: Array.isArray(journeyMap?.journeys) ? journeyMap.journeys : [],
+    description,
+  };
+}
+
+/**
+ * FEATURE-level artefacts — one slice of work. Loaded once per feature and
+ * surfaced behind a feature card on each feature tab.
+ */
+async function loadFeatureArtefacts(featureRoot) {
   const R = (...p) => path.join(featureRoot, ...p);
   const [
-    productSummary, storiesJson, storiesMd, gaps,
-    dataModelImpact, salesforceDataModel, solutionDesign, solutionArchitecture, testCases,
-    capabilityMap, processModel, personas, journeyMap,
+    storiesJson, storiesMd, gaps,
+    dataModelImpact, salesforceDataModel, solutionDesign, solutionArchitecture,
+    mockups,
   ] = await Promise.all([
-    readText(R("outputs", "product-summary.md")),
     readJson(R("outputs", "stories.json")),
     readText(R("outputs", "stories.md")),
     readText(R("outputs", "gaps.md")),
@@ -529,11 +589,7 @@ async function loadArtefacts(featureRoot) {
     readText(R("solutions", "DataModel", "outputs", "salesforce-data-model.md")),
     readText(R("solutions", "Design", "outputs", "solution-design.md")),
     readText(R("solutions", "Architecture", "outputs", "solution-architecture.md")),
-    readText(R("solutions", "QA", "outputs", "test-cases.md")),
-    readJson(R("solutions", "Capabilities", "outputs", "capability-map.json")),
-    readJson(R("solutions", "Capabilities", "outputs", "process-model.json")),
-    readJson(R("solutions", "Experience", "outputs", "personas.json")),
-    readJson(R("solutions", "Experience", "outputs", "journey-map.json")),
+    readJson(R("solutions", "UI", "outputs", "mockups.json")),
   ]);
 
   const stories = Array.isArray(storiesJson)
@@ -544,15 +600,16 @@ async function loadArtefacts(featureRoot) {
       }))
     : [];
 
+  const { summaries, packs } = await loadCollections(featureRoot);
+
   return {
-    productSummary, stories, storiesMd, gaps,
+    stories, storiesMd, gaps,
     dataModel: dataModelImpact || salesforceDataModel,
     dataModelKind: dataModelImpact ? "Data Model Impact" : salesforceDataModel ? "Salesforce Data Model" : null,
-    solutionDesign, solutionArchitecture, testCases,
-    capabilities: Array.isArray(capabilityMap?.capabilities) ? capabilityMap.capabilities : [],
-    activities: Array.isArray(processModel?.activities) ? processModel.activities : [],
-    personas: Array.isArray(personas?.personas) ? personas.personas : [],
-    journeys: Array.isArray(journeyMap?.journeys) ? journeyMap.journeys : [],
+    solutionDesign, solutionArchitecture,
+    screens: Array.isArray(mockups?.screens) ? mockups.screens : [],
+    generatedFrom: Array.isArray(mockups?.generatedFrom) ? mockups.generatedFrom : null,
+    summaries, packs,
   };
 }
 
@@ -601,9 +658,9 @@ async function loadCollections(featureRoot) {
  *   design/journeys/<id>-journey.png -> the full journey diagram
  * Anything absent simply falls back to what the page draws itself.
  */
-async function loadImages(featureRoot, personas) {
-  const personaDir = path.join(featureRoot, "design", "personas");
-  const journeyDir = path.join(featureRoot, "design", "journeys");
+async function loadImages(projectRoot, personas) {
+  const personaDir = path.join(projectRoot, "design", "personas");
+  const journeyDir = path.join(projectRoot, "design", "journeys");
   const out = {};
   let found = 0;
   for (const p of personas) {
@@ -620,42 +677,124 @@ async function loadImages(featureRoot, personas) {
 
 // ------------------------------------------------------------------ page
 
-function page({ project, feature, generatedOn, a, docHtml, theme }) {
-  const uiScreens = Array.isArray(a.mockups?.screens) ? a.mockups.screens : [];
-  const title = `${feature} — Companion App`;
+/**
+ * The feature-level tabs, in pipeline order. Each opens on a grid of feature
+ * cards and drills into one feature's document — which is why they are declared
+ * as data: the markup, the nav entry and the JS all derive from this one list.
+ *
+ * `stat` is the one line a reader sees on the card before opening it, and `has`
+ * decides whether the card is live or a muted "not generated" placeholder.
+ */
+const FEATURE_TABS = [
+  {
+    id: "summary", label: "Product Summary", eyebrow: "Requirements", noun: "a product summary",
+    has: (f) => f.summaries.length > 0,
+    stat: (f) => `${f.summaries.length} document${f.summaries.length === 1 ? "" : "s"}` +
+                 (f.stories.length ? ` · ${f.stories.length} stor${f.stories.length === 1 ? "y" : "ies"}` : ""),
+  },
+  {
+    id: "stories", label: "Stories", eyebrow: "Jira-ready user stories", noun: "stories",
+    has: (f) => f.stories.length > 0,
+    stat: (f) => `${f.stories.length} stor${f.stories.length === 1 ? "y" : "ies"}`,
+  },
+  {
+    id: "ui", label: "UI", eyebrow: "Wireframes", noun: "UI mockups",
+    has: (f) => f.screens.length > 0,
+    stat: (f) => `${f.screens.length} screen${f.screens.length === 1 ? "" : "s"}` +
+                 (f.generatedFrom && !f.generatedFrom.includes("DataModel") ? " · designed before the data model" : ""),
+  },
+  {
+    id: "datamodel", label: "Data Model", eyebrow: "Salesforce schema", noun: "a data model",
+    has: (f) => Boolean(f.dataModel),
+    stat: (f) => f.dataModelKind || "Data model",
+  },
+  {
+    id: "architecture", label: "Architecture", eyebrow: "Solution architecture", noun: "an architecture",
+    has: (f) => Boolean(f.solutionArchitecture),
+    stat: () => "Solution Architecture Document",
+  },
+  {
+    id: "testcases", label: "Test Cases", eyebrow: "Test packs", noun: "test cases",
+    has: (f) => f.packs.length > 0,
+    stat: (f) => `${f.packs.length} pack${f.packs.length === 1 ? "" : "s"}`,
+  },
+  {
+    id: "design", label: "Solution Design", eyebrow: "Component design", noun: "a solution design",
+    has: (f) => Boolean(f.solutionDesign),
+    stat: () => "Solution Design Document",
+  },
+];
 
-  // Personas leads and is the default view. Journeys is NOT a top-level tab —
-  // it is a sub-tab inside Personas, matching the reference app. There is no
-  // Overview, Stories or Gaps tab.
+function page({ project, features, generatedOn, p, theme }) {
+  const title = `${project} — Companion App`;
+
+  // Project tabs lead: they describe the client, and they are what a reader
+  // opens first. Feature tabs follow, each one a list that drills into a single
+  // feature's document. A tab appears only when something fills it.
   const sections = [];
   const push = (id, label, count) => sections.push({ id, label, count });
-  if (a.personas.length) push("personas", "Personas", a.personas.length);
-  if (a.capabilities.length) push("capabilities", "Capabilities", a.capabilities.length);
-  if (a.activities.length) push("process", "Process", a.activities.length);
-  if (a.summaries.length) push("summary", "Product Summary", a.summaries.length > 1 ? a.summaries.length : null);
-  if (a.dataModel) push("datamodel", "Data Model", null);
-  if (a.solutionDesign) push("design", "Solution Design", null);
-  if (a.solutionArchitecture) push("architecture", "Architecture", null);
-  if (uiScreens.length) push("ui", "UI", uiScreens.length);
-  if (a.packs.length) push("testcases", "Test Cases", a.packs.length > 1 ? a.packs.length : null);
-  // A feature with nothing at all still needs one landing panel.
+  if (p.personas.length) push("personas", "Personas", p.personas.length);
+  if (p.capabilities.length) push("capabilities", "Capabilities", p.capabilities.length);
+  if (p.activities.length) push("process", "Process", p.activities.length);
+
+  const liveTabs = FEATURE_TABS.filter((t) => features.some((f) => t.has(f)));
+  for (const t of liveTabs) {
+    const n = features.filter((f) => t.has(f)).length;
+    push(t.id, t.label, features.length > 1 ? n : null);
+  }
+  // A project with nothing at all still needs one landing panel.
   if (!sections.length) push("empty", "Nothing generated yet", null);
   const DEFAULT_SECTION = sections[0].id;
 
+  // One entry per feature per live tab, including the features that have NOT
+  // run that stage — a visible gap is more useful than a silently short list.
+  const featureTabs = {};
+  for (const t of liveTabs) {
+    featureTabs[t.id] = features.map((f) => ({
+      feature: f.feature,
+      has: t.has(f),
+      stat: t.has(f) ? t.stat(f) : "Not generated",
+      docs: t.id === "summary" ? f.html.summaries
+          : t.id === "testcases" ? f.html.packs
+          : t.id === "datamodel" ? (f.html.dataModel ? [{ id: f.feature, title: f.dataModelKind || "Data Model", html: f.html.dataModel }] : [])
+          : t.id === "architecture" ? (f.html.solutionArchitecture ? [{ id: f.feature, title: "Solution Architecture", html: f.html.solutionArchitecture }] : [])
+          : t.id === "design" ? (f.html.solutionDesign ? [{ id: f.feature, title: "Solution Design", html: f.html.solutionDesign }] : [])
+          : [],
+      stories: t.id === "stories" ? f.stories : [],
+      screens: t.id === "ui" ? f.screens.map((sc) => ({
+        id: sc.id,
+        name: sc.name || sc.id,
+        persona: sc.persona || "",
+        surface: sc.surface || "",
+        states: Array.isArray(sc.states) ? sc.states.length : 1,
+        stories: Array.isArray(sc?.realises?.stories) ? sc.realises.stories : [],
+        href: `mockups/${slug(f.feature)}/${slug(String(sc.id))}.html`,
+      })) : [],
+      mockupIndex: t.id === "ui" && f.screens.length ? `mockups/${slug(f.feature)}/index.html` : null,
+      missing: t.id === "ui" && f.generatedFrom
+        ? ["DataModel", "QA"].filter((k) => !f.generatedFrom.includes(k))
+        : [],
+    }));
+  }
+
   const data = jsonIsland({
-    project, feature,
-    personas: a.personas, journeys: a.journeys,
-    capabilities: a.capabilities, activities: a.activities,
-    images: a.images || {},
-    summaries: docHtml.summaries || [],
-    packs: docHtml.packs || [],
+    project,
+    features: features.map((f) => f.feature),
+    personas: p.personas, journeys: p.journeys,
+    capabilities: p.capabilities, activities: p.activities,
+    images: p.images || {},
+    featureTabs,
+    tabMeta: liveTabs.map((t) => ({ id: t.id, label: t.label, eyebrow: t.eyebrow, noun: t.noun })),
     defaultSection: DEFAULT_SECTION,
   });
 
   // Horizontal perspective nav with a sliding underline — the house design
   // system's shell, matching the capability map page.
+  // `id="tab-<id>"` is not decoration: every panel declares
+  // aria-labelledby="tab-<id>", and without the id that reference dangles and a
+  // screen reader announces the panel with no name.
   const nav = sections.map((s) =>
-    `<a class="pbtn" href="#/${s.id}" data-nav="${s.id}" role="tab" aria-selected="false" tabindex="-1">` +
+    `<a class="pbtn" id="tab-${s.id}" href="#/${s.id}" data-nav="${s.id}" role="tab" aria-selected="false" aria-controls="panel-${s.id}" tabindex="-1">` +
     `<span class="lbl">${esc(s.label)}</span>${s.count != null ? `<span class="badge tnum">${s.count}</span>` : ""}</a>`
   ).join("");
 
@@ -664,30 +803,29 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
   const eyebrowTrail = sections.slice(0, 4)
     .map((s) => s.label).join(" · ") || "Solution guide";
 
-  const collPanel = (id, eyebrow, heading) => `
-    <section class="panel" id="panel-${id}" role="tabpanel" aria-labelledby="tab-${id}" hidden>
-      <div class="coll-list" id="${id}-list">
+  // Every feature tab has the same shell: a grid of feature cards, and a detail
+  // view the card drills into. The JS fills both from `featureTabs`, so adding a
+  // tab is one entry in FEATURE_TABS and nothing here.
+  const featurePanel = (t) => `
+    <section class="panel" id="panel-${t.id}" role="tabpanel" aria-labelledby="tab-${t.id}" hidden>
+      <div class="feat-list" id="${t.id}-list">
         <div class="sec-head">
-          <div class="eyebrow">${esc(eyebrow)}</div>
-          <h2 class="panel-h">${esc(heading)}</h2>
-          <p class="lede" id="${id}-lede"></p>
+          <div class="eyebrow">${esc(t.eyebrow)}</div>
+          <h2 class="panel-h">${esc(t.label)}</h2>
+          <p class="lede" id="${t.id}-lede"></p>
         </div>
-        <label class="visually-hidden" for="${id}-q" style="position:absolute;left:-9999px">Search ${esc(heading)}</label>
-        <input id="${id}-q" class="search coll-search" type="search" placeholder="Search ${esc(heading.toLowerCase())}…" autocomplete="off"/>
-        <div class="coll-rows" id="${id}-rows"></div>
+        <div class="feat-grid" id="${t.id}-grid"></div>
       </div>
-      <div class="coll-detail" id="${id}-detail" hidden>
-        <button class="backbtn" data-coll-back="${id}" type="button">← All ${esc(heading.toLowerCase())}</button>
-        <div class="coll-links" id="${id}-links"></div>
-        <div class="doc" id="${id}-doc"></div>
+      <div class="feat-detail" id="${t.id}-detail" hidden>
+        <nav class="crumbs" aria-label="Breadcrumb">
+          <button class="backbtn" data-feat-back="${t.id}" type="button">‹ ${esc(t.label)}</button>
+          <span class="crumb-sep" aria-hidden="true">/</span>
+          <span class="crumb-now" id="${t.id}-crumb"></span>
+        </nav>
+        <div class="feat-head" id="${t.id}-head"></div>
+        <div class="doc" id="${t.id}-doc" tabindex="-1"></div>
       </div>
     </section>`;
-
-  const docPanel = (id, heading, html) => html
-    ? `<section class="panel" id="panel-${id}" role="tabpanel" aria-labelledby="tab-${id}" hidden>
-         <h2 class="panel-h">${esc(heading)}</h2>
-         <div class="doc">${html}</div>
-       </section>` : "";
 
   return `<!doctype html>
 <html lang="en-AU">
@@ -695,7 +833,7 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>${esc(title)}</title>
-<meta name="description" content="Companion app for ${esc(project)} / ${esc(feature)} — personas, journeys, capabilities, process and solution artefacts."/>
+<meta name="description" content="Companion app for ${esc(project)} — personas, journeys, capabilities, process, and the solution artefacts for ${esc(features.length)} feature${features.length === 1 ? "" : "s"}."/>
 <style>
 :root{
   --ink:#1f2430; --muted:#5c6478; --line:#e2e5ee; --bg:#ffffff; --panel:#f7f8fb;
@@ -890,6 +1028,30 @@ main{min-width:0}
 .jd-k-today{background:var(--ok)}
 .jd-k-cap{background:color-mix(in srgb,var(--brand) 30%,var(--bg));height:.7rem!important;border:1px solid var(--line)}
 .jd-k-pain{background:var(--tmrw-bg);height:.7rem!important;border:1px solid var(--tmrw-line)}
+
+/* ---------- feature tabs: a grid of feature cards drilling into one document ---------- */
+.feat-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(17rem,1fr))}
+.feat-card{display:flex;flex-direction:column;gap:.45rem;align-items:flex-start;text-align:left;
+  font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
+  padding:1.1rem 1.2rem;cursor:pointer;box-shadow:var(--shadow);
+  transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+.feat-card:hover{transform:translateY(-2px);border-color:var(--brand);box-shadow:0 4px 10px rgba(20,24,40,.09),0 14px 32px rgba(20,24,40,.09)}
+.feat-card .fc-name{font-size:1.02rem;font-weight:700;line-height:1.3}
+.feat-card .fc-stat{font-size:.82rem;color:var(--muted)}
+.feat-card .fc-go{margin-top:.35rem;font-size:.78rem;font-weight:700;color:var(--brand-fg,var(--brand-deep))}
+/* A feature that has not run this stage is shown, not hidden: a visible gap is
+   more useful to a reviewer than a silently shorter list. */
+.feat-card.is-empty{cursor:default;box-shadow:none;border-style:dashed;background:var(--panel)}
+.feat-card.is-empty:hover{transform:none;border-color:var(--line);box-shadow:none}
+.feat-card.is-empty .fc-name{color:var(--muted);font-weight:600}
+.crumbs{display:flex;align-items:center;gap:.6rem;margin-bottom:1.1rem;flex-wrap:wrap}
+.crumb-sep{color:var(--muted)}
+.crumb-now{font-weight:700}
+.feat-head{margin-bottom:1.25rem}
+.feat-head .fh-stat{font-size:.85rem;color:var(--muted)}
+.feat-head .fh-warn{display:inline-block;margin-top:.5rem;font-size:.78rem;padding:.3rem .6rem;border-radius:6px;
+  background:var(--today-bg);border:1px solid var(--today-line);color:var(--today-lbl)}
+@media (prefers-reduced-motion:reduce){ .feat-card{transition:none} .feat-card:hover{transform:none} }
 
 /* ---------- document collections (product summaries / test packs) ---------- */
 .coll-search{width:min(30rem,100%);margin-bottom:1.25rem}
@@ -1170,11 +1332,11 @@ ${(() => {
       ${theme.logoSrc ? `<img class="logo-img" src="${theme.logoSrc}" alt=""/>` : `<span class="logo-text">${esc(theme.logoText)}</span>`}
       <div class="rule" aria-hidden="true"></div>
       <div class="titles">
-        <h1>${esc(feature)}</h1>
+        <h1>${esc(project)}</h1>
         <div class="eyebrow-sm">${esc(eyebrowTrail)}</div>
       </div>
     </div>
-    <span class="count-pill tnum"><i class="dot-pulse" aria-hidden="true"></i><span>${esc(project)} / ${esc(feature)}</span></span>
+    <span class="count-pill tnum"><i class="dot-pulse" aria-hidden="true"></i><span>${esc(features.length)} feature${features.length === 1 ? "" : "s"}</span></span>
     <span class="spacer"></span>
     <label class="visually-hidden" for="q" style="position:absolute;left:-9999px">Search this page</label>
     <input id="q" class="search" type="search" placeholder="Search personas, steps, capabilities…" autocomplete="off"/>
@@ -1257,33 +1419,7 @@ ${(() => {
       <div id="proc-body"></div>
     </section>
 
-    ${collPanel("summary", "Product summaries", "Product Summary")}
-    ${docPanel("datamodel", a.dataModelKind || "Data Model", docHtml.dataModel)}
-    ${docPanel("design", "Solution Design", docHtml.solutionDesign)}
-    ${docPanel("architecture", "Solution Architecture", docHtml.solutionArchitecture)}
-    ${collPanel("testcases", "Test packs", "Test Cases")}
-    ${uiScreens.length ? `
-    <section class="panel" id="panel-ui" role="tabpanel" aria-labelledby="tab-ui" hidden>
-      <div class="sec-head">
-        <div class="eyebrow">UI mockups</div>
-        <h2 class="panel-h">${uiScreens.length} screen${uiScreens.length === 1 ? "" : "s"}.</h2>
-        <p class="lede">Wireframes derived from this feature's requirements, personas, capabilities, data model and test cases. Each opens as its own page in the same theme.</p>
-      </div>
-      <p><a class="btn" href="mockups/index.html">Open all screens →</a></p>
-      <div class="coll-rows">${uiScreens.map((sc) => {
-        const meta = [sc.persona, sc.surface].filter(Boolean).map(esc).join(" · ");
-        const stories = Array.isArray(sc?.realises?.stories) ? sc.realises.stories : [];
-        const nStates = Array.isArray(sc.states) ? sc.states.length : 1;
-        return `<a class="coll-row" href="mockups/${esc(String(sc.id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))}.html">
-          <span class="coll-id">${esc(sc.id)}</span>
-          <span class="coll-mid">
-            <span class="coll-title">${esc(sc.name || sc.id)}</span>
-            <span class="coll-sub">${meta}${meta ? " · " : ""}${nStates} state${nStates === 1 ? "" : "s"}${stories.length ? ` · stories ${stories.map(esc).join(", ")}` : ""}</span>
-          </span>
-          <span class="chev">›</span>
-        </a>`;
-      }).join("")}</div>
-    </section>` : ""}
+    ${liveTabs.map(featurePanel).join("\n")}
   </main>
 </div>
 
@@ -1482,7 +1618,7 @@ ${(() => {
 
       cards.appendChild(art);
     });
-    if(!personas.length) cards.appendChild(el("div","empty","No personas generated for this feature yet."));
+    if(!personas.length) cards.appendChild(el("div","empty","No personas generated for this project yet."));
 
     var note = $("#persona-note");
     if(note && personas.length){
@@ -1548,7 +1684,7 @@ ${(() => {
   if(jtabs){
     if(!journeys.length){
       jtabs.hidden = true;
-      $("#journey-body").appendChild(el("div","empty","No journeys generated for this feature yet."));
+      $("#journey-body").appendChild(el("div","empty","No journeys generated for this project yet."));
     }
     journeys.forEach(function(j, i){
       var t = el("button","jtab"); t.type = "button";
@@ -1600,7 +1736,7 @@ ${(() => {
     if(j.scenario) hl.appendChild(el("p","jd-sub", j.scenario));
     head.appendChild(hl);
     var hr = el("div","jd-meta");
-    hr.appendChild(el("span", null, DATA.project + " · " + DATA.feature));
+    hr.appendChild(el("span", null, DATA.project));
     hr.appendChild(el("span", null, "persona journey — today vs tomorrow"));
     head.appendChild(hr);
     wrap.appendChild(head);
@@ -1879,103 +2015,134 @@ ${(() => {
   }
 
   // ---------------- capabilities
-  // ---------------- product summaries + test packs
-  // A feature can hold hundreds of each, so both tabs are a searchable LIST
-  // that opens a detail view. The two are linked by id in both directions.
-  var SUMS = DATA.summaries || [], PACKS = DATA.packs || [];
-  var packsBySummary = {};
-  PACKS.forEach(function(t){ if(t.covers){ (packsBySummary[t.covers] = packsBySummary[t.covers] || []).push(t); } });
-  var byIdColl = {};
-  SUMS.concat(PACKS).forEach(function(d){ byIdColl[d.kind + ":" + d.id] = d; });
+  // ---------------- feature tabs
+  // Every feature-level tab is the same two-level drill: a grid of feature
+  // cards, then one feature's document. Driven entirely by DATA.featureTabs, so
+  // a new tab needs no JS here.
+  var FTABS = DATA.featureTabs || {};
+  var TABMETA = DATA.tabMeta || [];
+  // Remembers which card opened a detail view, so Back can return focus to it
+  // rather than dumping the reader at the top of the page.
+  var lastCard = {};
 
-  function collOf(kind){ return kind === "summary" ? SUMS : PACKS; }
+  function openFeature(tabId, featureName){
+    var rows = FTABS[tabId] || [];
+    var row = null;
+    for(var i=0;i<rows.length;i++){ if(rows[i].feature === featureName){ row = rows[i]; break; } }
+    if(!row || !row.has) return;
 
-  // The data kind is summary/testcase; the PANEL ids are summary/testcases.
-  // Keeping the two straight is the whole reason this helper exists.
-  function panelIdOf(kind){ return kind === "summary" ? "summary" : "testcases"; }
-
-  function openColl(kind, id){
-    var d = byIdColl[kind + ":" + id]; if(!d) return;
-    var pid = panelIdOf(kind);
-    var listEl = $("#" + pid + "-list"), det = $("#" + pid + "-detail");
+    var listEl = $("#" + tabId + "-list"), det = $("#" + tabId + "-detail");
     if(!listEl || !det) return;
     listEl.hidden = true; det.hidden = false;
-    $("#" + pid + "-doc").innerHTML = d.html || "";
 
-    var links = $("#" + pid + "-links"); links.innerHTML = "";
-    var head = el("div","coll-head");
-    head.appendChild(el("span","coll-id", d.id));
-    head.appendChild(el("h2","coll-h", d.title));
-    links.appendChild(head);
+    var crumb = $("#" + tabId + "-crumb");
+    if(crumb) crumb.textContent = row.feature;
 
-    var rel = el("div","coll-rel");
-    if(kind === "summary"){
-      var packs = packsBySummary[d.id] || [];
-      rel.appendChild(el("span","klabel", packs.length ? "Test packs covering this" : "Test coverage"));
-      if(!packs.length) rel.appendChild(el("span","coll-none","No test pack references this product summary."));
-      packs.forEach(function(t){
-        var b = el("button","coll-chip"); b.type = "button";
-        b.textContent = t.id + " · " + t.title;
-        b.addEventListener("click", function(){ closeColl("summary"); show("testcases", false); openColl("testcase", t.id); });
-        rel.appendChild(b);
-      });
-    } else {
-      rel.appendChild(el("span","klabel","Covers"));
-      var ps = d.covers ? byIdColl["summary:" + d.covers] : null;
-      if(ps){
-        var b2 = el("button","coll-chip"); b2.type = "button";
-        b2.textContent = ps.id + " · " + ps.title;
-        b2.addEventListener("click", function(){ closeColl("testcase"); show("summary", false); openColl("summary", ps.id); });
-        rel.appendChild(b2);
-      } else {
-        rel.appendChild(el("span","coll-none", d.covers ? "Declares " + d.covers + ", which does not exist." : "No product summary declared."));
-      }
+    var head = $("#" + tabId + "-head"); head.innerHTML = "";
+    head.appendChild(el("h2","panel-h", row.feature));
+    head.appendChild(el("p","fh-stat", row.stat));
+    if(row.missing && row.missing.length){
+      var names = row.missing.map(function(m){ return m === "DataModel" ? "the data model" : "the test pack"; });
+      head.appendChild(el("p","fh-warn","Designed before " + names.join(" and ") + " existed — field names and states are provisional."));
     }
-    links.appendChild(rel);
+    if(row.mockupIndex){
+      var a = el("p"); var link = document.createElement("a");
+      link.className = "btn"; link.href = row.mockupIndex; link.textContent = "Open all screens →";
+      a.appendChild(link); head.appendChild(a);
+    }
+
+    var doc = $("#" + tabId + "-doc");
+    doc.innerHTML = "";
+    if(row.screens && row.screens.length){
+      var wrap = el("div","coll-rows");
+      row.screens.forEach(function(sc){
+        var link2 = document.createElement("a");
+        link2.className = "coll-row"; link2.href = sc.href;
+        link2.appendChild(el("span","coll-id", sc.id));
+        var mid = el("span","coll-mid");
+        mid.appendChild(el("span","coll-title", sc.name));
+        var meta = [sc.persona, sc.surface].filter(Boolean).join(" · ");
+        var bits = (meta ? meta + " · " : "") + sc.states + " state" + (sc.states === 1 ? "" : "s");
+        if(sc.stories.length) bits += " · stories " + sc.stories.join(", ");
+        mid.appendChild(el("span","coll-sub", bits));
+        link2.appendChild(mid);
+        link2.appendChild(el("span","chev","›"));
+        wrap.appendChild(link2);
+      });
+      doc.appendChild(wrap);
+    } else if(row.stories && row.stories.length){
+      row.stories.forEach(function(s){
+        var card = el("article","story");
+        card.appendChild(el("h3","story-h", s.summary || "(untitled story)"));
+        if(s.description) card.appendChild(el("p","story-b", s.description));
+        if(s.labels && s.labels.length){
+          var lw = el("div","story-labels");
+          s.labels.forEach(function(l){ lw.appendChild(el("span","chip", l)); });
+          card.appendChild(lw);
+        }
+        doc.appendChild(card);
+      });
+    } else if(row.docs && row.docs.length){
+      row.docs.forEach(function(d, i){
+        if(row.docs.length > 1){
+          var h = el("h3","coll-h", (d.id && d.id !== row.feature ? d.id + " · " : "") + d.title);
+          h.id = tabId + "-" + i;
+          doc.appendChild(h);
+        }
+        var body = el("div"); body.innerHTML = d.html || "";
+        doc.appendChild(body);
+      });
+    }
+
+    // Focus the detail region so a keyboard user lands where the content is.
+    doc.focus({ preventScroll: true });
     $("#main").scrollIntoView({ block: "start" });
   }
-  function closeColl(kind){
-    var pid = panelIdOf(kind);
-    var listEl = $("#" + pid + "-list"), det = $("#" + pid + "-detail");
+
+  function closeFeature(tabId){
+    var listEl = $("#" + tabId + "-list"), det = $("#" + tabId + "-detail");
     if(listEl) listEl.hidden = false;
     if(det) det.hidden = true;
+    var back = lastCard[tabId];
+    if(back && document.contains(back)) back.focus();
   }
-  // The panel ids are summary/testcases; the data kinds are summary/testcase.
-  function kindOfPanel(pid){ return pid === "summary" ? "summary" : "testcase"; }
-  ["summary","testcases"].forEach(function(pid){
-    var rows = $("#" + pid + "-rows");
-    if(!rows) return;
-    var kind = kindOfPanel(pid);
-    var items = collOf(kind);
-    var lede = $("#" + pid + "-lede");
-    if(lede) lede.textContent = items.length === 1 ? "One document." : items.length + " documents. Search by title or identifier, then open one.";
-    var q = $("#" + pid + "-q");
-    var draw = function(){
-      var term = (q ? q.value : "").trim().toLowerCase();
-      rows.innerHTML = "";
-      var shown = items.filter(function(d){ return !term || (d.id + " " + d.title).toLowerCase().indexOf(term) >= 0; });
-      if(!shown.length){ rows.appendChild(el("div","empty","Nothing matches that search.")); return; }
-      shown.forEach(function(d){
-        var b = el("button","coll-row"); b.type = "button";
-        b.appendChild(el("span","coll-id", d.id));
-        var mid = el("span","coll-mid");
-        mid.appendChild(el("span","coll-title", d.title));
-        var n = (packsBySummary[d.id] || []).length;
-        mid.appendChild(el("span","coll-sub", kind === "summary"
-          ? (n ? n + " test pack" + (n===1?"":"s") : "no test pack yet")
-          : (d.covers ? "covers " + d.covers : "not linked")));
-        b.appendChild(mid);
-        b.appendChild(el("span","chev","›"));
-        b.addEventListener("click", function(){ openColl(kind, d.id); });
-        rows.appendChild(b);
-      });
-    };
-    if(q) q.addEventListener("input", draw);
-    draw();
-    if(items.length === 1) openColl(kind, items[0].id);
+
+  TABMETA.forEach(function(meta){
+    var tabId = meta.id;
+    var grid = $("#" + tabId + "-grid");
+    if(!grid) return;
+    var rows = FTABS[tabId] || [];
+    var live = rows.filter(function(r){ return r.has; });
+
+    var lede = $("#" + tabId + "-lede");
+    if(lede){
+      var verb = live.length === 1 ? "has " : "have ";
+      lede.textContent = rows.length === 1
+        ? "One feature."
+        : live.length + " of " + rows.length + " features " + verb + meta.noun + ". Open one to read it.";
+    }
+
+    rows.forEach(function(r){
+      var card = el("button", "feat-card" + (r.has ? "" : " is-empty"));
+      card.type = "button";
+      card.appendChild(el("span","fc-name", r.feature));
+      card.appendChild(el("span","fc-stat", r.stat));
+      if(r.has){
+        card.appendChild(el("span","fc-go","Open →"));
+        card.addEventListener("click", function(){ lastCard[tabId] = card; openFeature(tabId, r.feature); });
+      } else {
+        card.disabled = true;
+        card.setAttribute("aria-disabled","true");
+      }
+      grid.appendChild(card);
+    });
+
+    // One feature with content and nothing to choose between — open it.
+    if(live.length === 1 && rows.length === 1) openFeature(tabId, live[0].feature);
   });
-  $$("[data-coll-back]").forEach(function(b){
-    b.addEventListener("click", function(){ closeColl(kindOfPanel(b.dataset.collBack)); });
+
+  $$("[data-feat-back]").forEach(function(b){
+    b.addEventListener("click", function(){ closeFeature(b.dataset.featBack); });
   });
 
   // ---------------- capabilities: L1 section -> L2 area card -> L3 tile.
@@ -2088,7 +2255,7 @@ ${(() => {
       sec.appendChild(grid);
       capCanvas.appendChild(sec);
     });
-    if(!caps.length) capCanvas.appendChild(el("div","empty","No capability map generated for this feature yet."));
+    if(!caps.length) capCanvas.appendChild(el("div","empty","No capability map generated for this project yet."));
 
     // ---- capability detail slide-over
     var byId = {};
@@ -2340,19 +2507,6 @@ ${(() => {
   }
   if(acts.length) drawProcess();
 
-  // ---------------- stories
-  var storyHost = $("#story-list");
-  if(storyHost){
-    (DATA.stories||[]).forEach(function(s){
-      var b = el("div","box"); b.style.marginBottom = ".7rem";
-      b.appendChild(el("strong", null, s.summary || ""));
-      if(s.description){ var d = el("p"); d.style.whiteSpace = "pre-wrap"; d.textContent = s.description; b.appendChild(d); }
-      (s.labels||[]).forEach(function(l){ b.appendChild(el("span","tag", l)); });
-      storyHost.appendChild(b);
-    });
-    if(!(DATA.stories||[]).length) storyHost.appendChild(el("div","empty","No stories generated for this feature yet."));
-  }
-
   // ---------------- search (highlights within the visible panel)
   var q = $("#q");
   var timer = null;
@@ -2425,70 +2579,82 @@ async function main() {
   const argv = process.argv.slice(2);
   const flags = new Set(argv.filter((x) => x.startsWith("--")));
   const [project, ...rest] = argv.filter((x) => !x.startsWith("--"));
-  const feature = rest.join(" ");
   for (const f of flags) if (!["--no-diagrams", "--open"].includes(f)) die(`unknown flag ${f}`);
 
-  if (!project || !feature) {
-    console.error("Usage: node scripts/render-companion-app.mjs <project> <feature> [--no-diagrams]");
+  if (!project) {
+    console.error("Usage: node scripts/render-companion-app.mjs <project> [--no-diagrams]");
     process.exit(1);
   }
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) die("project/feature contain unexpected characters");
+  if (!SAFE_NAME.test(project)) die("project name contains unexpected characters");
+  // A trailing feature name is accepted and ignored rather than rejected: the
+  // page covers every feature now, and older agent instructions still pass one.
+  if (rest.length) console.warn(`[render-companion-app] ignoring "${rest.join(" ")}" — the companion app is project-level now`);
 
-  const featureRoot = path.join(WORKSPACE, "projects", project, feature);
-  try { await fs.access(featureRoot); } catch { die(`no such feature: projects/${project}/${feature}`); }
+  const projectRoot = path.join(WORKSPACE, "projects", project);
+  try { await fs.access(projectRoot); } catch { die(`no such project: projects/${project}`); }
 
-  const a = await loadArtefacts(featureRoot);
-  a.images = await loadImages(featureRoot, a.personas);
-  // Mockups are rendered as their own pages by scripts/render-mockups.mjs. The
-  // companion app links to them rather than embedding them, so a screen stays a
-  // full-width page in its own right.
-  a.mockups = await readJson(path.join(featureRoot, "solutions", "UI", "outputs", "mockups.json"));
-  const coll = await loadCollections(featureRoot);
-  a.summaries = coll.summaries;
-  a.packs = coll.packs;
-  const theme = await loadTheme(featureRoot);
+  const p = await loadProjectArtefacts(projectRoot);
+  p.images = await loadImages(projectRoot, p.personas);
+  const theme = await loadTheme(projectRoot);
+
+  const featureNames = await listFeatureDirs(WORKSPACE, project);
+  const features = [];
+  for (const name of featureNames) {
+    const f = await loadFeatureArtefacts(path.join(projectRoot, name));
+    f.feature = name;
+    features.push(f);
+  }
 
   const present = [
-    a.personas.length && `${a.personas.length} personas`,
-    a.journeys.length && `${a.journeys.length} journeys`,
-    a.capabilities.length && `${a.capabilities.length} capabilities`,
-    a.activities.length && `${a.activities.length} activities`,
-    a.stories.length && `${a.stories.length} stories`,
-    a.productSummary && "product summary",
-    a.dataModel && "data model",
-    a.solutionDesign && "solution design",
-    a.solutionArchitecture && "architecture",
-    a.testCases && "test cases",
-    a.gaps && "gaps",
+    p.personas.length && `${p.personas.length} personas`,
+    p.journeys.length && `${p.journeys.length} journeys`,
+    p.capabilities.length && `${p.capabilities.length} capabilities`,
+    p.activities.length && `${p.activities.length} activities`,
+    ...FEATURE_TABS.map((t) => {
+      const n = features.filter((f) => t.has(f)).length;
+      return n && `${t.label.toLowerCase()} ×${n}`;
+    }),
   ].filter(Boolean);
 
   if (present.length === 0) {
-    die(`nothing to render for ${project}/${feature} — no artefacts found.\n` +
-        `  Run at least one stage (requirements, personas, capability map, …) first.`);
+    die(`nothing to render for ${project} — no artefacts found.\n` +
+        `  Run at least one stage (capability map, personas, requirements, …) first.`);
   }
 
-  const docs = [a.dataModel, a.solutionDesign, a.solutionArchitecture, a.gaps, a.storiesMd]
-    .concat(a.summaries.map((d) => d.body))
-    .concat(a.packs.map((d) => d.body));
+  // One diagram pass across every document in the project, so an ER diagram
+  // shared by two features is rendered once.
+  const docs = features.flatMap((f) => [
+    f.dataModel, f.solutionDesign, f.solutionArchitecture, f.gaps, f.storiesMd,
+    ...f.summaries.map((d) => d.body),
+    ...f.packs.map((d) => d.body),
+  ]);
   const mermaid = collectMermaid(docs);
   if (mermaid.size) console.log(`[render-companion-app] rendering ${mermaid.size} diagram(s)…`);
   const noDiagrams = flags.has("--no-diagrams");
   const diagrams = await renderDiagrams(mermaid, { skip: noDiagrams });
   if (noDiagrams && mermaid.size) console.warn(`[render-companion-app] WARN --no-diagrams: ${mermaid.size} diagram(s) shown as source, NOT rendered. Do not ship this build.`);
 
-  const docHtml = {
-    summaries: a.summaries.map((d) => ({ ...d, html: mdToHtml(d.body, diagrams, noDiagrams), body: undefined })),
-    packs: a.packs.map((d) => ({ ...d, html: mdToHtml(d.body, diagrams, noDiagrams), body: undefined })),
-    dataModel: a.dataModel ? mdToHtml(a.dataModel, diagrams, noDiagrams) : null,
-    solutionDesign: a.solutionDesign ? mdToHtml(a.solutionDesign, diagrams, noDiagrams) : null,
-    solutionArchitecture: a.solutionArchitecture ? mdToHtml(a.solutionArchitecture, diagrams, noDiagrams) : null,
-    gaps: a.gaps ? mdToHtml(a.gaps, diagrams, noDiagrams) : null,
-  };
+  // Heading anchors are scoped per document. One page now carries every
+  // feature's data model, architecture and test pack, and they all open with
+  // "1. Executive Summary" — unscoped, those ids collide and every in-page link
+  // lands on whichever document rendered first.
+  const md = (t, scope) => (t ? mdToHtml(t, diagrams, noDiagrams, scope) : null);
+  for (const f of features) {
+    const S = (k) => `${slug(f.feature)}-${k}-`;
+    f.html = {
+      summaries: f.summaries.map((d) => ({ id: d.id, title: d.title, covers: d.covers, html: md(d.body, S(`ps-${slug(d.id)}`)) })),
+      packs: f.packs.map((d) => ({ id: d.id, title: d.title, covers: d.covers, html: md(d.body, S(`tc-${slug(d.id)}`)) })),
+      dataModel: md(f.dataModel, S("dm")),
+      solutionDesign: md(f.solutionDesign, S("sd")),
+      solutionArchitecture: md(f.solutionArchitecture, S("sa")),
+      gaps: md(f.gaps, S("gaps")),
+    };
+  }
 
   const generatedOn = new Date().toISOString().slice(0, 10);
-  const html = page({ project, feature, generatedOn, a, docHtml, theme });
+  const html = page({ project, features, generatedOn, p, theme });
 
-  const key = `${project}-${feature}`;
+  const key = project;
   const appDir = path.join(WORKSPACE, "generated-apps", key);
   await fs.mkdir(appDir, { recursive: true });
   const htmlPath = path.join(appDir, "index.html");
@@ -2510,11 +2676,18 @@ async function main() {
     appPath: path.relative(WORKSPACE, appDir),
     htmlPath: path.relative(WORKSPACE, htmlPath),
     kind: "static-html",
-    devUrl: `${PREVIEW_ORIGIN}/api/companion-app/${encodeURIComponent(project)}/${encodeURIComponent(feature)}/`,
+    devUrl: `${PREVIEW_ORIGIN}/api/companion-app/${encodeURIComponent(project)}/`,
     // Preserved across renders — the Developer sets these when it pushes.
     branch: prev.branch ?? null,
     repoUrl: prev.repoUrl ?? null,
     generatedAt: new Date().toISOString(),
+    features: Object.fromEntries(features.map((f) => [
+      f.feature,
+      {
+        artefacts: FEATURE_TABS.filter((t) => t.has(f)).map((t) => t.label),
+        screens: f.screens.length,
+      },
+    ])),
     artefacts: present,
     diagrams: diagrams.size,
     bytes: Buffer.byteLength(html),
@@ -2522,7 +2695,7 @@ async function main() {
   await fs.writeFile(registryPath, JSON.stringify(registry, null, 2) + "\n", "utf8");
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(0);
-  console.log(`[render-companion-app] ${project}/${feature} → ${path.relative(WORKSPACE, htmlPath)} (${kb} KB, ${diagrams.size} inline diagram(s))`);
+  console.log(`[render-companion-app] ${project} → ${path.relative(WORKSPACE, htmlPath)} (${kb} KB, ${diagrams.size} inline diagram(s), ${features.length} feature(s))`);
   console.log(`  includes: ${present.join(", ")}`);
   console.log(JSON.stringify(registry[key], null, 2));
 }
