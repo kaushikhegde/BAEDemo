@@ -85,6 +85,19 @@ Confluence page rather than creating a second one.
 The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs the Scyne agent org on the local machine via Claude Code. The **Delivery Lead** is the single orchestrator: it routes each request by title prefix to the owning worker — **BA** (requirements), **Data Modeler** (data model), **Architecture Lead** (solution design), and **Developer** → **UX Auditor** (UI build). Every worker raises its own human approval gate; the data-model/solution-design/requirements stages then publish to Atlassian themselves. The Data Modeler reports to the Architecture Lead on the org chart; the Architecture Lead, BA, Developer and UX Auditor all sit under the Delivery Lead's dispatch.
 
 > **Mermaid → PNG for Confluence:** all Mermaid diagrams (Product Summary flow, data model ER, solution-design flow) are rendered to **PNG** locally via `npx -y @mermaid-js/mermaid-cli` and embedded with `<ac:image>` before publishing. PNG (not SVG) is used deliberately — Confluence renders PNG inline reliably, whereas SVG attachments often show only as a download link.
+>
+> **Attachments do NOT go through the MCP.** `<ac:image>` only resolves if the PNG
+> is attached to the page, and the Atlassian MCP cannot attach anything: the
+> OAuth grant `mcp-remote` obtains carries 20 scopes — 8 Confluence, none of them
+> attachment scopes — so `POST .../child/attachment` returns
+> `401 "scope does not match"`, and a raw curl reusing that token fails the same
+> way (aimed at the site domain it 403s instead, because 3LO tokens are only
+> valid against `api.atlassian.com`). Re-authorising will not add the scope —
+> Atlassian's MCP app fixes the list. Every publishing agent therefore uploads
+> with **`node scripts/confluence-attach.mjs <pageId> <files…>`**, which uses the
+> `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env` (Basic auth, site domain).
+> Symptom when this is skipped: the page publishes with its diagrams **silently
+> missing** — not broken images, simply absent.
 
 ## The agent flow
 
@@ -942,6 +955,18 @@ Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-m
   agent cannot self-check. `--validate-only` is how the pipeline calls it. Its own
   page renderer is retained but no longer wired in: a project has ONE page,
   rendered by `render-companion-app.mjs`.
+- `scripts/confluence-attach.mjs <pageId> <file…>` — the ONLY supported way to put
+  a file on a Confluence page. Used by every publishing agent's Phase 2 to upload
+  its Mermaid PNGs (and `personas.json`, `capability-map.json`, `test-cases.csv`).
+  Reads `ATLASSIAN_SITE_URL`/`EMAIL`/`API_TOKEN` from the environment or
+  `scyne-chatbot/.env`, authenticates with Basic auth against the **site domain**,
+  and is idempotent — re-uploading a filename replaces that attachment in place
+  rather than duplicating it, which is what a revision needs. Prints the
+  `<ac:image>` snippet for each image so the agent can paste it into the body.
+  > It exists because the Atlassian MCP **has no attachment scope** and never
+  > will (see the Mermaid → PNG note above). Any agent hand-rolling a curl with
+  > the `~/.mcp-auth` token gets a 401/403 and, historically, published the page
+  > with its diagrams missing and said nothing.
 - `scripts/extract-brand.mjs <url> <project>` — see *Brand the companion app*.
 - `scripts/convert-to-md.mjs <project> [<feature>]` — with a feature, converts that
   feature's `requirements/`; with none, the project's own `documents/`.
@@ -1036,6 +1061,7 @@ with the registry, the registry wins.
 | Chatbot shows "undefined" for a parameter                | Frontend reading old field name                                                 | Search for the renamed field across `src/`; rebuild the tool schema response handler if needed.                                |
 | `/api/features` returns `{}`                             | `projects/` folder missing, or `WORKSPACE_PATH` env var pointing elsewhere      | `mkdir projects/<project>/<feature>/...`, restart dev server.                                                                  |
 | Atlassian MCP OAuth fails with "Supported sites required" | Logged-in Atlassian account has no Jira/Confluence site                         | Switch accounts, or create a free Atlassian Cloud trial site, then re-run `claude mcp add atlassian -- npx -y mcp-remote …`.    |
+| Published Confluence page has no diagrams (or `403 Current user not permitted to use Confluence` / `401 scope does not match` on upload) | The agent tried to attach the PNGs with the MCP OAuth token, which has **no attachment scope** — and/or aimed a 3LO token at the site domain instead of `api.atlassian.com` | The agent must upload with `node scripts/confluence-attach.mjs <pageId> <files…>`, which uses `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env`. Confirm that token is set and its user can edit the space. Re-authorising the MCP will NOT add the scope. |
 | Refresh loses the workflow                                | `localStorage.scyne_parent_issue_id` cleared                                    | Click the workflow status panel's "New session" button to start over; otherwise it should restore automatically.               |
 
 ---

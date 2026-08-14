@@ -666,11 +666,25 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     }
   }
 
-  async function handleApprove(id: string) {
+  async function handleApprove(id: string, meta?: { title: string; issueIdentifier: string }) {
     try {
       // Pass the parent issue so the server can auto-create the Jira project +
       // Confluence space (if configured) before resolving the gate.
       await approve(id, parentIssueId ?? undefined);
+      // Only after the server accepts it — a failed approval must not leave a
+      // record saying it was approved.
+      setMessages((m) => [...m, {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        kind: "decision",
+        text: `Approved ${meta?.title ?? "the gate"}`,
+        decision: {
+          outcome: "approved",
+          issue: meta?.issueIdentifier,
+          title: meta?.title,
+          at: new Date().toISOString(),
+        },
+      }]);
     } catch (e: any) {
       setMessages((m) => [...m, {
         id: crypto.randomUUID(),
@@ -683,12 +697,29 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   }
   // Reviewer wasn't happy: send their notes to the BA, which regenerates and raises
   // a fresh gate. We optimistically surface it in the chat so the loop is visible.
-  async function handleRequestChanges(id: string, issueId: string, feedback: string) {
+  async function handleRequestChanges(
+    id: string,
+    issueId: string,
+    feedback: string,
+    meta?: { title: string; issueIdentifier: string },
+  ) {
     await requestChanges(id, issueId, feedback);
     setMessages((m) => [...m, {
       id: crypto.randomUUID(),
       role: "assistant",
-      text: `Sent your changes back to the agent:\n\n> ${feedback}\n\nIt’ll regenerate and raise a fresh approval here.`,
+      kind: "decision",
+      text: `Requested changes on ${meta?.title ?? "the gate"}`,
+      decision: {
+        outcome: "changes_requested",
+        issue: meta?.issueIdentifier,
+        title: meta?.title,
+        note: feedback,
+        at: new Date().toISOString(),
+      },
+    }, {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      text: `Sent back to the agent — it’ll regenerate and raise a fresh approval here.`,
     }]);
   }
 

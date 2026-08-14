@@ -11,8 +11,10 @@ export function ApprovalCard({ approval, project, feature, onApprove, onRequestC
   approval: ApprovalCardData;
   project: string | null;
   feature: string | null;
-  onApprove: (id: string) => Promise<void>;
-  onRequestChanges: (id: string, issueId: string, feedback: string) => Promise<void>;
+  // The gate's title + identifier travel with the decision so the chat can keep
+  // a durable record of what was approved, not just that something was.
+  onApprove: (id: string, meta: { title: string; issueIdentifier: string }) => Promise<void>;
+  onRequestChanges: (id: string, issueId: string, feedback: string, meta: { title: string; issueIdentifier: string }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -104,7 +106,12 @@ export function ApprovalCard({ approval, project, feature, onApprove, onRequestC
           variant="primary"
           size="sm"
           disabled={busy}
-          onClick={async () => { setBusy(true); try { await onApprove(approval.id); } finally { setBusy(false); } }}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onApprove(approval.id, { title: approval.title, issueIdentifier: approval.issueIdentifier });
+            } finally { setBusy(false); }
+          }}
         >
           <Check />
           Approve & push
@@ -117,7 +124,11 @@ export function ApprovalCard({ approval, project, feature, onApprove, onRequestC
               disabled={busy || !feedback.trim()}
               onClick={async () => {
                 setBusy(true);
-                try { await onRequestChanges(approval.id, approval.issueId, feedback.trim()); }
+                try {
+                  await onRequestChanges(approval.id, approval.issueId, feedback.trim(), {
+                    title: approval.title, issueIdentifier: approval.issueIdentifier,
+                  });
+                }
                 finally { setBusy(false); }
               }}
             >

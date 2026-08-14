@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { ChevronDown } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { MiniMarkdown } from "./MiniMarkdown";
 import { cn } from "@/lib/utils";
 import type { Artifacts, ArtifactStory } from "../types";
+
+// react-markdown + remark-gfm are ~160 kB, and this preview only renders behind
+// the "Review what will be pushed" toggle — so it is code-split rather than
+// carried in the initial bundle. Mermaid splits itself again inside Markdown.
+const Markdown = lazy(() => import("./Markdown").then((m) => ({ default: m.Markdown })));
 
 // The BA writes Jira-payload-shaped stories. `description` may be either a
 // plain string OR an Atlassian Document Format (ADF) document ({type:"doc",
@@ -160,7 +164,11 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
       <div className="flex gap-1.5 flex-wrap">
         {visible.map((k) => tabBtn(k, LABELS[k], k === "stories" ? data.stories.length : undefined))}
       </div>
-      <div className="max-h-80 overflow-y-auto pr-1">
+      {/* 320px was fine for a bullet list; these documents run to hundreds of
+          table rows and a dozen diagrams, and a gate the reviewer cannot
+          actually read is a gate in name only. */}
+      <div className="max-h-[60vh] overflow-y-auto pr-1">
+        <Suspense fallback={<div className="space-y-2 py-2"><Skeleton className="h-5 w-2/3" /><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /></div>}>
         {active === "stories" && (
           <div className="space-y-2">
             {data.stories.length === 0 && (
@@ -174,7 +182,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "summary" && (
           <div className="text-slate-800">
             {data.productSummary ? (
-              <MiniMarkdown source={data.productSummary} />
+              <Markdown source={data.productSummary} />
             ) : (
               <div className="text-sm text-muted-foreground italic">Product summary not found.</div>
             )}
@@ -183,7 +191,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "gaps" && (
           <div className="text-slate-800">
             {data.gaps ? (
-              <MiniMarkdown source={data.gaps} />
+              <Markdown source={data.gaps} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No gaps file (or empty).</div>
             )}
@@ -192,7 +200,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "datamodel" && (
           <div className="text-slate-800">
             {data.dataModel ? (
-              <MiniMarkdown source={data.dataModel} />
+              <Markdown source={data.dataModel} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No data model impact on disk yet.</div>
             )}
@@ -201,7 +209,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "solution" && (
           <div className="text-slate-800">
             {data.solutionDesign ? (
-              <MiniMarkdown source={data.solutionDesign} />
+              <Markdown source={data.solutionDesign} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No solution design on disk yet.</div>
             )}
@@ -210,7 +218,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "architecture" && (
           <div className="text-slate-800">
             {data.solutionArchitecture ? (
-              <MiniMarkdown source={data.solutionArchitecture} />
+              <Markdown source={data.solutionArchitecture} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No solution architecture on disk yet.</div>
             )}
@@ -219,7 +227,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "testcases" && (
           <div className="text-slate-800">
             {data.testCases ? (
-              <MiniMarkdown source={data.testCases} />
+              <Markdown source={data.testCases} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No test cases on disk yet.</div>
             )}
@@ -228,7 +236,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
         {active === "personas" && (
           <div className="text-slate-800">
             {data.personas ? (
-              <MiniMarkdown source={data.personas} />
+              <Markdown source={data.personas} />
             ) : (
               <div className="text-sm text-muted-foreground italic">No personas or journey map on disk yet.</div>
             )}
@@ -248,13 +256,14 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
                 >
                   Open interactive map ↗
                 </a>
-                <MiniMarkdown source={data.capabilityMap} />
+                <Markdown source={data.capabilityMap} />
               </>
             ) : (
               <div className="text-sm text-muted-foreground italic">No capability map on disk yet.</div>
             )}
           </div>
         )}
+        </Suspense>
       </div>
     </div>
   );

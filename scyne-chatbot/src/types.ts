@@ -1,4 +1,4 @@
-export type MessageKind = "user" | "assistant" | "agent";
+export type MessageKind = "user" | "assistant" | "agent" | "decision";
 
 export interface UIMessage {
   id: string;
@@ -6,6 +6,19 @@ export interface UIMessage {
   kind?: MessageKind;          // visual style
   author?: string;             // shown as a small label above the bubble for agent messages
   text: string;
+  /**
+   * Set on `kind: "decision"` — a durable record of what the reviewer decided at
+   * an approval gate. The gate's own card is derived from polled status and
+   * disappears once resolved; this lives in the chat transcript, which is
+   * persisted to localStorage, so "did I approve that?" is answerable later.
+   */
+  decision?: {
+    outcome: "approved" | "changes_requested";
+    issue?: string;   // e.g. "SCY-2"
+    title?: string;   // the gate's title
+    note?: string;    // the reviewer's feedback, on changes_requested
+    at: string;       // ISO timestamp
+  };
 }
 
 export interface IssueProgress {
