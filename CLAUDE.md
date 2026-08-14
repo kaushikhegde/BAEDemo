@@ -308,7 +308,7 @@ capability exercised in three features is ONE capability citing all three.
 
 | Field                 | Placeholder in pm.json (swapped at bootstrap)                  |
 | --------------------- | -------------------------------------------------------------- |
-| Company               | `2131f183-3822-4eee-9370-4b5cafae7e29` (`Scyne`)                |
+| Company               | resolved at bootstrap (`companyId` in `.bootstrap/ids.json`) — **never hard-code it**, a re-bootstrapped Paperclip hires a new `Scyne` company with a fresh UUID |
 | Delivery Lead  | resolved at bootstrap (`org.pm` in `.bootstrap/ids.json`)             |
 | BA | `7561c779-5c3f-4e3a-9dc2-0f13eb1851ec`                          |
 | Data Modeler | `ddddddd1-dddd-4ddd-8ddd-dddddddddddd` (reports to the Architecture Lead) |
@@ -861,16 +861,25 @@ would appear as a feature in the target picker.
 
 ### Create a fresh test run from CLI
 
+Read both IDs from `.bootstrap/ids.json` rather than pasting a UUID — they change
+every time Paperclip is re-bootstrapped, and a stale company id silently returns
+an empty list instead of erroring. Single-worker flows assign straight to their
+worker (`org.<agentKey>`); only `Set up project` and `Build UI` go to the
+Delivery Lead.
+
 ```bash
-curl -sS -X POST http://127.0.0.1:3100/api/companies/2131f183-3822-4eee-9370-4b5cafae7e29/issues \
+COMPANY=$(jq -r .companyId .bootstrap/ids.json)
+ASSIGNEE=$(jq -r .org.ba .bootstrap/ids.json)     # the BA owns the requirements flow
+
+curl -sS -X POST http://127.0.0.1:3100/api/companies/$COMPANY/issues \
   -H "Content-Type: application/json" \
-  -d '{
-    "title": "Generate requirements — Review & Verify Evidence",
-    "description": "project: SADA\nfeature: interim-benefit\n…(parameters as plain text block)…",
-    "assigneeAgentId": "212a6542-4e49-41dc-94f0-7d7acbc460ba",
-    "status": "todo",
-    "priority": "medium"
-  }'
+  -d "{
+    \"title\": \"Generate requirements — Review & Verify Evidence\",
+    \"description\": \"project: SADA\nfeature: interim-benefit\n…(parameters as plain text block)…\",
+    \"assigneeAgentId\": \"$ASSIGNEE\",
+    \"status\": \"todo\",
+    \"priority\": \"medium\"
+  }"
 ```
 
 ### Tail what an agent is doing

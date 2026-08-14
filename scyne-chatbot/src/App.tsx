@@ -226,7 +226,9 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   // Don't auto-switch tabs — the green dot on the UI tab signals it's ready;
   // the user clicks over when they want to see it.
   useEffect(() => {
-    if (!targetProject || !targetFeature) {
+    // Project-only is enough: the registry is keyed by project, because a
+    // project renders ONE companion app covering every feature.
+    if (!targetProject) {
       setPreviewAvailable(false);
       return;
     }
@@ -305,7 +307,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       // The LLM decides intent. When a UI preview is live we tell it so (uiContext),
       // and it will call `comment_on_ui_build` for change/approve/push requests while
       // answering questions normally — no blunt "everything goes to the ticket" gate.
-      const uiContext = previewAvailable && targetProject && targetFeature
+      const uiContext = previewAvailable && targetProject
         ? { active: true, project: targetProject, feature: targetFeature }
         : undefined;
       const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature }, uiContext);
@@ -1022,7 +1024,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             </TabsContent>
 
             <TabsContent value="ui">
-              {targetProject && targetFeature ? (
+              {targetProject ? (
                 <PreviewPane
                   project={targetProject}
                   feature={targetFeature}
@@ -1039,15 +1041,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                 >
                   <Sparkles className="size-5 mx-auto mb-2 text-scyne-ink-500/60" />
                   <div className="font-medium text-foreground mb-1">No project selected</div>
-                  <div>Pick a project / feature, then ask me to build the UI.</div>
+                  <div>Pick a project, then ask me to build the UI.</div>
                 </Card>
               )}
-              {targetProject && targetFeature && !previewAvailable && (
+              {targetProject && !previewAvailable && (
                 <Card
                   elevation={0}
                   className="p-4 text-xs text-muted-foreground border-dashed bg-white/40"
                 >
-                  No preview yet for <span className="font-medium">{targetProject}/{targetFeature}</span>. Once the UI agent scaffolds the app, the live preview shows up here.
+                  No companion app for <span className="font-medium">{targetProject}</span> yet. Once the UI agent renders it, the live preview shows up here.
                 </Card>
               )}
             </TabsContent>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Upload, RotateCw } from "lucide-react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
+import { previewUrl } from "@/api";
 
 interface PreviewEntry {
   port: number;
@@ -19,8 +20,8 @@ interface PreviewEntry {
   artefacts?: string[];
 }
 
-async function fetchPreview(project: string, feature: string): Promise<PreviewEntry | null> {
-  const r = await fetch(`/api/preview/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`);
+async function fetchPreview(project: string, feature?: string | null): Promise<PreviewEntry | null> {
+  const r = await fetch(previewUrl(project, feature));
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`preview fetch failed: ${r.status}`);
   return r.json();
@@ -28,7 +29,9 @@ async function fetchPreview(project: string, feature: string): Promise<PreviewEn
 
 interface PreviewPaneProps {
   project: string;
-  feature: string;
+  /** Optional — the companion app is project-level. A project with no features
+   *  still has a page, so this pane must render without one. */
+  feature?: string | null;
   /** Called when the user submits a GitHub repo URL via the push form. */
   onPush?: (repoUrl: string) => Promise<void>;
 }
@@ -94,7 +97,7 @@ export function PreviewPane({ project, feature, onPush }: PreviewPaneProps) {
     <Card elevation={1} className="p-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs font-semibold uppercase tracking-wider text-scyne-ink-600">
-          Live Preview · {project}/{feature}
+          Live Preview · {feature ? `${project}/${feature}` : project}
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -146,7 +149,7 @@ export function PreviewPane({ project, feature, onPush }: PreviewPaneProps) {
         src={src}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         className="w-full h-[60vh] rounded-md border border-border bg-white"
-        title={`Preview of ${project}/${feature}`}
+        title={`Preview of ${feature ? `${project}/${feature}` : project}`}
       />
       {pushOpen && (
         <div className="flex flex-col gap-2 border-t border-border pt-2">

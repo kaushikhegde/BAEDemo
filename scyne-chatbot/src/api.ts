@@ -34,9 +34,16 @@ export async function getStatus(issueId: string) {
   return r.json();
 }
 
-export async function hasPreview(project: string, feature: string): Promise<boolean> {
-  const r = await fetch(`/api/preview/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`);
+// The companion app is ONE page per project, so the registry is keyed by
+// project; the `/:feature` form is only an alias. Feature is optional here.
+export async function hasPreview(project: string, feature?: string | null): Promise<boolean> {
+  const r = await fetch(previewUrl(project, feature));
   return r.ok;
+}
+
+export function previewUrl(project: string, feature?: string | null): string {
+  const base = `/api/preview/${encodeURIComponent(project)}`;
+  return feature ? `${base}/${encodeURIComponent(feature)}` : base;
 }
 
 export async function createTarget(project: string, feature: string) {
