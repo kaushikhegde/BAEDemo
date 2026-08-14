@@ -143,7 +143,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (targetProject && targetFeature) {
+    // A project with no feature is a legitimate target — the capability map,
+    // personas and companion app all run at that level, and a freshly created
+    // project has no features at all. Persisting only the pair meant creating a
+    // project and refreshing silently dropped it.
+    if (targetProject) {
       window.localStorage.setItem("scyne_target", JSON.stringify({ project: targetProject, feature: targetFeature }));
     } else {
       window.localStorage.removeItem("scyne_target");
@@ -264,6 +268,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if (cancelled) return;
         setStatus(s);
         setStatusError(null);
+        // Recover the target from the running workflow when the UI has none —
+        // after a refresh, or when the flow was started from chat. Without this
+        // the approval preview can't resolve which project the gate belongs to.
+        // Never overrides a target the user picked themselves.
+        if (s.target?.project) {
+          setTargetProject((p) => p ?? s.target!.project);
+          if (s.target.feature) setTargetFeature((f) => f ?? s.target!.feature);
+        }
         // Best-effort: refresh the compact agent run summaries alongside status.
         getRuns(parentIssueId).then((r) => { if (!cancelled) setRuns(r); }).catch(() => {});
       } catch (e: any) {

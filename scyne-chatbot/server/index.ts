@@ -148,11 +148,13 @@ app.post("/api/trigger", async (req, res) => {
       `Subfolders: SOP/, Transcripts/, Notes/, UI/.`,
     ].join("\n");
 
+    const owner = ownerFor("requirements");
     const issue = await paperclip.createIssue(
       `Generate requirements — ${feature_name} (${project}/${feature})`,
-      description
+      description,
+      owner.assignee,
     );
-    res.json(issue);
+    res.json({ ...issue, worker: owner.worker, direct: owner.direct });
   } catch (e: any) {
     console.error(e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -183,9 +185,9 @@ const FLOWS: { prefix: string; flow: Flow }[] = [
   // solution", and keep both spelled out in the Delivery Lead's classifier too.
   { prefix: "Generate solution architecture", flow: { key: "solution_architecture", worker: "Solution Architect", generatingLabel: "Solution Architect designing the target architecture", pushingLabel: "Publishing to Confluence" } },
   { prefix: "Generate test cases", flow: { key: "test_cases", worker: "QA Architect", generatingLabel: "QA Architect designing the test pack", pushingLabel: "Publishing to Confluence" } },
-  // Capability map publishes nothing — the "pushing" label covers the architect's
-  // local finalise pass (verify artefacts, post the summary) after approval.
-  { prefix: "Generate capability map", flow: { key: "capability_map", worker: "Capabilities Process Architect", generatingLabel: "Capabilities Process Architect mapping capabilities + process", pushingLabel: "Finalising the capability map" } },
+  // The capability map publishes to its own Confluence page, so "pushing" here is
+  // a real publish step rather than a local finalise pass.
+  { prefix: "Generate capability map", flow: { key: "capability_map", worker: "Capabilities Process Architect", generatingLabel: "Capabilities Process Architect mapping capabilities + process", pushingLabel: "Publishing to Confluence" } },
   { prefix: "Generate personas", flow: { key: "personas", worker: "Service Designer", generatingLabel: "Service Designer identifying personas + mapping journeys", pushingLabel: "Publishing to Confluence" } },
   // "Generate UI mockups" (UX Designer → wireframes) and "Build UI" (Developer →
   // the companion app page) are different deliverables that both mention UI.
@@ -274,8 +276,36 @@ async function countProjectDocs(project: string): Promise<{ md: number; other: n
 // the feature has documents at all) → create a title-prefixed issue for the
 // Delivery Lead to route. No Jira parameters; the Confluence space key is
 // carried only by the stages that publish.
+/**
+ * Who should own this issue.
+ *
+ * Single-worker flows go STRAIGHT to their worker: the Delivery Lead's only
+ * contribution to them was to create one child and exit, at 2-3 extra agent
+ * wakes per flow, each re-reading its 10k-token instruction bundle. Its
+ * input validation duplicated the 409 gate these endpoints already apply
+ * before the issue is created at all.
+ *
+ * Falls back to the Delivery Lead when the worker cannot be resolved — an
+ * unhired agent is missing from ids.json entirely, and degrading to the old
+ * routing beats failing the request.
+ */
+function ownerFor(stageKey: string): { assignee: string | undefined; worker: string; direct: boolean } {
+  const def = (pipeline.STAGES as Record<string, any>)[stageKey];
+  const id = def?.agentKey ? paperclip.agentId(def.agentKey) : null;
+  if (!id) {
+    if (def?.agentKey) {
+      console.warn(`[dispatch] no hired id for '${def.agentKey}' — routing ${stageKey} via the Delivery Lead. Run: npm run bootstrap`);
+    }
+    return { assignee: undefined, worker: def?.agent ?? "the owning specialist", direct: false };
+  }
+  return { assignee: id, worker: def.agent, direct: true };
+}
+
 function stageTrigger(stage: {
   logTag: string;
+  // The pipeline-graph key for this stage. Resolves the owning worker so the
+  // issue is assigned to it directly instead of routed via the Delivery Lead.
+  stageKey: string;
   titlePrefix: string; // must match a FLOWS prefix + the Delivery Lead's classifier
   intro: string;
   // PROJECT stages (capability map, personas) describe the client organisation
@@ -363,8 +393,9 @@ function stageTrigger(stage: {
       const title = isProject
         ? `${stage.titlePrefix} — ${project}`
         : `${stage.titlePrefix} — ${feature_name} (${project}/${feature})`;
-      const issue = await paperclip.createIssue(title, description);
-      res.json(issue);
+      const owner = ownerFor(stage.stageKey);
+      const issue = await paperclip.createIssue(title, description, owner.assignee);
+      res.json({ ...issue, worker: owner.worker, direct: owner.direct });
     } catch (e: any) {
       console.error(`[${stage.logTag}] failed:`, e);
       res.status(500).json({ error: e?.message ?? String(e) });
@@ -374,6 +405,7 @@ function stageTrigger(stage: {
 
 app.post("/api/data-model/trigger", stageTrigger({
   logTag: "data-model/trigger",
+  stageKey: "datamodel",
   titlePrefix: "Generate data model",
   intro: "Generated by the Scyne chatbot. Produce the Salesforce data model and publish it to Confluence.",
   gateFile: path.join("outputs", "product-summary.md"),
@@ -390,6 +422,7 @@ app.post("/api/data-model/trigger", stageTrigger({
 
 app.post("/api/solution-design/trigger", stageTrigger({
   logTag: "solution-design/trigger",
+  stageKey: "design",
   titlePrefix: "Generate solution design",
   intro: "Generated by the Scyne chatbot. Produce the Salesforce Solution Design Document and publish it to Confluence.",
   gateFile: [
@@ -414,6 +447,7 @@ app.post("/api/solution-design/trigger", stageTrigger({
 // different skill, different folder, different Confluence page.
 app.post("/api/solution-architecture/trigger", stageTrigger({
   logTag: "solution-architecture/trigger",
+  stageKey: "architecture",
   titlePrefix: "Generate solution architecture",
   intro: "Generated by the Scyne chatbot. Produce the Salesforce Service Cloud Solution Architecture Document and publish it to Confluence.",
   gateFile: path.join("outputs", "product-summary.md"),
@@ -432,6 +466,7 @@ app.post("/api/solution-architecture/trigger", stageTrigger({
 // the data model and solution architecture are opportunistic enrichment.
 app.post("/api/test-cases/trigger", stageTrigger({
   logTag: "test-cases/trigger",
+  stageKey: "qa",
   titlePrefix: "Generate test cases",
   intro: "Generated by the Scyne chatbot. Produce the test pack (test cases, traceability matrix, coverage gap analysis) and publish it to Confluence.",
   gateFile: path.join("outputs", "product-summary.md"),
@@ -456,6 +491,7 @@ app.post("/api/test-cases/trigger", stageTrigger({
 // to its L1 lifecycle phases, which is why the wizard runs the two in sequence.
 app.post("/api/personas/trigger", stageTrigger({
   logTag: "personas/trigger",
+  stageKey: "personas",
   level: "project",
   titlePrefix: "Generate personas",
   intro: "Generated by the Scyne chatbot. Identify the personas this CLIENT serves, map each one's journey, and publish to Confluence. The personas.json / journey-map.json outputs are consumed by the companion app.",
@@ -478,20 +514,20 @@ app.post("/api/personas/trigger", stageTrigger({
 
 // 2g. Capability map — a PROJECT stage with no prerequisite. It reads every
 // document the client has (the project's own documents/ plus every feature's
-// discovery documents), so it can run before requirements. It publishes nothing
-// (confluence: false), which keeps /api/approve from trying to provision an
-// Atlassian space when the gate is approved.
+// discovery documents), so it can run before requirements. It DOES publish, so
+// it carries the Confluence space key and /api/approve provisions the space when
+// the gate is approved. Confluence only — never Jira.
 app.post("/api/capability-map/trigger", stageTrigger({
   logTag: "capability-map/trigger",
+  stageKey: "capabilities",
   level: "project",
   titlePrefix: "Generate capability map",
-  intro: "Generated by the Scyne chatbot. Produce the Business Capability Map and the L1/L2/L3 Process Model for this PROJECT, from every document the client has. Local artefacts only — nothing is published to Confluence or Jira.",
+  intro: "Generated by the Scyne chatbot. Produce the Business Capability Map and the L1/L2/L3 Process Model for this PROJECT, from every document the client has. On approval, publish to its own Confluence page — Confluence only, never Jira.",
   gateErrorCode: "no_documents",
   gateMessage: (p, _f, docs) =>
     docs && docs.other > 0
       ? `No readable documents for ${p}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
       : `No documents found for ${p}. Upload at least one SOP, transcript or note (or a reference document tree) before generating the capability map.`,
-  confluence: false,
   inputs: (p) => [
     `Working folder: projects/${p}/solutions/Capabilities/ — stage the documents there, then run the skill.`,
     `- Stage with: node scripts/stage.mjs ${p} capabilities (converts to markdown and stages every document the project has)`,
@@ -500,12 +536,14 @@ app.post("/api/capability-map/trigger", stageTrigger({
     `- Outputs: solutions/Capabilities/outputs/{capability-map.json,process-model.json,capability-process.md}`,
     `- Validate with: node scripts/render-capability-map.mjs ${p} --validate-only`,
     `- Then update the project's single page: node scripts/render-companion-app.mjs ${p}`,
+    `- On approval, publish capability-process.md to a standalone Confluence page "${p} — Capability & Process Map" (Mermaid rendered to PNG), attaching both JSON files.`,
   ],
 }));
 
 // 2h. UI mockups — the UX Designer turns everything the feature has produced into
 // a screen specification, rendered as themed HTML pages linked from the companion
-// app's UI tab. Like the capability map it publishes nothing (confluence: false).
+// app's UI tab. It publishes nothing (confluence: false) — unlike the capability
+// map, which does.
 // Gated on documents rather than the product summary: the skill needs "the product
 // summary OR the discovery documents", and a feature with documents but no
 // requirements can still get grounded wireframes. In practice this runs late, once
@@ -513,6 +551,7 @@ app.post("/api/capability-map/trigger", stageTrigger({
 // specific — but nothing here forces that order.
 app.post("/api/ui-mockups/trigger", stageTrigger({
   logTag: "ui-mockups/trigger",
+  stageKey: "ui",
   titlePrefix: "Generate UI mockups",
   intro: "Generated by the Scyne chatbot. Design the UI mockups (wireframes) for this feature — one JSON screen specification, rendered into themed HTML pages linked from the companion app's UI tab. Local artefacts only — nothing is published to Confluence or Jira.",
   gateErrorCode: "no_documents",
@@ -655,12 +694,37 @@ app.get("/api/status/:issueId", async (req, res) => {
     else if (anyPending) stage = { key: "awaiting_approval", label: "Awaiting your approval" };
     else if (children.some((c) => c.status === "in_progress" || c.status === "in_review")) stage = { key: "ba_generating", label: flow.generatingLabel };
     else if (children.length > 0) stage = { key: "delegated", label: `Delegated to ${flow.worker}` };
-    else if (parent?.status === "in_progress") stage = { key: "delivery_lead_triaging", label: "Delivery Lead triaging the request" };
+    // No children, and something is running. WHO owns the issue decides what to
+    // say: a single-worker flow is assigned straight to its worker, so there is
+    // no Delivery Lead in it and no children will ever appear; the orchestrated
+    // flows (Set up project, Build UI) sit with the Delivery Lead until it
+    // dispatches. Reading the assignee is the honest signal — the old code
+    // assumed the Delivery Lead always owned the root and reported it triaging
+    // for flows it never sees.
+    else if (parent?.status === "in_progress" || parent?.status === "in_review") {
+      stage = parent.assigneeAgentId === paperclip.deliveryLeadId()
+        ? { key: "delivery_lead_triaging", label: "Delivery Lead triaging the request" }
+        : { key: "ba_generating", label: flow.generatingLabel };
+    }
     else stage = { key: "queued", label: "Queued" };
+
+    // The workflow already knows its own target — every trigger writes it into
+    // the root issue description ("- Project: X" from stageTrigger, "project: X"
+    // from the UI build). Surfacing it lets the UI recover a target the user
+    // never has to re-pick, which is what the approval preview needs to resolve
+    // a project-level gate.
+    const rootText = String((tree as any)?.description ?? "");
+    const pick = (key: string) => {
+      const m = rootText.match(new RegExp(`^\\s*[-*]?\\s*${key}\\s*:\\s*(.+)$`, "im"));
+      // The UI-build description annotates its feature line with a parenthetical.
+      return m ? m[1].replace(/\s{2,}\(.*$/, "").trim() || null : null;
+    };
+    const target = { project: pick("project"), feature: pick("feature") };
 
     res.json({
       tree,
       stage,
+      target,
       flatIssues,
       activity: flatComments,
       approvals: flatApprovals,
@@ -1472,8 +1536,9 @@ app.post("/api/revise", async (req, res) => {
       ] : [`- Nothing is published for this artefact.`]),
     ].join("\n");
 
-    const issue = await paperclip.createIssue(title, description);
-    res.json({ ...issue, stage: stageKey, artefact: pipeline.artefactKey(stageKey, feature) });
+    const owner = ownerFor(stageKey);
+    const issue = await paperclip.createIssue(title, description, owner.assignee);
+    res.json({ ...issue, stage: stageKey, worker: owner.worker, direct: owner.direct, artefact: pipeline.artefactKey(stageKey, feature) });
   } catch (e: any) {
     console.error("[revise] failed:", e);
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
@@ -1737,7 +1802,10 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
       `Render with: node scripts/render-companion-app.mjs ${project}`,
     ].join("\n");
 
-    // Assigned to the Delivery Lead (existing pattern). The Delivery Lead dispatches the Developer directly, then the UX Auditor.
+    // Stays with the Delivery Lead ON PURPOSE. Unlike the single-worker flows,
+    // this one orchestrates TWO sequential children — Developer, then UX Auditor
+    // once the build completes — which is exactly the job the Delivery Lead is
+    // for. Same reasoning for `Set up project`.
     const issue = await paperclip.createIssue(title, description);
     res.json(issue);
   } catch (e: any) {

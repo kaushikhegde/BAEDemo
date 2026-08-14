@@ -32,6 +32,8 @@ export interface ActivityItem {
 }
 export interface StatusSnapshot {
   stage: { key: string; label: string };
+  /** Parsed from the root issue description, so the UI can recover the target. */
+  target?: { project: string | null; feature: string | null };
   flatIssues: IssueProgress[];
   activity: ActivityItem[];
   approvals: ApprovalCardData[];

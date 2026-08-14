@@ -177,7 +177,7 @@ Stage 1 has no prerequisite — it reads every document the client has given us,
 
 This order is a recommendation, not a lock, except where the backend actually gates. The user may run any stage whose prerequisite is met, and may skip stages.
 
-1. **Capability map** — the Business Capability Map and the L1/L2/L3 Process Model for the PROJECT. Invoked via \`trigger_capability_map\` with a **project only**. **No prerequisite.** Publishes nothing.
+1. **Capability map** — the Business Capability Map and the L1/L2/L3 Process Model for the PROJECT, published to its own Confluence page. Invoked via \`trigger_capability_map\` with a **project only**. **No prerequisite.**
 2. **Personas & journey map** — the persona set and a journey per persona, for the PROJECT, published to one Confluence page per project. Its \`personas.json\` / \`journey-map.json\` are a build contract for the companion app. Invoked via \`trigger_personas\` with a **project only**. **Prerequisite: the capability map.**
 3. **Requirements** — transcripts + SOP/policy docs + UI screens into Jira stories + a Confluence Product Summary, for ONE feature. Invoked via \`trigger_requirement_generation\`. **No prerequisite.**
 4. **UI mockups** — wireframes of the client's future screens: one screen specification rendered as themed HTML pages, each with its error / empty / blocked states, tracing back to the stories and capabilities it realises. Invoked via \`trigger_ui_mockups\`. **Prerequisite: the Product Summary.** It runs BEFORE the data model deliberately — a client wants to see screens before committing to a schema — so the first pass carries generic field names and the application offers a refresh once the data model and test pack exist. Publishes nothing; the screens appear on the companion app's **UI** tab.
@@ -260,7 +260,7 @@ Both need **only the Product Summary**. Do NOT tell the user to run the data mod
 - **Capability map** ("generate the capability map", "build the capability model", "what are the business capabilities", "produce the process model", "map the L1/L2/L3 processes", "give me the operating model", "capability heatmap"): call \`trigger_capability_map\` with the **project only**. Do NOT pass a feature.
 - It has **no prerequisite** — it reads every document the client has given us, so it can run on a brand-new project before any feature exists.
 - The only way it can fail is \`no_documents\`. Then ask for uploads and try again.
-- It publishes nothing. When it finishes, the artefacts are on disk and appear on the project's companion app.
+- It publishes to its own Confluence page on approval, and the artefacts also appear on the project's companion app.
 
 ### Setting up a new project
 
@@ -405,7 +405,7 @@ const triggerTool: Tool = {
     },
     {
       name: "trigger_capability_map",
-      description: "Fires the Capabilities Process Architect to build a Business Capability Map (L1-L3 hierarchy with current/target maturity) and an L1/L2/L3 Process Model (lifecycle phase / step / activity with actor, service tier and components) for a PROJECT, derived from every document the client has given us across all of its features. Call this when the user asks for a capability map, capability model, business capabilities, capability heatmap, process model, process taxonomy, L1/L2/L3 processes, value chain or operating model. This is a PROJECT-level artefact: pass the project ONLY, never a feature — it describes the client organisation, not one slice of work. It has NO prerequisite (never require requirements, a data model or a solution design first) and publishes nothing to Confluence or Jira.",
+      description: "Fires the Capabilities Process Architect to build a Business Capability Map (L1-L3 hierarchy with current/target maturity) and an L1/L2/L3 Process Model (lifecycle phase / step / activity with actor, service tier and components) for a PROJECT, derived from every document the client has given us across all of its features. Call this when the user asks for a capability map, capability model, business capabilities, capability heatmap, process model, process taxonomy, L1/L2/L3 processes, value chain or operating model. This is a PROJECT-level artefact: pass the project ONLY, never a feature — it describes the client organisation, not one slice of work. It has NO prerequisite (never require requirements, a data model or a solution design first). It publishes to its own Confluence page on approval — Confluence only, never Jira.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {

@@ -24,6 +24,12 @@ import path from "node:path";
 
 export const LEVEL = { PROJECT: "project", FEATURE: "feature" };
 
+// `agentKey` on each stage is the bootstrap spec key, which is also how
+// .bootstrap/ids.json keys its `org` map. That lets the chatbot assign a
+// single-worker flow STRAIGHT to its worker instead of routing it through the
+// Delivery Lead — which cost 2-3 extra agent wakes per flow, each re-reading
+// the Delivery Lead's 10k-token instructions to do nothing but create one child.
+
 // Folders under a feature (or project) that are OUTPUT, not source material.
 // Never staged as discovery documents, never converted to markdown.
 export const NOT_SOURCE = new Set([
@@ -44,10 +50,11 @@ export const STAGES = {
     order: 1,
     label: "Capability & Process Map",
     agent: "Capabilities Process Architect",
+    agentKey: "capArchitect",
     skill: "capability-process-map",
     work: "solutions/Capabilities",
     titlePrefix: "Generate capability map",
-    publishes: false,
+    publishes: true,
     produces: [
       "solutions/Capabilities/outputs/capability-process.md",
       "solutions/Capabilities/outputs/capability-map.json",
@@ -63,6 +70,7 @@ export const STAGES = {
     order: 2,
     label: "Personas & Journey Map",
     agent: "Service Designer",
+    agentKey: "serviceDesigner",
     skill: "persona-journey-map",
     work: "solutions/Experience",
     titlePrefix: "Generate personas",
@@ -86,6 +94,7 @@ export const STAGES = {
     order: 3,
     label: "Requirements & Product Summary",
     agent: "BA",
+    agentKey: "ba",
     skill: "requirement-generator",
     work: "requirements",
     titlePrefix: "Generate requirements",
@@ -108,6 +117,7 @@ export const STAGES = {
     order: 4,
     label: "UI Mockups",
     agent: "UX Designer",
+    agentKey: "uxDesigner",
     skill: "ui-mockup-generator",
     work: "solutions/UI",
     titlePrefix: "Generate UI mockups",
@@ -133,6 +143,7 @@ export const STAGES = {
     order: 5,
     label: "Salesforce Data Model",
     agent: "Data Modeler",
+    agentKey: "dataModeler",
     skill: "salesforce-data-modeler",
     work: "solutions/DataModel",
     titlePrefix: "Generate data model",
@@ -147,6 +158,7 @@ export const STAGES = {
     order: 6,
     label: "Solution Architecture",
     agent: "Solution Architect",
+    agentKey: "solutionArchitect",
     skill: "salesforce-service-cloud-architecture",
     work: "solutions/Architecture",
     titlePrefix: "Generate solution architecture",
@@ -165,6 +177,7 @@ export const STAGES = {
     order: 7,
     label: "Test Cases",
     agent: "QA Architect",
+    agentKey: "qaArchitect",
     skill: "requirements-test-case-generator",
     work: "solutions/QA",
     titlePrefix: "Generate test cases",
@@ -189,6 +202,7 @@ export const STAGES = {
     optional: true,
     label: "Solution Design (optional side stage)",
     agent: "Architecture Lead",
+    agentKey: "archLead",
     skill: "solution-design-document",
     work: "solutions/Design",
     titlePrefix: "Generate solution design",
@@ -204,6 +218,7 @@ export const STAGES = {
     order: 8,
     label: "Companion App",
     agent: "Developer",
+    agentKey: "ui",
     script: "node scripts/render-companion-app.mjs <project>",
     work: "-",
     titlePrefix: "Build UI",

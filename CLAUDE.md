@@ -14,8 +14,8 @@ everything else hangs off:
 feature reads it.**
 
 1. A **Business Capability Map + L1/L2/L3 Process Model**, derived from every
-   document the client has given us, across all their features. Local artefact —
-   nothing is published.
+   document the client has given us, across all their features. Published to its
+   own Confluence page per project.
 2. An **evidence-traced persona set + a journey map per persona**, published to
    one Confluence page per project — plus `personas.json` and `journey-map.json`,
    which are a **build contract for the companion app**. Needs (1): journey
@@ -381,7 +381,8 @@ regenerate-from-scratch defeats the approval gate that follows.
 - Outputs: `capability-map.json` (L1–L4 hierarchy, current/target maturity,
   lifecycle stage), `process-model.json` (L1 phase / L2 step / L3 activity with
   actor, service tier, components, capability IDs), `capability-process.md`.
-- No prerequisite, no publishing. Writes no HTML — the project's single page is
+- No prerequisite. Publishes to its own Confluence page (`<project> — Capability
+  & Process Map`) on approval; Confluence only, never Jira. Writes no HTML — the project's single page is
   rendered by `render-companion-app.mjs`.
 - Deduplicate by what the organisation does: a capability exercised in three
   features is ONE capability citing all three.
@@ -490,7 +491,7 @@ open http://127.0.0.1:5173
 | **POST** | **`/api/features`** | **Create a feature** under a project. `400 reserved_name` for a name that would clash with a project folder or CLI stage keyword |
 | **POST** | **`/api/upload/project`** | The wizard's untyped dropzone → `projects/<p>/documents/`, converted to markdown on arrival, original archived |
 | **POST** | **`/api/project/bootstrap`** | `Set up project — <project>`: capability map, then personas, sequentially. `409 no_documents` |
-| POST | `/api/capability-map/trigger` | `Generate capability map — <project>`. **PROJECT level, no feature.** `409 no_documents` only. Publishes nothing |
+| POST | `/api/capability-map/trigger` | `Generate capability map — <project>`. **PROJECT level, no feature.** `409 no_documents` only. Publishes to Confluence |
 | POST | `/api/personas/trigger` | `Generate personas — <project>`. **PROJECT level, no feature.** `409 no_capability_map` |
 | POST | `/api/trigger` | `Generate requirements — …`. Feature level. `409 missing_inputs` if SOP/Transcripts/UI are empty |
 | POST | `/api/ui-mockups/trigger` | `Generate UI mockups — …`. `409 no_documents` only. Publishes nothing |

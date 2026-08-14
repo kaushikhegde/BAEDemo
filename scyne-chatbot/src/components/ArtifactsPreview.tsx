@@ -74,16 +74,21 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
   const [data, setData] = useState<Artifacts | null>(null);
   const [tab, setTab] = useState<ArtifactTab>("stories");
 
+  // A project-level gate (capability map, personas) has no feature, and the
+  // backend serves those from `?project=` alone. Gating on both here is what
+  // used to leave a project approval with nothing to review.
   useEffect(() => {
-    if (!project || !feature) { setData(null); return; }
-    const url = `/api/artifacts?project=${encodeURIComponent(project)}&feature=${encodeURIComponent(feature)}`;
+    if (!project) { setData(null); return; }
+    const url = feature
+      ? `/api/artifacts?project=${encodeURIComponent(project)}&feature=${encodeURIComponent(feature)}`
+      : `/api/artifacts?project=${encodeURIComponent(project)}`;
     fetch(url).then((r) => r.json()).then(setData).catch(() => {});
   }, [project, feature]);
 
-  if (!project || !feature) {
+  if (!project) {
     return (
       <div className="mt-3 text-sm text-muted-foreground italic">
-        Pick a project/feature in the target picker to preview the artifacts.
+        Pick a project in the target picker to preview the artifacts.
       </div>
     );
   }
@@ -98,6 +103,31 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
     );
   }
 
+  // Which tabs this target can actually show. Feature-scoped artefacts are
+  // hidden entirely on a project-level gate, so the card never opens on an
+  // empty "Stories" tab for a project that has no features yet.
+  const visible: ArtifactTab[] = [
+    ...(feature ? (["stories", "summary", "gaps"] as ArtifactTab[]) : []),
+    ...(feature && data.dataModel ? (["datamodel"] as ArtifactTab[]) : []),
+    ...(feature && data.solutionDesign ? (["solution"] as ArtifactTab[]) : []),
+    ...(feature && data.solutionArchitecture ? (["architecture"] as ArtifactTab[]) : []),
+    ...(feature && data.testCases ? (["testcases"] as ArtifactTab[]) : []),
+    ...(data.capabilityMap ? (["capability"] as ArtifactTab[]) : []),
+    ...(data.personas ? (["personas"] as ArtifactTab[]) : []),
+  ];
+
+  if (visible.length === 0) {
+    return (
+      <div className="mt-3 text-sm text-muted-foreground italic">
+        Nothing generated for <span className="font-medium not-italic">{feature ? `${project} / ${feature}` : project}</span> yet.
+      </div>
+    );
+  }
+
+  // Fall back rather than persist a selection this target can't render — `tab`
+  // survives a target change, and "stories" is the initial value.
+  const active: ArtifactTab = visible.includes(tab) ? tab : visible[0];
+
   const tabBtn = (key: ArtifactTab, label: string, count?: number) => (
     <Button
       key={key}
@@ -106,28 +136,32 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
       size="sm"
       className={cn(
         "rounded-full",
-        tab === key && "bg-secondary text-secondary-foreground hover:bg-secondary"
+        active === key && "bg-secondary text-secondary-foreground hover:bg-secondary"
       )}
     >
       {label}{typeof count === "number" ? ` · ${count}` : ""}
     </Button>
   );
 
+  const LABELS: Record<ArtifactTab, string> = {
+    stories: "Stories",
+    summary: "Product Summary",
+    gaps: "Gaps",
+    datamodel: "Data Model",
+    solution: "Solution Design",
+    architecture: "Solution Architecture",
+    testcases: "Test Cases",
+    personas: "Personas & Journeys",
+    capability: "Capability Map",
+  };
+
   return (
     <div className="mt-3 space-y-3">
       <div className="flex gap-1.5 flex-wrap">
-        {tabBtn("stories", "Stories", data.stories.length)}
-        {tabBtn("summary", "Product Summary")}
-        {tabBtn("gaps", "Gaps")}
-        {data.dataModel && tabBtn("datamodel", "Data Model")}
-        {data.solutionDesign && tabBtn("solution", "Solution Design")}
-        {data.solutionArchitecture && tabBtn("architecture", "Solution Architecture")}
-        {data.testCases && tabBtn("testcases", "Test Cases")}
-        {data.personas && tabBtn("personas", "Personas & Journeys")}
-        {data.capabilityMap && tabBtn("capability", "Capability Map")}
+        {visible.map((k) => tabBtn(k, LABELS[k], k === "stories" ? data.stories.length : undefined))}
       </div>
       <div className="max-h-80 overflow-y-auto pr-1">
-        {tab === "stories" && (
+        {active === "stories" && (
           <div className="space-y-2">
             {data.stories.length === 0 && (
               <div className="text-sm text-muted-foreground italic py-4 text-center">
@@ -137,7 +171,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             {data.stories.map((s, i) => <StoryCard key={i} s={s} />)}
           </div>
         )}
-        {tab === "summary" && (
+        {active === "summary" && (
           <div className="text-slate-800">
             {data.productSummary ? (
               <MiniMarkdown source={data.productSummary} />
@@ -146,7 +180,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "gaps" && (
+        {active === "gaps" && (
           <div className="text-slate-800">
             {data.gaps ? (
               <MiniMarkdown source={data.gaps} />
@@ -155,7 +189,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "datamodel" && (
+        {active === "datamodel" && (
           <div className="text-slate-800">
             {data.dataModel ? (
               <MiniMarkdown source={data.dataModel} />
@@ -164,7 +198,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "solution" && (
+        {active === "solution" && (
           <div className="text-slate-800">
             {data.solutionDesign ? (
               <MiniMarkdown source={data.solutionDesign} />
@@ -173,7 +207,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "architecture" && (
+        {active === "architecture" && (
           <div className="text-slate-800">
             {data.solutionArchitecture ? (
               <MiniMarkdown source={data.solutionArchitecture} />
@@ -182,7 +216,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "testcases" && (
+        {active === "testcases" && (
           <div className="text-slate-800">
             {data.testCases ? (
               <MiniMarkdown source={data.testCases} />
@@ -191,7 +225,7 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "personas" && (
+        {active === "personas" && (
           <div className="text-slate-800">
             {data.personas ? (
               <MiniMarkdown source={data.personas} />
@@ -200,14 +234,14 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             )}
           </div>
         )}
-        {tab === "capability" && (
+        {active === "capability" && (
           <div className="text-slate-800">
             {data.capabilityMap ? (
               <>
                 {/* The architect also renders a self-contained interactive page;
                     it opens in its own tab rather than inside this card. */}
                 <a
-                  href={`/api/capability-map/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`}
+                  href={`/api/companion-app/${encodeURIComponent(project)}/`}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-block mb-2 text-sm font-medium text-scyne-ink hover:underline"

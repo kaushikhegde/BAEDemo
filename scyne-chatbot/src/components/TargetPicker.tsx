@@ -85,7 +85,9 @@ export function TargetPicker({ project, feature, onChange, onCreated, refreshKey
       ? tree[project]?.find((f) => f.name === feature)?.counts
       : null;
 
-  const label = project && feature ? `${project} / ${feature}` : "Set target";
+  // Project-only is a real target, not an unset one — say so, rather than
+  // telling a user who just created a project that nothing is selected.
+  const label = project ? (feature ? `${project} / ${feature}` : project) : "Set target";
 
   return (
     <div className="flex items-center gap-2 flex-wrap">

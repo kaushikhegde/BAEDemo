@@ -13,10 +13,15 @@ const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH
   || path.join(WORKSPACE_PATH, ".bootstrap", "ids.json");
 let COMPANY = "";
 let DELIVERY_LEAD_AGENT = "";
+// Every hired agent, keyed by the bootstrap spec key ("ba", "dataModeler", …).
+// The pipeline graph carries the same key on each stage as `agentKey`, so a
+// single-worker flow can be assigned STRAIGHT to its worker.
+let ORG: Record<string, string> = {};
 try {
   const ids = JSON.parse(readFileSync(IDS_PATH, "utf8"));
   COMPANY = ids.companyId || "";
   DELIVERY_LEAD_AGENT = ids.deliveryLeadAgentId || "";
+  ORG = (ids.org && typeof ids.org === "object") ? ids.org : {};
   if (!COMPANY || !DELIVERY_LEAD_AGENT) {
     throw new Error(`ids.json present but missing companyId/deliveryLeadAgentId`);
   }
@@ -46,14 +51,40 @@ async function call<T = any>(method: string, path: string, body?: unknown): Prom
 export const paperclip = {
   health: () => call("GET", "/health"),
 
-  createIssue(title: string, description: string) {
+  /**
+   * Create a top-level issue.
+   *
+   * `assigneeAgentId` defaults to the Delivery Lead, which is right for the
+   * flows that genuinely orchestrate (Set up project, Build UI). A single-worker
+   * flow should pass its worker's id instead — routing those through the
+   * Delivery Lead cost 2-3 extra agent wakes, each re-reading a 10k-token
+   * instruction bundle to create one child and exit.
+   */
+  createIssue(title: string, description: string, assigneeAgentId?: string) {
     return call("POST", `/companies/${COMPANY}/issues`, {
       title,
       description,
-      assigneeAgentId: DELIVERY_LEAD_AGENT,
+      assigneeAgentId: assigneeAgentId || DELIVERY_LEAD_AGENT,
       status: "todo",
       priority: "medium",
     });
+  },
+
+  /**
+   * The live id for a bootstrap spec key, or null.
+   *
+   * Null is a real case, not a defensive flourish: until the icon fix, four
+   * agents had never been hired and were simply absent from ids.json. Callers
+   * fall back to the Delivery Lead so the flow degrades to the old behaviour
+   * rather than 500ing.
+   */
+  agentId(specKey: string): string | null {
+    const id = ORG[specKey];
+    return typeof id === "string" && id ? id : null;
+  },
+
+  deliveryLeadId(): string {
+    return DELIVERY_LEAD_AGENT;
   },
 
   getIssue(id: string) {
