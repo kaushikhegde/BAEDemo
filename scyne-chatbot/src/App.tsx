@@ -958,7 +958,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         <section className="lg:col-span-4 flex flex-col gap-4">
           <div
             ref={scrollRef}
-            className="overflow-y-auto scroll-smooth pr-2 space-y-4"
+            // overflow-x-hidden is not cosmetic: `overflow-y-auto` alone makes
+            // the CSS-computed overflow-x `auto` too (an element cannot scroll
+            // on one axis and stay visible on the other), so ANY child wider
+            // than the column adds a second, horizontal scrollbar. A transcript
+            // should only ever scroll vertically — wide children scroll inside
+            // themselves, which the code blocks and tables already do.
+            className="overflow-y-auto overflow-x-hidden scroll-smooth pr-2 space-y-4"
             style={{ height: `calc(100vh - 16rem - ${composerExtra}px)` }}
           >
             {showSuggestions && (

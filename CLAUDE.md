@@ -380,7 +380,11 @@ Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills`
 registers them with Paperclip from these files. To edit a skill, change its
 `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated
-content. `npm run link-skills` symlinks them into `.claude/skills/` so they can be
+content. **`npm run bootstrap` symlinks them into `.claude/skills/` automatically** —
+the agents run Claude Code with `cwd` at the workspace root and it discovers skills
+from there, so a clone that skipped this used to hire a correct org whose agents then
+failed with `Unknown skill: <slug>`. `npm run link-skills` does the same thing on its
+own, so they can be
 run in a plain Claude Code session too.
 
 **Every skill has a `## Revision mode` section.** When the invocation supplies a
@@ -645,6 +649,8 @@ not survive a fresh clone):
 
 ```bash
 npm run link-skills        # symlinks every ./skills/<slug> into .claude/skills/
+                           # (npm run bootstrap already does this — only needed if
+                           #  you add a skill and don't want to re-bootstrap)
 ```
 
 Symlinks, not copies — a copy silently drifts from the registered source. (This
@@ -1065,6 +1071,8 @@ with the registry, the registry wins.
 | Agent says "PAPERCLIP_API_KEY not set"                   | Claude misread Paperclip auth — local_trusted needs no key                      | Re-emphasise in the agent's AGENTS.md that no auth is required; force fresh session via `{"forceFreshSession": true}` on wake. |
 | Agent loops searching for an MCP / tool                  | Stale session, or `--mcp-config` not set on adapter                             | Add `extraArgs: ["--mcp-config", "<abs path to .mcp.json>"]` on the agent's `adapterConfig`. Force fresh session.                |
 | Agent doesn't pick up a new issue                        | Issue created with `status=backlog` (the default)                               | Always pass `status: "todo"` when creating issues assigned to agents.                                                          |
+| `<tool_use_error>Unknown skill: <slug></tool_use_error>` mid-run | **Most often: `.claude/skills/` was never populated on this clone.** Claude Code discovers skills there, not from `./skills/`, and `.claude/` is gitignored. `npm run bootstrap` now creates the symlinks itself. | Re-run `npm run bootstrap` (or `npm run link-skills`), then confirm `ls -l .claude/skills` shows one symlink per skill. |
+| `Unknown skill` persisting after the links exist | The skill is a registered **company** skill but was never **granted** to that agent. `desiredSkills` used to be sent only at hire, so an agent hired before its spec gained a skill never got it — and re-bootstrapping renamed/re-parented it while silently leaving the grant behind. | Re-run `npm run bootstrap`: skill grants now converge on the PATCH as well as at hire. Verify with `GET /api/companies/<id>/skills` (is the slug registered?) and the agent's own skills. If the build rejects grants on PATCH, bootstrap warns and you must re-hire that agent. |
 | Delivery Lead does the work itself instead of delegating to the BA  | Stale Delivery Lead Claude session carrying a prior "do it myself" conclusion, or agents never (re)bootstrapped after a code/instructions change. Verified May 2026: on a clean `npm run bootstrap` the Delivery Lead correctly creates a BA child and the BA raises the approval gate — the delegation path is sound. | Re-run `npm run bootstrap` (re-pushes instructions, sets `cwd`), then force a fresh Delivery Lead session on the next wake with `{"forceFreshSession": true}`. Confirm the Delivery Lead's `adapterConfig.cwd` points at this repo and `instructionsFilePath` is set (`GET /api/agents/<delivery-lead-id>`). |
 | Chatbot shows "undefined" for a parameter                | Frontend reading old field name                                                 | Search for the renamed field across `src/`; rebuild the tool schema response handler if needed.                                |
 | `/api/features` returns `{}`                             | `projects/` folder missing, or `WORKSPACE_PATH` env var pointing elsewhere      | `mkdir projects/<project>/<feature>/...`, restart dev server.                                                                  |

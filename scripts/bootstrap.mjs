@@ -19,7 +19,9 @@
 // Paperclip but absent from the spec are left alone (no surprise deletions).
 
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { STAGES } from "./pipeline.mjs";
 
 const BASE = (process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api").replace(/\/$/, "");
@@ -30,7 +32,15 @@ const WORKSPACE = process.env.WORKSPACE_PATH || "/workspace";
 // ids.json) finds it. Must derive from WORKSPACE — hardcoding /workspace breaks the
 // host-native run, where /workspace at the filesystem root isn't writable (EACCES).
 const IDS_PATH = process.env.BOOTSTRAP_IDS_PATH || `${WORKSPACE}/.bootstrap/ids.json`;
-const SKILLS_DIR = process.env.SKILLS_DIR || "/seed/skills";
+// Docker mounts the skills at /seed/skills; a host clone has them at <repo>/skills.
+// `npm run bootstrap` sets SKILLS_DIR explicitly, but running
+// `node scripts/bootstrap.mjs` directly used to fall back to the Docker path,
+// find nothing, warn once per skill and carry on — leaving every agent hired
+// WITHOUT its skill. That surfaces much later as `Unknown skill: <slug>`, a long
+// way from the cause. Fall back to the repo's own skills/ when /seed is absent.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SKILLS_DIR = process.env.SKILLS_DIR
+  || (existsSync("/seed/skills") ? "/seed/skills" : path.join(REPO_ROOT, "skills"));
 // The directory each agent uses as its Claude Code cwd. In the all-in-Docker stack
 // the agents run INSIDE the paperclip container, so this is the container path
 // (/workspace). In host-Paperclip mode the agents run ON THE HOST, so it must be
@@ -85,7 +95,9 @@ const OLD_IDS = {
 // are applied via PATCH on every run so re-titling, icon swaps, and re-parenting
 // converge idempotently. `file` is the AGENTS.md bundle under
 // INSTRUCTIONS_DIR — only set for agents whose instructions ship in this repo.
-// `skills` is forwarded as `desiredSkills` on hire. Spec order is topologically
+// `skills` is forwarded as `desiredSkills` on hire AND on the convergence PATCH,
+// so adding a skill to an already-hired agent takes effect on the next bootstrap.
+// Spec order is topologically
 // sorted (CEO → leads → ICs) so `reportsToKey` always resolves before use.
 //
 // Note: the source org chart shows "Pricing Specalist" — kept as
@@ -228,6 +240,54 @@ async function refreshCompanySkill(companyId, slug, markdown, existing) {
 // is created; an existing one is refreshed in place so SKILL.md edits propagate on
 // every bootstrap (no manual re-register needed). If no update route is accepted,
 // we warn loudly rather than silently leaving stale content registered.
+/**
+ * Symlink every skill into <AGENT_CWD>/.claude/skills/.
+ *
+ * This is what `npm run link-skills` did as a shell one-liner — folded in here
+ * because it is NOT optional for the agents. Each agent runs Claude Code with
+ * `cwd: AGENT_CWD`, and Claude Code discovers skills from `.claude/skills/`,
+ * not from this repo's `skills/`. A clone that never ran link-skills hires a
+ * perfectly configured org whose agents then fail at the moment of use with
+ * `Unknown skill: <slug>` — the failure is a whole pipeline stage away from the
+ * missing step, which is exactly what happened to a client.
+ *
+ * `.claude/` is gitignored, so a fresh clone never has these. Doing it on every
+ * bootstrap costs nothing and removes the manual step entirely.
+ *
+ * Symlinks, not copies: a copy silently drifts from the registered source, and
+ * that has already happened once (a stale 157-line copy of a 199-line skill).
+ */
+async function ensureSkillSymlinks() {
+  let slugs;
+  try {
+    slugs = (await fs.readdir(SKILLS_DIR, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    console.warn(`[bootstrap] WARN: no skills directory at ${SKILLS_DIR} — skipping .claude/skills links`);
+    return;
+  }
+  if (!slugs.length) return;
+
+  const linkDir = path.join(AGENT_CWD, ".claude", "skills");
+  await fs.mkdir(linkDir, { recursive: true });
+
+  let made = 0, ok = 0;
+  for (const slug of slugs) {
+    const link = path.join(linkDir, slug);
+    // Relative so the tree survives being moved; resolves correctly whether the
+    // skills live inside AGENT_CWD (host clone) or beside it (Docker /seed).
+    const target = path.relative(linkDir, path.join(SKILLS_DIR, slug));
+    try {
+      if (await fs.readlink(link) === target) { ok++; continue; }
+    } catch { /* missing, or a real dir/file where the link should be */ }
+    await fs.rm(link, { recursive: true, force: true });
+    await fs.symlink(target, link);
+    made++;
+  }
+  console.log(`[bootstrap] .claude/skills: ${made} linked, ${ok} already correct (${linkDir})`);
+}
+
 async function ensureCompanySkills(companyId) {
   const needed = [...new Set(AGENTS.flatMap((a) => a.skills ?? []))];
   if (needed.length === 0) return;
@@ -311,6 +371,7 @@ async function main() {
   console.log("[bootstrap] board approval for new agents disabled");
 
   // Register any skills the agents reference before hiring (else the hire 422s).
+  await ensureSkillSymlinks();
   await ensureCompanySkills(companyId);
 
   // Single ordered pass: ensure each agent exists, then PATCH it to spec. Spec
@@ -359,14 +420,39 @@ async function main() {
     // runtimeConfig is included so existing pre-2026.525 hires get migrated to
     // heartbeat-enabled on the next bootstrap.
     const reportsTo = spec.reportsToKey ? ids[spec.reportsToKey] : null;
-    await api("PATCH", `/agents/${ids[spec.key]}`, {
+    const patch = {
       adapterConfig: adapterConfigFor(spec),
       name: spec.name,
       title: spec.title,
       icon: spec.icon,
       reportsTo,
       runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
-    });
+      // Skill grants have to converge too, not just be set at hire.
+      //
+      // `desiredSkills` used to be passed ONLY in the hire branch, so an agent
+      // hired before its spec gained a skill never received it — and no amount
+      // of re-bootstrapping fixed it, because this PATCH renamed, re-titled and
+      // re-parented the agent while silently leaving the grant behind. The
+      // company skill registers fine, so the failure surfaces much later as
+      // `Unknown skill: <slug>` the first time that agent tries to run it.
+      desiredSkills: spec.skills ?? [],
+    };
+    try {
+      await api("PATCH", `/agents/${ids[spec.key]}`, patch);
+    } catch (e) {
+      // Older Paperclip builds may reject desiredSkills on PATCH. Converge
+      // everything else rather than failing the whole bootstrap, and say plainly
+      // what was skipped so a missing grant is not a silent mystery later.
+      if (!/desiredSkills/i.test(String(e)) && !/\b(400|422)\b/.test(String(e))) throw e;
+      const { desiredSkills, ...rest } = patch;
+      await api("PATCH", `/agents/${ids[spec.key]}`, rest);
+      if (desiredSkills.length) {
+        console.warn(
+          `[bootstrap] WARN: ${spec.name} — this Paperclip build rejected skill grants on PATCH. ` +
+          `If it reports "Unknown skill", re-hire the agent so [${desiredSkills.join(", ")}] is applied at hire.`,
+        );
+      }
+    }
     console.log(`[bootstrap] ${spec.name} title='${spec.title}' reportsTo=${reportsTo ?? "(none)"}`);
   }
 

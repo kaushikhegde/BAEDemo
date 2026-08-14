@@ -774,6 +774,15 @@ function page({ project, features, generatedOn, p, theme }) {
       feature: f.feature,
       has: t.has(f),
       stat: t.has(f) ? t.stat(f) : "Not generated",
+      // Which Product Summary this feature's artefacts belong to. A feature
+      // normally has exactly one, but the card names it anyway: "MVP / 8
+      // stories" does not say WHAT those stories realise, and the summary is
+      // the document every other stage is derived from.
+      ps: f.summaries.length === 1
+        ? f.summaries[0].title
+        : f.summaries.length > 1
+          ? `${f.summaries.length} product summaries`
+          : null,
       docs: t.id === "summary" ? f.html.summaries
           : t.id === "testcases" ? f.html.packs
           : t.id === "datamodel" ? (f.html.dataModel ? [{ id: f.feature, title: f.dataModelKind || "Data Model", html: f.html.dataModel }] : [])
@@ -1058,6 +1067,9 @@ main{min-width:0}
 .feat-card:hover{transform:translateY(-2px);border-color:var(--brand);box-shadow:0 4px 10px rgba(20,24,40,.09),0 14px 32px rgba(20,24,40,.09)}
 .feat-card .fc-name{font-size:1.02rem;font-weight:700;line-height:1.3}
 .feat-card .fc-stat{font-size:.82rem;color:var(--muted)}
+.feat-card .fc-ps{display:flex;flex-direction:column;gap:.1rem;font-size:.82rem;color:var(--ink,inherit)}
+.feat-card .fc-ps-label{font-size:.64rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.fh-ps{font-size:.86rem;color:var(--muted);margin:.15rem 0 0}
 .feat-card .fc-go{margin-top:.35rem;font-size:.78rem;font-weight:700;color:var(--brand-fg,var(--brand-deep))}
 /* A feature that has not run this stage is shown, not hidden: a visible gap is
    more useful to a reviewer than a silently shorter list. */
@@ -2076,6 +2088,11 @@ ${(() => {
 
     var head = $("#" + tabId + "-head"); head.innerHTML = "";
     head.appendChild(el("h2","panel-h", row.feature));
+    // Name the Product Summary these artefacts realise. On the summary tab the
+    // document heading already says it, so it would only repeat.
+    if(row.ps && tabId !== "summary"){
+      head.appendChild(el("p","fh-ps","Product Summary · " + row.ps));
+    }
     head.appendChild(el("p","fh-stat", row.stat));
     if(row.missing && row.missing.length){
       var names = row.missing.map(function(m){ return m === "DataModel" ? "the data model" : "the test pack"; });
@@ -2162,6 +2179,12 @@ ${(() => {
       var card = el("button", "feat-card" + (r.has ? "" : " is-empty"));
       card.type = "button";
       card.appendChild(el("span","fc-name", r.feature));
+      if(r.ps && tabId !== "summary"){
+        var ps = el("span","fc-ps");
+        ps.appendChild(el("span","fc-ps-label","Product Summary"));
+        ps.appendChild(document.createTextNode(r.ps));
+        card.appendChild(ps);
+      }
       card.appendChild(el("span","fc-stat", r.stat));
       if(r.has){
         card.appendChild(el("span","fc-go","Open →"));

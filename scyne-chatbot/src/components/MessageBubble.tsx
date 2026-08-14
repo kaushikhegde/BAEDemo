@@ -18,7 +18,7 @@ function DecisionRecord({ m }: { m: UIMessage }) {
     <div className="flex justify-start gap-3 animate-slide-up">
       <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-transparent" />
       <div
-        className={`max-w-[88%] w-full rounded-lg border px-3 py-2.5 ${
+        className={`max-w-[88%] w-full min-w-0 rounded-lg border px-3 py-2.5 ${
           approved
             ? "border-emerald-200 bg-emerald-50/70"
             : "border-amber-200 bg-amber-50/70"
@@ -59,7 +59,7 @@ export function MessageBubble({ m }: { m: UIMessage }) {
     return (
       <div className="flex justify-start gap-3 animate-slide-up">
         <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-transparent" />
-        <div className="max-w-[88%] w-full">
+        <div className="max-w-[88%] w-full min-w-0">
           <LinksPanel links={m.links} />
         </div>
       </div>
@@ -82,7 +82,7 @@ export function MessageBubble({ m }: { m: UIMessage }) {
         aria-hidden
         className="mt-2 size-2 shrink-0 rounded-full bg-brand-gradient shadow-glow"
       />
-      <div className="max-w-[88%] text-[15px] leading-7 text-slate-800">
+      <div className="max-w-[88%] min-w-0 break-words text-[15px] leading-7 text-slate-800">
         <MiniMarkdown source={m.text} />
       </div>
     </div>
