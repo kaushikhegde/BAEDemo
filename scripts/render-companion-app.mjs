@@ -282,10 +282,11 @@ function uniquifySvgIds(svg, n) {
   const ids = new Set();
   for (const m of svg.matchAll(/\sid="([^"]+)"/g)) ids.add(m[1]);
   if (!ids.size) return svg;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let out = svg;
   for (const id of ids) {
     const scoped = `d${n}-${id}`;
-    const q = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const q = esc(id);
     out = out
       .replace(new RegExp(`(\\sid=")${q}(")`, "g"), `$1${scoped}$2`)
       // url(#id), url("#id"), url('#id')
@@ -294,6 +295,25 @@ function uniquifySvgIds(svg, n) {
       .replace(new RegExp(`((?:xlink:)?href=")#${q}(")`, "g"), `$1#${scoped}$2`)
       .replace(new RegExp(`(aria-labelledby=")${q}(")`, "g"), `$1${scoped}$2`);
   }
+
+  // ...and the CSS selectors inside <style>, which is where mermaid puts nearly
+  // all of its styling: every rule is scoped `#my-svg .node rect { … }`, ~70 of
+  // them per diagram. Renaming the root element without rewriting these leaves
+  // every rule matching nothing, so nodes fall back to the SVG default fill —
+  // BLACK boxes with black text, and edge markers rendering as a filled blob.
+  // The diagram looked broken while the ids were, correctly, unique.
+  //
+  // Longest id first, with a lookahead: `#my-svg` must not eat the prefix of
+  // `#my-svg-drop-shadow` and leave `-drop-shadow` dangling.
+  const byLength = [...ids].sort((a, b) => b.length - a.length);
+  out = out.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/g, (_m, open, css, close) => {
+    let c = css;
+    for (const id of byLength) {
+      c = c.replace(new RegExp(`#${esc(id)}(?![\\w-])`, "g"), `#d${n}-${id}`);
+    }
+    return open + c + close;
+  });
+
   return out;
 }
 
