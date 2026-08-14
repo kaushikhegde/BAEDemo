@@ -20,6 +20,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { STAGES } from "./pipeline.mjs";
 
 const BASE = (process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100/api").replace(/\/$/, "");
 const COMPANY_NAME = process.env.SCYNE_COMPANY_NAME || "Scyne";
@@ -36,14 +37,28 @@ const SKILLS_DIR = process.env.SKILLS_DIR || "/seed/skills";
 // the host's absolute workspace path (AGENT_CWD = WORKSPACE_HOST_PATH) — otherwise
 // the agent tries to mkdir /workspace at the host root and hits EACCES.
 const AGENT_CWD = process.env.AGENT_CWD || WORKSPACE;
-const adapterConfig = {
-  cwd: AGENT_CWD,
-  extraArgs: ["--mcp-config", `${AGENT_CWD}/.mcp.json`],
-  // Default to Sonnet 4.6 (much cheaper than Opus). Override per-agent if a task
-  // genuinely needs Opus reasoning. Available ids: claude-opus-4-7, claude-opus-4-6,
-  // claude-sonnet-4-6, claude-haiku-4-6, claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001.
-  model: process.env.PAPERCLIP_AGENT_MODEL || "claude-sonnet-4-6",
-};
+// The Atlassian MCP's ~45 tool schemas cost roughly 8-12k tokens of context on
+// EVERY wake of an agent that loads them. Only the six agents that publish to
+// Confluence or Jira in their Phase 2 ever call those tools; the rest are
+// explicitly forbidden from touching Atlassian, so loading it for them was pure
+// waste — 18 of 24 agents paying a five-figure token tax per wake for a toolset
+// they must not use.
+//
+// `publishes: true` on a spec is what grants it. Nothing else should.
+function adapterConfigFor(spec) {
+  return {
+    cwd: AGENT_CWD,
+    // --strict-mcp-config so a stray user- or project-scope MCP cannot creep
+    // back in and reintroduce the cost we just removed.
+    ...(spec.publishes
+      ? { extraArgs: ["--strict-mcp-config", "--mcp-config", `${AGENT_CWD}/.mcp.json`] }
+      : { extraArgs: ["--strict-mcp-config"] }),
+    // Default to Sonnet 4.6 (much cheaper than Opus). Override per-agent if a task
+    // genuinely needs Opus reasoning. Available ids: claude-opus-4-7, claude-opus-4-6,
+    // claude-sonnet-4-6, claude-haiku-4-6, claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001.
+    model: spec.model || process.env.PAPERCLIP_AGENT_MODEL || "claude-sonnet-4-6",
+  };
+}
 const HEALTH_DEADLINE_MS = 120_000;
 
 // Old report UUIDs hard-coded inside agent-instructions/pm.json. We string-
@@ -94,21 +109,21 @@ const AGENTS = [
   { key: "ceo",              name: "CEO",                       title: "Chief Executive",         icon: "crown",          reportsToKey: null },
   { key: "pm",               name: "Delivery Lead",             title: "Delivery Lead",           icon: "rocket",         reportsToKey: "ceo",          file: "pm.json",         skills: [] },
   { key: "bidManager",       name: "Bid Manager",               title: "Bid Manager",             icon: "gem",            reportsToKey: "ceo" },
-  { key: "archLead",         name: "Architecture Lead",         title: "Architecture Lead",       icon: "circuit-board",  reportsToKey: "pm",           file: "architect-lead.json", skills: ["solution-design-document"] },
+  { key: "archLead",         name: "Architecture Lead",         title: "Architecture Lead",       icon: "circuit-board",  reportsToKey: "pm",           file: "architect-lead.json", skills: ["solution-design-document"] , publishes: true },
   { key: "businessLead",     name: "Business Lead",             title: "Business Lead",           icon: "lightbulb",      reportsToKey: "pm" },
   { key: "changeLead",       name: "Change Lead",               title: "Change Lead",             icon: "sparkles",       reportsToKey: "pm" },
   { key: "dataLead",         name: "Data Lead",                 title: "Data Lead",               icon: "database",       reportsToKey: "pm" },
   { key: "ux",               name: "UX Auditor",                title: "UX Auditor",              icon: "shield",         reportsToKey: "archLead",     file: "ux-auditor.json", skills: [] },
   { key: "architect",        name: "Architect",                 title: "Architect",               icon: "hammer",         reportsToKey: "archLead" },
-  { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["salesforce-data-modeler"] },
-  { key: "capArchitect",     name: "Capabilities Process Architect", title: "Capabilities Process Architect", icon: "hexagon",       reportsToKey: "archLead", file: "capabilities-process-architect.json", skills: ["capability-process-map"] },
-  { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "package",        reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] },
+  { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["salesforce-data-modeler"] , publishes: true },
+  { key: "capArchitect",     name: "Capabilities Process Architect", title: "Capabilities Process Architect", icon: "hexagon",       reportsToKey: "archLead", file: "capabilities-process-architect.json", skills: ["capability-process-map"] , publishes: true },
+  { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "package",        reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] , publishes: true },
   { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },
   { key: "uxDesigner",       name: "UX Designer",               title: "UX Designer",             icon: "wand",           reportsToKey: "archLead",     file: "ux-designer.json", skills: ["ui-mockup-generator"] },
-  { key: "serviceDesigner",  name: "Service Designer",          title: "Service Designer",        icon: "heart",          reportsToKey: "archLead",     file: "service-designer.json", skills: ["persona-journey-map"] },
-  { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] },
+  { key: "serviceDesigner",  name: "Service Designer",          title: "Service Designer",        icon: "heart",          reportsToKey: "archLead",     file: "service-designer.json", skills: ["persona-journey-map"] , publishes: true },
+  { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] , publishes: true },
   { key: "qaTester",         name: "QA Tester",                 title: "QA Tester",               icon: "bug",            reportsToKey: "businessLead" },
-  { key: "qaArchitect",      name: "QA Architect",              title: "QA Architect",            icon: "microscope",     reportsToKey: "businessLead", file: "qa-architect.json", skills: ["requirements-test-case-generator"] },
+  { key: "qaArchitect",      name: "QA Architect",              title: "QA Architect",            icon: "microscope",     reportsToKey: "businessLead", file: "qa-architect.json", skills: ["requirements-test-case-generator"] , publishes: true },
   { key: "contentWriter",    name: "Content Writer",            title: "Content Writer",          icon: "message-square", reportsToKey: "changeLead" },
   { key: "dataMigDev",       name: "Data Migration Developer",  title: "Data Migration Developer",icon: "git-branch",     reportsToKey: "dataLead" },
   { key: "solutionDesigner", name: "Solution Designer",         title: "Solution Designer",       icon: "puzzle",         reportsToKey: "bidManager" },
@@ -269,6 +284,25 @@ async function main() {
     process.exit(1);
   }
 
+  // `publishes` here grants the Atlassian MCP; `publishes` in the pipeline graph
+  // says whether that stage writes to Confluence/Jira. They are the same fact
+  // stated twice, so verify they agree rather than discovering the mismatch as
+  // an agent that cannot publish — or one quietly carrying 10k tokens of tools
+  // it must never use.
+  const shouldPublish = new Set(
+    Object.values(STAGES).filter((d) => d.publishes).map((d) => d.agent),
+  );
+  const mcpMismatch = AGENTS.filter((a) => Boolean(a.publishes) !== shouldPublish.has(a.name));
+  if (mcpMismatch.length) {
+    console.error(`\n[bootstrap] ${mcpMismatch.length} agent(s) disagree with scripts/pipeline.mjs on publishing:\n`);
+    for (const a of mcpMismatch) {
+      const want = shouldPublish.has(a.name);
+      console.error(`  ${a.name.padEnd(36)} bootstrap says ${a.publishes ? "publishes" : "does not"}, pipeline says ${want ? "publishes" : "does not"}`);
+    }
+    console.error(`\nThe Atlassian MCP is granted from this flag. Fix whichever is wrong.\n`);
+    process.exit(1);
+  }
+
   await waitForHealth();
   const companyId = await getOrCreateCompany();
 
@@ -299,7 +333,7 @@ async function main() {
         reportsTo,
         capabilities: PLACEHOLDER_CAPABILITIES,
         adapterType: "claude_local",
-        adapterConfig,
+        adapterConfig: adapterConfigFor(spec),
         // Paperclip 2026.525+ requires heartbeat enabled for queued wakes
         // (incl. interaction-accept continuations) to drain. Old advice was to
         // keep this disabled — that no longer works.
@@ -326,7 +360,7 @@ async function main() {
     // heartbeat-enabled on the next bootstrap.
     const reportsTo = spec.reportsToKey ? ids[spec.reportsToKey] : null;
     await api("PATCH", `/agents/${ids[spec.key]}`, {
-      adapterConfig,
+      adapterConfig: adapterConfigFor(spec),
       name: spec.name,
       title: spec.title,
       icon: spec.icon,
