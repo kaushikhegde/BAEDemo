@@ -175,8 +175,9 @@ async function main() {
   const [project, ...rest] = argv.filter((a) => !a.startsWith("--"));
   const feature = rest.join(" ");
 
-  if (!project || !feature) {
-    console.error("Usage: node scripts/convert-to-md.mjs <project> <feature> [--force] [--keep-originals]");
+  if (!project) {
+    console.error("Usage: node scripts/convert-to-md.mjs <project> [<feature>] [--force] [--keep-originals]");
+    console.error("  With no feature, converts the PROJECT's own documents/ tree.");
     process.exit(1);
   }
   for (const f of flags) {
@@ -186,20 +187,24 @@ async function main() {
     }
   }
 
-  const featureDir = path.join(WORKSPACE, "projects", project, feature);
-  const reqDir = path.join(featureDir, "requirements");
+  // With no feature, convert the project's own documents/ tree — the client-wide
+  // material the wizard uploads, which every project stage reads.
+  const scopeDir = feature
+    ? path.join(WORKSPACE, "projects", project, feature)
+    : path.join(WORKSPACE, "projects", project);
+  const srcDir = feature ? path.join(scopeDir, "requirements") : path.join(scopeDir, "documents");
   try {
-    await fs.access(reqDir);
+    await fs.access(srcDir);
   } catch {
-    console.error(`[convert-to-md] no requirements folder at ${path.relative(WORKSPACE, reqDir)}`);
+    console.error(`[convert-to-md] nothing to convert at ${path.relative(WORKSPACE, srcDir)}`);
     process.exit(1);
   }
 
-  const results = await convertTree(reqDir, {
+  const results = await convertTree(srcDir, {
     force: flags.has("--force"),
     archiveRoot: flags.has("--keep-originals")
       ? null
-      : path.join(featureDir, "original-files", "requirements"),
+      : path.join(scopeDir, "original-files", feature ? "requirements" : "documents"),
     onProgress: (f) => console.log(`  converting ${f} …`),
   });
 

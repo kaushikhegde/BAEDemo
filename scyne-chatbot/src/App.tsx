@@ -14,6 +14,8 @@ import { AttachmentButton } from "./components/AttachmentButton";
 import { RecordMeetingPanel } from "./components/RecordMeetingPanel";
 import { TargetPicker } from "./components/TargetPicker";
 import { PreviewPane } from "./components/PreviewPane";
+import { NewProjectWizard } from "./components/NewProjectWizard";
+import { SuggestionChips } from "./components/SuggestionChips";
 import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -22,7 +24,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -161,6 +163,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     try { window.localStorage.setItem("scyne_activity_view", activityView); } catch {}
   }, [activityView]);
   const [previewAvailable, setPreviewAvailable] = useState(false);
+  // The wizard takes over the whole view: creating a project is its own task,
+  // not something to do in a side panel while a workflow streams beside it.
+  const [showWizard, setShowWizard] = useState(false);
+  // Bumped whenever the pipeline moves, so the chips re-ask what is possible.
+  const [chipsKey, setChipsKey] = useState(0);
   const [pendingUiPrompt, setPendingUiPrompt] = useState<{ project: string; feature: string; headline: string; dedupeKey: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -203,6 +210,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       dedupeKey,
     });
   }, [status, targetProject, targetFeature, parentIssueId, previewAvailable]);
+
+  // Re-ask for chips whenever the workflow reaches a new stage: a stage that
+  // just finished changes what is possible next, and a stale chip row is worse
+  // than none (it offers work that is already done).
+  useEffect(() => {
+    if (status?.stage) setChipsKey((k) => k + 1);
+  }, [status?.stage]);
 
   // Watch for the UI preview becoming available for the current target.
   // Don't auto-switch tabs — the green dot on the UI tab signals it's ready;
@@ -378,11 +392,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             gateCode: "no_data_model",
             gateMessage: (p: string, f: string) => `I can't build the solution design yet — there's no data model for **${p}/${f}**. Want me to generate the data model first?`,
           },
+          // PROJECT-level: no feature, and the gate is about the project's
+          // documents — which include every feature's, so the message must not
+          // point at one feature.
           trigger_capability_map: {
             worker: "Capabilities Process Architect",
+            level: "project",
             fire: triggerCapabilityMap,
             gateCode: "no_documents",
-            gateMessage: (p: string, f: string) => `I can't map the capabilities yet — there are no documents for **${p}/${f}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
+            gateMessage: (p: string) => `I can't map the capabilities yet — there are no documents for **${p}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
           },
           // Both of these gate on the product summary ONLY. The data model and
           // solution architecture enrich them when present, so the gate message
@@ -399,13 +417,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             gateCode: "no_product_summary",
             gateMessage: (p: string, f: string) => `I can't write the test cases yet — there's no product summary for **${p}/${f}**. Want me to generate the requirements first?`,
           },
-          // No pipeline prerequisite — reads the discovery documents directly,
-          // so the gate message must ask for documents, not for requirements.
+          // PROJECT-level, and gated on the CAPABILITY MAP: journey stages align
+          // to its L1 lifecycle phases, so offering "upload documents" here would
+          // be the wrong advice.
           trigger_personas: {
             worker: "Service Designer",
+            level: "project",
             fire: triggerPersonas,
-            gateCode: "no_documents",
-            gateMessage: (p: string, f: string) => `I can't identify the personas yet — there are no documents for **${p}/${f}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
+            gateCode: "no_capability_map",
+            gateMessage: (p: string) => `I can't map the personas yet — **${p}** has no capability map, and the journeys align to its lifecycle phases. Want me to run the capability map first?`,
           },
           // Also documents-only: the skill needs the product summary OR the
           // discovery documents, so requirements are not a prerequisite.
@@ -416,14 +436,16 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             gateMessage: (p: string, f: string) => `I can't design the screens yet — there are no documents for **${p}/${f}**. Upload at least one SOP, transcript or note (use the 📎 attach button), then say "go".`,
           },
         } as const;
-        const stage = PIPELINE_STAGES[toolUse.name as keyof typeof PIPELINE_STAGES];
+        const stage = PIPELINE_STAGES[toolUse.name as keyof typeof PIPELINE_STAGES] as any;
         const args = toolUse.input as any;
         const proj = args?.project, feat = args?.feature;
+        const isProjectStage = stage.level === "project";
         if (proj) setTargetProject(proj);
-        if (feat) setTargetFeature(feat);
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the ${stage.worker} for **${proj}** / **${feat}**…` }]);
+        if (feat && !isProjectStage) setTargetFeature(feat);
+        const scope = isProjectStage ? `**${proj}**` : `**${proj}** / **${feat}**`;
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Kicking off the ${stage.worker} for ${scope}…` }]);
         try {
-          const issue = await stage.fire(proj, feat);
+          const issue = isProjectStage ? await stage.fire(proj) : await stage.fire(proj, feat);
           setParentIssueId(issue.id);
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Delivery Lead → ${stage.worker}. Live progress on the right →` }]);
         } catch (e: any) {
@@ -432,6 +454,73 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           } else {
             throw e;
           }
+        }
+      } else if (toolUse?.name === "create_project") {
+        const args = toolUse.input as any;
+        const proj = String(args?.project || "").trim();
+        try {
+          const r = await createProject(proj, String(args?.description || ""), String(args?.website || ""));
+          setTargetProject(proj);
+          setTargetFeature(null);
+          setFeaturesRefreshKey((k) => k + 1);
+          setChipsKey((k) => k + 1);
+          const bits = [
+            `Created **${proj}**.`,
+            r.definitionWritten ? `Project definition saved — every skill reads it first.` : `No project definition yet. Give me a couple of sentences about the client and I'll save it.`,
+            r.brand?.brand ? `Branding: \`${r.brand.brand}\`${r.brand.accent ? ` with \`${r.brand.accent}\`` : ""}${r.brand.hasLogo ? ", logo inlined" : ""}.` : null,
+            r.brandError ? `Couldn't read the branding (${r.brandError}) — the Scyne palette will be used.` : null,
+            ``,
+            `Upload the client's documents with 📎, then say **set it up** and I'll build the capability map and personas.`,
+          ].filter(Boolean).join("\n");
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: bits }]);
+        } catch (e: any) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: e?.code === "exists" ? `**${proj}** already exists — pick a different name, or tell me to add a feature to it.` : `Couldn't create it: ${e?.message ?? e}` }]);
+        }
+      } else if (toolUse?.name === "bootstrap_project") {
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        setTargetProject(proj);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Building the baseline for **${proj}** — capability map first, then personas. Each raises its own approval gate.` }]);
+        try {
+          const issue = await bootstrapProject(proj);
+          setParentIssueId(issue.id);
+          setChipsKey((k) => k + 1);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Delivery Lead. Live progress on the right →` }]);
+        } catch (e: any) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: e?.code === "no_documents" ? `**${proj}** has no readable documents yet. Upload at least one policy, SOP or transcript with 📎, then say "go".` : `Couldn't start it: ${e?.message ?? e}` }]);
+        }
+      } else if (toolUse?.name === "create_feature") {
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || "").trim();
+        try {
+          await createFeature(proj, feat);
+          setTargetProject(proj);
+          setTargetFeature(feat);
+          setFeaturesRefreshKey((k) => k + 1);
+          setChipsKey((k) => k + 1);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Created **${proj} / ${feat}**.\n\nDrop this feature's documents in with 📎, then say **generate the product summary**. The personas and capability map are already there — it inherits those.` }]);
+        } catch (e: any) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't create it: ${e?.message ?? e}` }]);
+        }
+      } else if (toolUse?.name === "revise_artefact") {
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        const artefact = String(args?.artefact || "").trim();
+        const instruction = String(args?.instruction || "").trim();
+        if (proj) setTargetProject(proj);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Passing that to the specialist who owns the ${artefact}…` }]);
+        try {
+          const issue = await reviseArtefact(proj, artefact, instruction, feat || undefined);
+          setParentIssueId(issue.id);
+          setChipsKey((k) => k + 1);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** raised. They'll revise it rather than regenerate it, and you'll get an approval gate with the change before anything is published. Live progress on the right →` }]);
+        } catch (e: any) {
+          const msg = e?.code === "not_generated"
+            ? `${e.message} Want me to generate it instead?`
+            : `Couldn't raise that change: ${e?.message ?? e}`;
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: msg }]);
         }
       } else if (toolUse?.name === "save_project_definition") {
         // Synchronous like extract_brand: it writes a file every skill reads, so
@@ -462,16 +551,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         const feat = String(args?.feature || targetFeature || "").trim();
         if (proj) setTargetProject(proj);
         if (feat) setTargetFeature(feat);
-        if (!url || !proj || !feat) {
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I need a URL plus a project and feature to pull the branding into. Pick a target with the picker, then paste the site URL.` }]);
+        // Branding is per PROJECT: one companion app, one palette. A feature is
+        // not needed and is not asked for.
+        if (!url || !proj) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `I need a URL plus a project to pull the branding into. Pick a project with the picker, then paste the site URL.` }]);
         } else {
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Reading the brand from ${url}…` }]);
           try {
-            const r = await extractBrand(url, proj, feat);
+            const r = await extractBrand(url, proj);
             const t = r.theme || {};
             const swatch = (label: string, hex?: string) => (hex ? `- **${label}** \`${hex}\`` : null);
             const lines = [
-              `Branding applied to **${proj}/${feat}**:`,
+              `Branding applied to **${proj}**:`,
               ``,
               swatch("Brand", t.brand),
               swatch("Deep", t.brandDeep),
@@ -482,7 +573,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
               ``,
               r.rerendered
                 ? `The companion app has been re-rendered with it.`
-                : `No companion app built yet for this feature — the theme is saved and will apply on the first build.`,
+                : `No companion app built yet for this project — the theme is saved and will apply on the first build.`,
               ``,
               `These are read off the site's own CSS, so treat them as a first pass. If a colour is wrong, tell me and I'll correct \`design/style-guides/theme.json\`.`,
             ].filter(Boolean).join("\n");
@@ -622,12 +713,46 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   // has errored we show the error card instead so the panel never gets stuck.
   const showSkeletons = !!parentIssueId && !status && !statusError;
 
+  // Creating a project is its own task — it replaces the workspace rather than
+  // competing with a streaming workflow beside it.
+  if (showWizard) {
+    return (
+      <div className="min-h-full">
+        <Header right={<Button variant="ghost" onClick={() => setShowWizard(false)}>Back to chat</Button>} />
+        <NewProjectWizard
+          onCancel={() => setShowWizard(false)}
+          onDeployed={(project, issueId) => {
+            setShowWizard(false);
+            setTargetProject(project);
+            setTargetFeature(null);
+            setParentIssueId(issueId);
+            setFeaturesRefreshKey((k) => k + 1);
+            setChipsKey((k) => k + 1);
+            setMessages((m) => [...m, {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              text: `**${project}** is set up. I'm building the baseline now — the capability map first, then the personas. Each raises its own approval gate; live progress is on the right.`,
+            }]);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-full">
       <Header
         right={
           <>
             {view === "workspace" && status && <StagePill stage={status.stage} />}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" onClick={() => setShowWizard(true)} aria-label="Create a new project">
+                  <Sparkles />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>New project</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -926,6 +1051,17 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             elevation={3}
             className="lg:col-span-4 pointer-events-auto rounded-2xl p-3 flex flex-col gap-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background transition-shadow"
           >
+          {/* Suggested next steps. Server-computed from the pipeline graph and
+              what is on disk, so a chip is never offered for a stage whose
+              prerequisite is unmet — clicking one cannot 409. */}
+          <SuggestionChips
+            project={targetProject}
+            feature={targetFeature}
+            refreshKey={chipsKey}
+            disabled={busy}
+            onPick={(message) => { void send(message); }}
+          />
+
           {/* Target row */}
           <div className="flex items-center justify-between gap-2 px-1">
             <TargetPicker

@@ -29,11 +29,11 @@ function iconFor(kind: TranscriptEvent["kind"]) {
 }
 
 function statusBadge(status: string) {
-  if (status === "running") return <Badge variant="outline" className="text-emerald-600 border-emerald-300">live</Badge>;
-  if (status === "succeeded") return <Badge variant="outline" className="text-slate-500">done</Badge>;
-  if (status === "failed" || status === "errored") return <Badge variant="outline" className="text-red-600 border-red-300">failed</Badge>;
-  if (status === "cancelled") return <Badge variant="outline" className="text-slate-500">cancelled</Badge>;
-  return <Badge variant="outline">{status}</Badge>;
+  if (status === "running") return <Badge tone="success" pulse>live</Badge>;
+  if (status === "succeeded") return <Badge tone="neutral">done</Badge>;
+  if (status === "failed" || status === "errored") return <Badge tone="danger">failed</Badge>;
+  if (status === "cancelled") return <Badge tone="neutral">cancelled</Badge>;
+  return <Badge tone="neutral">{status}</Badge>;
 }
 
 export function LiveTranscript({ parentIssueId }: Props) {

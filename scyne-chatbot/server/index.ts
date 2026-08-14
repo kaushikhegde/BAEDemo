@@ -17,6 +17,12 @@ import { filterRunLog, type TranscriptEvent } from "./services/runTranscript.js"
 import { writeTranscript } from "./services/transcriptWriter.js";
 import { transcribeAudioFile } from "./services/geminiFiles.js";
 import { MeetingSession } from "./services/geminiLive.js";
+// The pipeline graph lives in scripts/ because the CLI, the renderer and this
+// server all need the same answer to "what does this stage require". Importing
+// it here rather than restating it is what stops the chatbot refusing a stage
+// the CLI would happily run.
+// @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
+import * as pipeline from "../../scripts/pipeline.mjs";
 
 const app = express();
 app.use(cors());
@@ -158,12 +164,16 @@ app.post("/api/trigger", async (req, res) => {
 // (which runs to list), and anything else that needs to know which worker owns
 // an issue derive from here, so a new stage is added in ONE place.
 type Flow = {
-  key: "requirements" | "data_model" | "solution_design" | "solution_architecture" | "test_cases" | "capability_map" | "personas" | "ui";
+  key: "requirements" | "data_model" | "solution_design" | "solution_architecture" | "test_cases" | "capability_map" | "personas" | "ui_mockups" | "ui" | "project_setup" | "revision";
   worker: string;
   generatingLabel: string;
   pushingLabel: string;
 };
 const FLOWS: { prefix: string; flow: Flow }[] = [
+  // Order matters: classifyFlow takes the FIRST prefix that matches, so the
+  // project-setup and revision prefixes are listed before the Generate ones.
+  { prefix: "Set up project", flow: { key: "project_setup", worker: "Capabilities Process Architect", generatingLabel: "Building the project baseline", pushingLabel: "Finalising the baseline" } },
+  { prefix: "Revise", flow: { key: "revision", worker: "the owning specialist", generatingLabel: "Revising the artefact", pushingLabel: "Updating Confluence" } },
   { prefix: "Generate requirements", flow: { key: "requirements", worker: "BA", generatingLabel: "BA generating artifacts", pushingLabel: "Pushing to Atlassian" } },
   { prefix: "Generate data model", flow: { key: "data_model", worker: "Data Modeler", generatingLabel: "Data Modeler generating the impact analysis", pushingLabel: "Publishing to Confluence" } },
   { prefix: "Generate solution design", flow: { key: "solution_design", worker: "Architecture Lead", generatingLabel: "Architecture Lead designing the solution", pushingLabel: "Publishing to Confluence" } },
@@ -1127,6 +1137,349 @@ app.get("/api/artifacts", async (req, res) => {
   }
 });
 
+// --- Project + feature creation -------------------------------------------
+//
+// The wizard creates a PROJECT: name, what the client does, optionally their
+// website. Features are added later from chat, because features arrive over
+// weeks while the project is created once.
+
+/** Directories a new project starts with. Empty is fine — every stage creates its own working folders. */
+const PROJECT_SCAFFOLD = [
+  "documents",
+  "design/style-guides",
+  "design/example-screens",
+  "solutions/Capabilities/outputs",
+  "solutions/Experience/outputs",
+];
+
+/** Directories a new feature starts with. */
+const FEATURE_SCAFFOLD = [
+  "requirements/SOP",
+  "requirements/Transcripts",
+  "requirements/Notes",
+  "requirements/UI",
+  "requirements/templates",
+  "outputs",
+];
+
+app.post("/api/projects", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const description = String(req.body?.description || "").trim();
+    const website = String(req.body?.website || "").trim();
+
+    if (!project || !SAFE_PROJECT.test(project)) {
+      return res.status(400).json({ error: "bad_project", message: "Use letters, numbers, spaces, and . _ & - only." });
+    }
+    const root = path.join(WORKSPACE_PATH, "projects", project);
+    try {
+      await fs.access(root);
+      return res.status(409).json({ error: "exists", message: `A project called "${project}" already exists.` });
+    } catch { /* good — it is new */ }
+
+    for (const d of PROJECT_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
+
+    // The definition is optional at creation time but changes every skill's
+    // output, so it is asked for in step 1 rather than chased later.
+    let definitionWritten = false;
+    if (description.length >= 40) {
+      const content = description.startsWith("#")
+        ? description + "\n"
+        : `# ${project} — Project Definition\n\n${description}\n`;
+      await fs.writeFile(path.join(root, "description.md"), content, "utf8");
+      definitionWritten = true;
+    }
+
+    // Branding is a fetch, not an agent, so it runs inline. A failure is
+    // reported and never fatal — the Scyne palette is a fine fallback.
+    let brand: any = null;
+    let brandError: string | null = null;
+    if (website) {
+      let parsed: URL | null = null;
+      try { parsed = new URL(/^https?:\/\//i.test(website) ? website : `https://${website}`); } catch { /* reported below */ }
+      if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+        brandError = `Not a usable URL: ${website}`;
+      } else {
+        const extract = await runHelper("extract-brand.mjs", [parsed.href, project, "--force"]);
+        if (extract.ok) {
+          try {
+            const t = JSON.parse(await fs.readFile(path.join(root, "design", "style-guides", "theme.json"), "utf8"));
+            brand = { ...t, logoSrc: undefined, hasLogo: Boolean(t.logoSrc) };
+          } catch { /* written but unreadable — treat as no brand */ }
+        } else {
+          brandError = extract.stderr?.trim() || `extract-brand.mjs exited with ${extract.code}`;
+        }
+      }
+    }
+
+    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)})`);
+    res.json({ ok: true, project, definitionWritten, brand, brandError });
+  } catch (e: any) {
+    console.error("[projects] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/features", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    if (!project || !feature) {
+      return res.status(400).json({ error: "missing_target", message: "project and feature are required" });
+    }
+    if (!SAFE_PROJECT.test(project) || !SAFE_PROJECT.test(feature)) {
+      return res.status(400).json({ error: "bad_name", message: "Use letters, numbers, spaces, and . _ & - only." });
+    }
+    // `capabilities`, `personas` and `all` are project-stage keywords on the
+    // CLI, and a feature by those names would be unreachable there.
+    if (pipeline.RESERVED_FEATURE_NAMES.has(feature.toLowerCase()) || PROJECT_OWN_DIRS.has(feature.toLowerCase())) {
+      return res.status(400).json({
+        error: "reserved_name",
+        message: `"${feature}" is reserved. Pick another name — it would clash with a project-level folder or CLI stage.`,
+      });
+    }
+    const projectRoot = path.join(WORKSPACE_PATH, "projects", project);
+    try { await fs.access(projectRoot); } catch {
+      return res.status(404).json({ error: "no_project", message: `No project called "${project}".` });
+    }
+    const root = path.join(projectRoot, feature);
+    try {
+      await fs.access(root);
+      return res.status(409).json({ error: "exists", message: `${project} already has a feature called "${feature}".` });
+    } catch { /* good — it is new */ }
+
+    for (const d of FEATURE_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
+    console.log(`[features] created ${project}/${feature}`);
+    res.json({ ok: true, project, feature });
+  } catch (e: any) {
+    console.error("[features] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Deploy from the wizard: build the project baseline.
+ *
+ * Sequential by design — the Service Designer aligns journey stages to the
+ * capability model's L1 lifecycle phases, so personas must follow the map. The
+ * Delivery Lead owns the sequencing (it is re-woken on issue_children_completed
+ * after each child), which is the same pattern the Build UI flow already uses.
+ */
+app.post("/api/project/bootstrap", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    const docs = await countProjectDocs(project);
+    if (docs.md === 0) {
+      return res.status(409).json({
+        error: "no_documents",
+        ...docs,
+        message: docs.other > 0
+          ? `${project} has ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload through the chat so they are converted.`
+          : `No documents for ${project} yet. Upload at least one policy, SOP or transcript first.`,
+      });
+    }
+    const description = [
+      "Generated by the Scyne chatbot. Build this project's baseline: the capability map, then the personas.",
+      ``,
+      `## Project`,
+      `- Project: ${project}`,
+      ``,
+      `## Parameters`,
+      `- Confluence space key: ${deriveProjectKey(project)}`,
+      ``,
+      `## Sequence (NOT parallel)`,
+      `1. Capabilities Process Architect → \`Generate capability map — ${project}\``,
+      `2. Service Designer → \`Generate personas — ${project}\` (only after 1 is done; journey stages align to the L1 lifecycle phases)`,
+      `3. Render the project page: node scripts/render-companion-app.mjs ${project}`,
+    ].join("\n");
+    const issue = await paperclip.createIssue(`Set up project — ${project}`, description);
+    res.json(issue);
+  } catch (e: any) {
+    console.error("[project/bootstrap] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// --- Staleness, suggestions, revision --------------------------------------
+
+/**
+ * Artefacts generated before one of their inputs last changed.
+ *
+ * Computed from file mtimes against the shared pipeline graph — no manifest, no
+ * bookkeeping to drift. mtime cannot tell a substantive revision from a re-run
+ * that changed nothing, so this OVER-reports. That is the safe direction: the
+ * user is offered a refresh they may decline, never silently handed a pack that
+ * contradicts itself.
+ */
+app.get("/api/staleness/:project/:feature?", async (req, res) => {
+  try {
+    const { project } = req.params;
+    // Express types an optional param as `"feature?"`, so read it off a loose
+    // record rather than fighting the generated key name.
+    const raw = (req.params as Record<string, string | undefined>).feature;
+    const feature = raw ? String(raw) : undefined;
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
+    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature);
+    res.json({ project, feature: feature ?? null, stale });
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * The chips above the composer.
+ *
+ * Every chip is `{label, message}` — clicking one sends `message` as an ordinary
+ * chat turn, so a chip is indistinguishable from typing and needs no special
+ * handling on the way back. Computed from the pipeline graph plus what is on
+ * disk, so a chip is never offered for a stage whose prerequisite is unmet: a
+ * click cannot produce a 409.
+ */
+app.get("/api/suggestions", async (req, res) => {
+  try {
+    const project = String(req.query.project || "").trim();
+    const feature = String(req.query.feature || "").trim();
+    const chips: { label: string; message: string }[] = [];
+    const add = (label: string, message: string) => {
+      if (chips.length < 4 && !chips.some((c) => c.label === label)) chips.push({ label, message });
+    };
+
+    if (!project) {
+      add("Create a new project", "I'd like to create a new project.");
+      add("Show me my projects", "What projects do we have?");
+      return res.json({ chips });
+    }
+    assertSafeProject(project);
+
+    const done = async (key: string, f?: string) => pipeline.stageIsDone(WORKSPACE_PATH, key, project, f);
+    const ready = async (key: string, f?: string) =>
+      (await pipeline.unmetRequirements(WORKSPACE_PATH, key, project, f)).length === 0;
+
+    // Stale first: a contradictory pack is the most expensive thing to ship.
+    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
+    for (const s of stale.slice(0, 2)) {
+      add(`Refresh the ${s.label}`, `Refresh the ${s.label}${feature ? ` for ${feature}` : ""} — it predates the ${s.supersededBy[0].label}.`);
+    }
+
+    // Project baseline.
+    if (!(await done("capabilities"))) add("Generate capabilities & personas", `Set up ${project} — generate the capability map and personas.`);
+    else if (!(await done("personas")) && (await ready("personas"))) add("Generate the personas", `Generate the personas for ${project}.`);
+
+    const features: string[] = await pipeline.listFeatures(WORKSPACE_PATH, project);
+    if (!feature) {
+      if (features.length === 0) add("Add a feature", `Add a feature to ${project}.`);
+      else add("Add a feature", `Add a feature to ${project}.`);
+    } else {
+      assertSafeProjectFeature(project, feature);
+      // Feature stages, in pipeline order — the first not-done, ready one.
+      for (const [key, def] of pipeline.ordered("feature") as [string, any][]) {
+        if (def.optional) continue;
+        if (await done(key, feature)) continue;
+        if (!(await ready(key, feature))) continue;
+        add(`Generate the ${def.label}`, `Generate the ${def.label} for ${project} / ${feature}.`);
+        break;
+      }
+      // Revision is the other half of the chat's job, so it is always offered
+      // once something exists to revise.
+      for (const [key, def] of pipeline.ordered("feature") as [string, any][]) {
+        if (await done(key, feature)) {
+          add(`Change the ${def.label}`, `I want to change something in the ${def.label} for ${project} / ${feature}.`);
+          break;
+        }
+      }
+      add("Add a feature", `Add a feature to ${project}.`);
+    }
+
+    if (!(await done("app"))) add("Build the companion app", `Build the companion app for ${project}.`);
+    else add("Open the companion app", `Show me the companion app for ${project}.`);
+
+    res.json({ chips: chips.slice(0, 4) });
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Revise an already-generated artefact.
+ *
+ * Full agent round-trip: the owning worker re-stages its inputs, reads its own
+ * previous output, applies the instruction, and raises a fresh approval gate.
+ * On approval it UPDATES the existing Confluence page rather than creating a
+ * second one, using projects/<project>/.published.json for page identity.
+ *
+ * The instruction travels VERBATIM. A paraphrase here is how a revision ends up
+ * doing the wrong thing.
+ */
+app.post("/api/revise", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    const artefact = String(req.body?.artefact || "").trim();
+    const instruction = String(req.body?.instruction || "").trim();
+
+    if (!project || !artefact || !instruction) {
+      return res.status(400).json({ error: "missing_input", message: "project, artefact and instruction are required" });
+    }
+    const stageKey: string | null = pipeline.stageFor(artefact);
+    if (!stageKey) {
+      return res.status(400).json({
+        error: "unknown_artefact",
+        message: `I don't know an artefact called "${artefact}".`,
+        valid: Object.keys(pipeline.ARTEFACT_ALIASES),
+      });
+    }
+    const def = pipeline.STAGES[stageKey];
+    const isProjectStage = def.level === "project";
+    if (isProjectStage) assertSafeProject(project);
+    else {
+      if (!feature) return res.status(400).json({ error: "missing_target", message: `${def.label} is per feature — which feature?` });
+      assertSafeProjectFeature(project, feature);
+    }
+
+    if (!(await pipeline.stageIsDone(WORKSPACE_PATH, stageKey, project, isProjectStage ? undefined : feature))) {
+      return res.status(409).json({
+        error: "not_generated",
+        stage: stageKey,
+        message: `There is no ${def.label.toLowerCase()} for ${project}${isProjectStage ? "" : ` / ${feature}`} yet — generate it first, then I can change it.`,
+      });
+    }
+
+    const scope = isProjectStage ? project : `${project}/${feature}`;
+    const title = `Revise ${def.titlePrefix.replace(/^Generate /, "")} — ${scope}`;
+    const description = [
+      `Generated by the Scyne chatbot. REVISE an existing artefact — do not regenerate it from scratch.`,
+      ``,
+      isProjectStage ? `## Project` : `## Project + Feature`,
+      `- Project: ${project}`,
+      ...(isProjectStage ? [] : [`- Feature: ${feature}`]),
+      `- Artefact: ${stageKey}`,
+      `- Owner: ${def.agent}`,
+      ...(def.publishes ? [``, `## Parameters`, `- Confluence space key: ${deriveProjectKey(project)}`] : []),
+      ``,
+      `## instruction`,
+      instruction,
+      ``,
+      `## How to run this`,
+      `- Stage your inputs exactly as for a fresh run.`,
+      `- Read your OWN previous output first and pass it to the skill as the previous version, so the skill enters its Revision mode.`,
+      `- Preserve every section, decision and identifier the instruction does not touch. A regenerate-from-scratch produces a diff too large for the reviewer to check.`,
+      `- Append a \`## Revision History\` entry recording what changed.`,
+      ...(def.then ? [`- Re-run the validator: ${String(def.then).replace("<project>", project).replace("<feature>", `"${feature}"`)}`] : []),
+      `- Re-render the project page: node scripts/render-companion-app.mjs ${project}`,
+      ...(def.publishes ? [
+        `- On approval, UPDATE the existing Confluence page: read projects/${project}/.published.json for the pageId and call updateConfluencePage. Only create a page if there is no entry, and write the entry back either way.`,
+      ] : [`- Nothing is published for this artefact.`]),
+    ].join("\n");
+
+    const issue = await paperclip.createIssue(title, description);
+    res.json({ ...issue, stage: stageKey, artefact: pipeline.artefactKey(stageKey, feature) });
+  } catch (e: any) {
+    console.error("[revise] failed:", e);
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 // --- Uploads & voice agent ------------------------------------------------
 
 const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
@@ -1154,6 +1507,41 @@ function assertSafeProject(project: string) {
 // 7. Upload a single file — auto-route into projects/<project>/<feature>/<subfolder>/.
 //    Audio files (.mp3/.wav/.m4a/...) are transcribed via Gemini Files API and
 //    written as transcript-upload-N.md inside transcripts/.
+/**
+ * Project-level document upload — the wizard's single dropzone.
+ *
+ * Lands in projects/<project>/documents/ and is converted to markdown straight
+ * away, not at staging time: /api/project/bootstrap gates on the project having
+ * at least one .md, so a client who uploaded only PDFs would otherwise be told
+ * they have no documents. The original is MOVED to original-files/documents/,
+ * never deleted.
+ */
+app.post("/api/upload/project", upload.single("file"), async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    if (!project) return res.status(400).json({ error: "missing_target", message: "project is required" });
+    if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    if (!req.file) return res.status(400).json({ error: "file is required (field name: 'file')" });
+
+    const dir = path.join(WORKSPACE_PATH, "projects", project, "documents");
+    await fs.mkdir(dir, { recursive: true });
+    const savedName = await uniqueName(dir, req.file.originalname);
+    await fs.writeFile(path.join(dir, savedName), req.file.buffer);
+
+    const converted = await runHelper("convert-to-md.mjs", [project]);
+    res.json({
+      kind: "file",
+      scope: "project",
+      filename: savedName,
+      converted: converted.ok,
+      relativePath: path.relative(WORKSPACE_PATH, path.join(dir, savedName)),
+    });
+  } catch (e: any) {
+    console.error("[upload/project] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();

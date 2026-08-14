@@ -70,11 +70,13 @@ export async function triggerUiBuild(project: string, feature: string) {
 // Shared shape for the downstream pipeline stage triggers: POST {project,
 // feature}; on failure surface the server's error code on the thrown error
 // (App.tsx branches on `.code` for the friendly prerequisite messages).
-async function postStageTrigger(path: string, label: string, project: string, feature: string) {
+// `feature` is omitted for PROJECT stages — the capability map and personas
+// describe the client, not one slice of work.
+async function postStageTrigger(path: string, label: string, project: string, feature?: string) {
   const r = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project, feature }),
+    body: JSON.stringify(feature ? { project, feature } : { project }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -95,10 +97,10 @@ export const triggerDataModel = (project: string, feature: string) =>
 export const triggerSolutionDesign = (project: string, feature: string) =>
   postStageTrigger("/api/solution-design/trigger", "Solution design trigger", project, feature);
 
-// Fire the CAPABILITY MAP stage. No pipeline prerequisite — gated server-side
-// only on the feature having documents at all (409 no_documents).
-export const triggerCapabilityMap = (project: string, feature: string) =>
-  postStageTrigger("/api/capability-map/trigger", "Capability map trigger", project, feature);
+// Fire the CAPABILITY MAP stage — PROJECT level. No prerequisite; gated
+// server-side only on the project having documents at all (409 no_documents).
+export const triggerCapabilityMap = (project: string) =>
+  postStageTrigger("/api/capability-map/trigger", "Capability map trigger", project);
 
 // Fire the SOLUTION ARCHITECTURE stage (Solution Architect → SAD). Gated only on
 // the product summary (409 no_product_summary) — the data model is optional
@@ -111,11 +113,11 @@ export const triggerSolutionArchitecture = (project: string, feature: string) =>
 export const triggerTestCases = (project: string, feature: string) =>
   postStageTrigger("/api/test-cases/trigger", "Test cases trigger", project, feature);
 
-// Fire the PERSONAS stage (Service Designer → persona set + journey maps). No
-// pipeline prerequisite — gated server-side only on the feature having documents
-// at all (409 no_documents), same as the capability map.
-export const triggerPersonas = (project: string, feature: string) =>
-  postStageTrigger("/api/personas/trigger", "Personas trigger", project, feature);
+// Fire the PERSONAS stage (Service Designer → persona set + journey maps) —
+// PROJECT level. Gated on the capability map (409 no_capability_map), because
+// journey stages align to its L1 lifecycle phases.
+export const triggerPersonas = (project: string) =>
+  postStageTrigger("/api/personas/trigger", "Personas trigger", project);
 
 // Fire the UI MOCKUPS stage (UX Designer → wireframes). No pipeline prerequisite
 // — gated server-side only on the feature having documents (409 no_documents),
@@ -140,15 +142,15 @@ export type BrandResult = {
   source: any;
 };
 
-// Read a client's brand off a live site and write it as the feature's companion-app
+// Read a client's brand off a live site and write it as the project's companion-app
 // theme. Unlike the stage triggers this is synchronous — no Paperclip issue, no
 // agent — because it is a file write the user needs to see the result of straight
 // away in order to correct it.
-export async function extractBrand(url: string, project: string, feature: string): Promise<BrandResult> {
+export async function extractBrand(url: string, project: string): Promise<BrandResult> {
   const r = await fetch("/api/brand/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, project, feature }),
+    body: JSON.stringify({ url, project }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -307,4 +309,101 @@ export async function getProjectDefinition(project: string): Promise<{ project: 
   const r = await fetch(`/api/project-description/${encodeURIComponent(project)}`);
   if (!r.ok) throw new Error(`read failed (${r.status})`);
   return r.json();
+}
+
+
+// --- Project + feature creation, suggestions, revision ---------------------
+
+async function postJson(path: string, label: string, body: unknown) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const parsed = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err: any = new Error(parsed?.message || parsed?.error || `${label} failed (${r.status})`);
+    err.code = parsed?.error;
+    throw err;
+  }
+  return parsed;
+}
+
+export type CreateProjectResult = {
+  ok: boolean;
+  project: string;
+  definitionWritten: boolean;
+  brand: BrandTheme | null;
+  brandError: string | null;
+};
+
+export const createProject = (project: string, description?: string, website?: string) =>
+  postJson("/api/projects", "Create project", { project, description, website }) as Promise<CreateProjectResult>;
+
+export const createFeature = (project: string, feature: string) =>
+  postJson("/api/features", "Create feature", { project, feature });
+
+/** Builds a project's baseline: capability map, then personas, sequentially. */
+export const bootstrapProject = (project: string) =>
+  postJson("/api/project/bootstrap", "Set up project", { project });
+
+/** Ask the owning specialist to CHANGE an artefact that already exists. */
+export const reviseArtefact = (project: string, artefact: string, instruction: string, feature?: string) =>
+  postJson("/api/revise", "Revise", { project, artefact, instruction, feature });
+
+export type Chip = { label: string; message: string };
+
+/** The chips above the composer — what is actually possible right now. */
+export async function fetchSuggestions(project?: string | null, feature?: string | null): Promise<Chip[]> {
+  const qs = new URLSearchParams();
+  if (project) qs.set("project", project);
+  if (feature) qs.set("feature", feature);
+  try {
+    const r = await fetch(`/api/suggestions?${qs.toString()}`);
+    if (!r.ok) return [];
+    const body = await r.json();
+    return Array.isArray(body?.chips) ? body.chips : [];
+  } catch {
+    // Chips are an affordance, never a dependency — a failure here must not
+    // break the composer.
+    return [];
+  }
+}
+
+export type StaleArtefact = {
+  key: string;
+  artefact: string;
+  label: string;
+  level: "project" | "feature";
+  generatedAt: string;
+  supersededBy: { key: string; label: string; artefact: string; generatedAt: string }[];
+};
+
+export async function fetchStaleness(project: string, feature?: string | null): Promise<StaleArtefact[]> {
+  try {
+    const path = feature
+      ? `/api/staleness/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`
+      : `/api/staleness/${encodeURIComponent(project)}`;
+    const r = await fetch(path);
+    if (!r.ok) return [];
+    const body = await r.json();
+    return Array.isArray(body?.stale) ? body.stale : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Upload a client-wide document to projects/<project>/documents/ (the wizard's dropzone). */
+export async function uploadProjectFile(project: string, file: File) {
+  const form = new FormData();
+  form.append("project", project);
+  form.append("file", file);
+  const r = await fetch("/api/upload/project", { method: "POST", body: form });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err: any = new Error(body?.message || body?.error || `Upload failed (${r.status})`);
+    err.code = body?.error;
+    throw err;
+  }
+  return body as { filename: string; converted: boolean; relativePath: string };
 }
