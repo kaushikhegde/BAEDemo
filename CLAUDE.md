@@ -133,14 +133,18 @@ chatbot UI
    ▼
 Delivery Lead — routes by title prefix
    │
-   ├─ "Set up project — <project>"           → SET UP PROJECT (sequential, two children)
-   │     Sub-phase A → Capabilities Process Architect  ("Generate capability map — <project>")
-   │     Sub-phase B → Service Designer               ("Generate personas — <project>")
-   │        Sequential, NOT parallel: journey stages align to the capability
-   │        model's L1 lifecycle phases. Re-woken by issue_children_completed
-   │        after each child, exactly like the Build UI flow.
-   │     Sub-phase C → render the project page, summarise, close.
+   ├─ "Set up project — <project>"           → RETIRED. The chatbot now assigns
+   │     "Generate project baseline — <project>" straight to the Capabilities
+   │     Process Architect, which runs BOTH skills in ONE pass. A legacy issue
+   │     with the old title is forwarded as a single child.
    │
+   ├─ "Generate project baseline — <project>" → Capabilities Process Architect  [PROJECT]
+   │     Runs capability-process-map, THEN persona-journey-map, in ONE wake.
+   │     Still sequential (journey stages align to the L1 lifecycle phases) —
+   │     but sequencing INSIDE one session, so the discovery documents are read
+   │     once rather than twice (~45k input tokens), there is ONE approval gate,
+   │     and the companion app renders once. On approval it publishes BOTH
+   │     Confluence pages itself.
    ├─ "Generate capability map — <project>"  → Capabilities Process Architect   [PROJECT]
    ├─ "Generate personas — <project>"        → Service Designer                 [PROJECT]
    ├─ "Generate requirements — …"            → BA                               [feature]
@@ -688,7 +692,11 @@ mockups run at position 4* above.
 A full run, end to end:
 
 ```bash
-# Project baseline — once per client
+# Project baseline — once per client. `baseline` runs both in ONE pass and
+# prints the exact 6-step sequence; the two stages below remain for running
+# either on its own.
+npm run stage RTWSA baseline          # capability map + personas, one session
+
 npm run stage RTWSA capabilities      # then /capability-process-map in a Claude Code session
 npm run stage RTWSA personas          # then /persona-journey-map
 
@@ -867,7 +875,7 @@ The `solutions/` working folders under a feature are created on demand by each
 stage. No code change is needed — `/api/features` auto-discovers a new folder on
 the next chat turn.
 
-**Reserved feature names:** `capabilities`, `personas`, `app`, `all`, plus the
+**Reserved feature names:** `capabilities`, `personas`, `app`, `all`, `baseline`, plus the
 project's own folder names (`solutions`, `documents`, `design`, `original-files`,
 `outputs`). A feature by one of those names would be unreachable from the CLI and
 would appear as a feature in the target picker.
@@ -1046,7 +1054,7 @@ with the registry, the registry wins.
   and live at `projects/<project>/`. Everything else describes ONE slice of work and
   lives at `projects/<project>/<feature>/`. When in doubt: would a second feature
   for the same client want its own copy? If no, it is project-level.
-- **Reserved feature names**: `capabilities`, `personas`, `app`, `all`, `solutions`,
+- **Reserved feature names**: `capabilities`, `personas`, `app`, `all`, `baseline`, `solutions`,
   `documents`, `design`, `original-files`, `outputs`.
 - **Source mapping** in `extraction.json` — every story / decision should map back to which input file it came from (`transcripts/foo.docx`, etc.) so traceability is auditable.
 

@@ -653,7 +653,7 @@ async function main() {
 
   if (rest.length === 0) return printProjectStatus(project);
 
-  if (rest.length === 1 && (PROJECT_STAGE_KEYS.has(rest[0]) || rest[0] === "all")) {
+  if (rest.length === 1 && (PROJECT_STAGE_KEYS.has(rest[0]) || rest[0] === "all" || rest[0] === "baseline")) {
     level = LEVEL.PROJECT;
     stageKey = rest[0];
   } else {
@@ -680,6 +680,32 @@ async function main() {
 
   if (!flags.has("--no-convert")) {
     await convertSources(ctx, { force: ctx.force, keepOriginals: flags.has("--keep-originals") });
+  }
+
+  // PROJECT BASELINE — capability map + personas produced in ONE agent pass.
+  //
+  // They cannot run in parallel: `personas` hard-requires capability-map.json
+  // because journey stages align to the L1 lifecycle phases. What this DOES
+  // remove is the second agent wake, the second approval gate, and — the real
+  // cost — re-reading the same discovery documents a second time. The two
+  // working folders stage the SAME 8 source files, so a second agent paid ~45k
+  // input tokens to read what the first had already read.
+  //
+  // Staging happens in two beats because step 3 needs step 1's output on disk.
+  if (stageKey === "baseline") {
+    await runStage("capabilities", ctx);
+    const p = ctx.project;
+    console.log(`── PROJECT BASELINE — run these in ONE session, in order\n`);
+    console.log(`   1. /capability-process-map`);
+    console.log(`   2. node scripts/render-capability-map.mjs ${p} --validate-only`);
+    console.log(`   3. npm run stage ${p} personas        (needs step 1's output on disk)`);
+    console.log(`   4. /persona-journey-map               ← do NOT re-read the discovery`);
+    console.log(`                                           documents; they are already in`);
+    console.log(`                                           context from step 1`);
+    console.log(`   5. node scripts/validate-experience.mjs ${p}`);
+    console.log(`   6. node scripts/render-companion-app.mjs ${p}   (ONCE — covers both)\n`);
+    console.log(`   Then raise ONE approval gate covering both artefacts.\n`);
+    return;
   }
 
   if (stageKey === "all") {

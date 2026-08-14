@@ -365,8 +365,11 @@ export async function listAll(workspace) {
  * `npm run stage SAPN capabilities` has to mean the stage. Enforced here so the
  * CLI and POST /api/features agree.
  */
+// `baseline` is not a STAGE — it is the composite CLI/agent flow that runs
+// `capabilities` then `personas` in one pass. It still has to be reserved, or a
+// feature by that name would be unreachable from `npm run stage`.
 export const RESERVED_FEATURE_NAMES = new Set(
-  ordered(LEVEL.PROJECT).map(([k]) => k).concat(["all"]),
+  ordered(LEVEL.PROJECT).map(([k]) => k).concat(["all", "baseline"]),
 );
 
 // ---------------------------------------------------------------------------
