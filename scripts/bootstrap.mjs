@@ -64,7 +64,7 @@ const OLD_IDS = {
   uxDesigner: "9999999a-9999-4999-8999-999999999999",
 };
 
-// The 20-agent Scyne org. `key` is the in-script identifier (also exposed under
+// The 24-agent Scyne org. `key` is the in-script identifier (also exposed under
 // ids.json's `org` map); `name` is the Paperclip display name and the lookup
 // key for "does this agent already exist?". `title` / `icon` / `reportsToKey`
 // are applied via PATCH on every run so re-titling, icon swaps, and re-parenting
@@ -75,6 +75,21 @@ const OLD_IDS = {
 //
 // Note: the source org chart shows "Pricing Specalist" — kept as
 // "Pricing Specialist" (correct spelling) since the source is clearly a typo.
+// Paperclip validates `icon` against a fixed enum and rejects the hire with a
+// 400 otherwise. Checking the whole list up front matters more than it looks:
+// hires happen in spec order, so an invalid icon halfway down leaves the org
+// PARTIALLY created — some agents hired, the rest not, and the next run has to
+// converge from that. Kept in step with the server's enum by hand; when a hire
+// starts 400ing on `icon`, the message names the exact valid list.
+const VALID_ICONS = new Set([
+  "bot", "cpu", "brain", "zap", "rocket", "code", "terminal", "shield", "eye",
+  "search", "wrench", "hammer", "lightbulb", "sparkles", "star", "heart", "flame",
+  "bug", "cog", "database", "globe", "lock", "mail", "message-square", "file-code",
+  "git-branch", "package", "puzzle", "target", "wand", "atom", "circuit-board",
+  "radar", "swords", "telescope", "microscope", "crown", "gem", "hexagon",
+  "pentagon", "fingerprint",
+]);
+
 const AGENTS = [
   { key: "ceo",              name: "CEO",                       title: "Chief Executive",         icon: "crown",          reportsToKey: null },
   { key: "pm",               name: "Delivery Lead",             title: "Delivery Lead",           icon: "rocket",         reportsToKey: "ceo",          file: "pm.json",         skills: [] },
@@ -86,14 +101,14 @@ const AGENTS = [
   { key: "ux",               name: "UX Auditor",                title: "UX Auditor",              icon: "shield",         reportsToKey: "archLead",     file: "ux-auditor.json", skills: [] },
   { key: "architect",        name: "Architect",                 title: "Architect",               icon: "hammer",         reportsToKey: "archLead" },
   { key: "dataModeler",      name: "Data Modeler",              title: "Data Modeler",            icon: "database",       reportsToKey: "archLead",     file: "data-modeler.json",   skills: ["salesforce-data-modeler"] },
-  { key: "capArchitect",     name: "Capabilities Process Architect", title: "Capabilities Process Architect", icon: "network", reportsToKey: "archLead", file: "capabilities-process-architect.json", skills: ["capability-process-map"] },
-  { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "layers",         reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] },
+  { key: "capArchitect",     name: "Capabilities Process Architect", title: "Capabilities Process Architect", icon: "hexagon",       reportsToKey: "archLead", file: "capabilities-process-architect.json", skills: ["capability-process-map"] },
+  { key: "solutionArchitect", name: "Solution Architect",        title: "Solution Architect",      icon: "package",        reportsToKey: "archLead",     file: "solution-architect.json", skills: ["salesforce-service-cloud-architecture"] },
   { key: "ui",               name: "Developer",                 title: "Developer",               icon: "code",           reportsToKey: "archLead",     file: "ui.json",         skills: [] },
   { key: "uxDesigner",       name: "UX Designer",               title: "UX Designer",             icon: "wand",           reportsToKey: "archLead",     file: "ux-designer.json", skills: ["ui-mockup-generator"] },
-  { key: "serviceDesigner",  name: "Service Designer",          title: "Service Designer",        icon: "users",          reportsToKey: "archLead",     file: "service-designer.json", skills: ["persona-journey-map"] },
+  { key: "serviceDesigner",  name: "Service Designer",          title: "Service Designer",        icon: "heart",          reportsToKey: "archLead",     file: "service-designer.json", skills: ["persona-journey-map"] },
   { key: "ba",               name: "BA",                        title: "BA",                      icon: "search",         reportsToKey: "businessLead", file: "ba.json",         skills: ["requirement-generator"] },
   { key: "qaTester",         name: "QA Tester",                 title: "QA Tester",               icon: "bug",            reportsToKey: "businessLead" },
-  { key: "qaArchitect",      name: "QA Architect",              title: "QA Architect",            icon: "clipboard-check", reportsToKey: "businessLead", file: "qa-architect.json", skills: ["requirements-test-case-generator"] },
+  { key: "qaArchitect",      name: "QA Architect",              title: "QA Architect",            icon: "microscope",     reportsToKey: "businessLead", file: "qa-architect.json", skills: ["requirements-test-case-generator"] },
   { key: "contentWriter",    name: "Content Writer",            title: "Content Writer",          icon: "message-square", reportsToKey: "changeLead" },
   { key: "dataMigDev",       name: "Data Migration Developer",  title: "Data Migration Developer",icon: "git-branch",     reportsToKey: "dataLead" },
   { key: "solutionDesigner", name: "Solution Designer",         title: "Solution Designer",       icon: "puzzle",         reportsToKey: "bidManager" },
@@ -243,6 +258,17 @@ async function ensureCompanySkills(companyId) {
 }
 
 async function main() {
+  // Validate the whole spec BEFORE touching Paperclip. Hires happen in spec
+  // order, so a bad icon two-thirds down the list would otherwise leave the org
+  // partially created.
+  const badIcons = AGENTS.filter((a) => !VALID_ICONS.has(a.icon));
+  if (badIcons.length) {
+    console.error(`\n[bootstrap] ${badIcons.length} agent(s) have an icon Paperclip will reject:\n`);
+    for (const a of badIcons) console.error(`  ${a.name.padEnd(36)} icon: "${a.icon}"`);
+    console.error(`\nValid icons:\n  ${[...VALID_ICONS].join(", ")}\n`);
+    process.exit(1);
+  }
+
   await waitForHealth();
   const companyId = await getOrCreateCompany();
 
