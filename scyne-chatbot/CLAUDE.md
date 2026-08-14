@@ -65,9 +65,11 @@ scyne-chatbot/
         ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps | Data Model | Solution Design | Solution Architecture | Test Cases | Personas & Journeys | Capability Map — reads /api/artifacts; the Capability Map tab also links to the interactive HTML)
         ├── LinksPanel.tsx      (Confluence + Jira links extracted from comments)
         ├── TargetPicker.tsx    (chip-style project + feature selector at top of chat)
+        ├── SuggestionChips.tsx (server-computed next-step chips above the composer)
+        ├── NewProjectWizard.tsx(3-step project creation; takes over the whole view)
         ├── AttachmentButton.tsx(upload .docx / .pdf / .png to a chosen scope)
         ├── RecordMeetingPanel.tsx (browser audio capture → Gemini Live transcription)
-        └── PreviewPane.tsx     (iframes the generated app from /api/preview/:project/:feature; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes, because the companion app is re-rendered by every stage that completes)
+        └── PreviewPane.tsx     (iframes the generated app from /api/preview/:project; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes, because the companion app is re-rendered by every stage that completes)
 ```
 
 ## Backend endpoints
@@ -134,6 +136,8 @@ The only stateful React component is `src/App.tsx`. All other components are pre
 | `previewAvailable`     | `boolean`                       | True once `/api/preview/:project/:feature` returns a URL.                |
 | `pendingUiPrompt`      | `{project, feature} \| null`    | When the bot suggests a UI build, this stages a one-click trigger.       |
 | `seenCommentIds`       | `useRef<Set<string>>`           | Dedupes agent comments so the same one doesn't appear twice in the chat. |
+| `showWizard`           | `boolean`                       | When true the New Project wizard REPLACES the workspace — creating a project is its own task, not a side panel beside a streaming workflow. |
+| `chipsKey`             | `number`                        | Bumped whenever the pipeline advances, so `SuggestionChips` re-asks the server what is possible. A stale chip row is worse than none: it offers work already done. |
 
 Three effects drive the UX:
 
@@ -268,13 +272,24 @@ curl -sS http://127.0.0.1:4000/api/status/<issueId> | jq '.stage, .flatIssues, .
 Edit `buildSystemPrompt` in `server/llm.ts`. Restart `dev:api` (or wait for tsx to reload).
 
 ### Add a new project + feature
-On disk, in the workspace root:
+
+Use the **New Project** wizard (the ✨ in the header) or just ask the bot. Both go
+through `POST /api/projects` and `POST /api/features`, which scaffold the right
+tree for the level. By hand:
+
 ```bash
+# Project — client-wide
+mkdir -p projects/<project>/{documents,design/{style-guides,example-screens}}
+mkdir -p projects/<project>/solutions/{Capabilities,Experience}/outputs
+
+# Feature — one slice of work
 mkdir -p projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI,templates}
-mkdir -p projects/<project>/<feature>/design/{style-guides,example-screens}
 mkdir -p projects/<project>/<feature>/outputs
 ```
-Drop input files in the four `requirements/*` subfolders. The bot picks it up on the next `/api/features` poll — no code change.
+
+The bot picks it up on the next `/api/features` poll — no code change. Note
+`design/` is at PROJECT level: one project renders one companion app, so it
+carries one palette.
 
 ### Re-hire / re-wire agents
 Run `npm run bootstrap` at the workspace root — it hires anything missing, converges names/titles/reportsTo, swaps the placeholder IDs in `../agent-instructions/pm.json` for the live ones, re-pushes every AGENTS.md bundle, and rewrites `.bootstrap/ids.json`. Then restart the chatbot so `server/paperclip.ts` re-reads the IDs. Never hand-edit IDs in `.env` or the bundles (the bundles intentionally carry placeholders).
@@ -285,6 +300,9 @@ Click "New session" in the right-pane header. This clears `localStorage`, drops 
 ## Gotchas
 
 - **`status: "backlog"`** — Paperclip's default. Agents won't pick it up. Always create issues with `status: "todo"`.
+- **Project vs feature.** Half the pipeline takes a project only. Passing a feature to `trigger_capability_map` or `trigger_personas` is ignored server-side, but it makes the chat say the wrong thing — the prompt tells the LLM not to.
+- **`PROJECT_OWN_DIRS` lives in three files** (`scripts/pipeline.mjs`, `server/index.ts`, `server/llm.ts`). They must agree, or `solutions/` and `documents/` show up as selectable features.
+- **The system prompt is a template literal.** Backticks and `${` in prompt text must be escaped, or the file stops parsing with errors hundreds of lines from the edit.
 - **No `/issues/:id/children` GET** — use the company-level list with `?parentId=…`.
 - **Approval payload** — `payload.title` / `payload.summary`, not `title` / `description` at the top level.
 - **Comment author resolution** — Paperclip returns `authorAgentId` or `authorUserId`, not always a friendly name. `/api/status` falls back to the ID if no name field is present.
