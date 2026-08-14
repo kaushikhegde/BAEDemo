@@ -18,6 +18,32 @@ description: >
   what needs testing.
 ---
 
+## Output location and identity — one test pack per product summary
+
+Write each test pack as its own file:
+
+```
+projects/<project>/<feature>/solutions/QA/outputs/test-cases/TC-<nnn>-<slug>.md
+```
+
+Every file MUST open with front matter that names the product summary it covers:
+
+```markdown
+---
+id: TC-001
+title: Expression of Interest pack
+productSummary: PS-001
+---
+```
+
+- `productSummary` is the `id` from the product summary's own front matter. This
+  is what links the two in both directions in the companion app, so it must match
+  exactly.
+- Read `outputs/product-summaries/` first. Produce **one pack per product
+  summary**, and cover only that summary's requirements in it.
+- If a product summary has no matching pack, that is a coverage gap — report it
+  rather than folding its tests into another pack.
+
 ## Project definition — read this first
 
 Before reading any discovery document, read:

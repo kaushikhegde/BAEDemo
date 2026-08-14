@@ -15,6 +15,7 @@ A local end-to-end workflow that takes raw discovery artefacts for a single feat
 7. A **Salesforce Service Cloud Solution Architecture Document** (capability-to-component map, Flow/LWC/Apex inventory with a justification per custom component, integration interface catalogue, ADRs, architecture diagrams), published to its own Confluence page.
 8. A **test pack** (executable test cases, requirements traceability matrix, coverage gap analysis, optional CSV/Gherkin exports), published to its own Confluence page.
 9. An **evidence-traced persona set + journey map per persona**, published to its own Confluence page — plus `personas.json` and `journey-map.json`, which are a **build contract for the companion app** that is scaffolded last.
+10. A set of **UI mockups** (wireframes) — one screen specification rendered as self-contained, themed HTML pages, one per screen, each carrying its error / empty / blocked states and tracing back to the stories and capabilities it realises. Local artefacts; they appear on the companion app's **UI** tab and are also openable one page at a time.
 
 Deliverables 1→3→4 form a **sequential, human-gated pipeline** (requirements → data model → solution design); each stage needs the previous stage's approved output. Deliverable 5 (the companion app) is a parallel branch — it renders whatever exists, so it works on a partial pipeline. Deliverable 6 (the capability + process map) is **standalone and ungated** — the **Capabilities Process Architect** reads the same discovery documents the BA reads, so it can run before, after, or instead of the requirements flow. Deliverable 9 (**Service Designer**) is standalone and ungated like deliverable 6 — it reads the same discovery documents. Deliverables 7 and 8 (**Solution Architect**, **QA Architect**) gate on the Product Summary **only**: they consume the data model and each other's output when those exist and say so in their own documents, but never block waiting for them.
 
@@ -35,6 +36,7 @@ chatbot UI
    │  POST /api/solution-architecture/trigger → "Generate solution architecture — …"
    │  POST /api/test-cases/trigger → "Generate test cases — …"
    │  POST /api/personas/trigger   → "Generate personas — …"
+   │  POST /api/ui-mockups/trigger → "Generate UI mockups — …"
    │  POST /api/ui-agent/trigger   → "Build UI — …"
    │  (each creates a top-level Paperclip issue, status=todo, assigned to the Delivery Lead)
    ▼
@@ -47,6 +49,7 @@ Delivery Lead — routes by title prefix to the owning worker
    │    "Generate solution architecture — …" → SOLUTION ARCHITECTURE flow → Solution Architect
    │    "Generate test cases — …"       → TEST CASES flow → QA Architect
    │    "Generate personas — …"        → PERSONAS flow → Service Designer
+   │    "Generate UI mockups — …"       → UI MOCKUPS flow → UX Designer
    │    "Build UI — …"                  → UI flow → Delivery Lead drives Developer, then UX Auditor
    │
    ├─ REQUIREMENTS flow: creates a child issue assigned to the BA (status=todo)
@@ -137,6 +140,23 @@ Delivery Lead — routes by title prefix to the owning worker
    │                 → PNG (two per persona), creates a STANDALONE Confluence page
    │                 "<feature> — Personas & Journey Map", attaching the two JSON files
    │
+   ├─ UI MOCKUPS flow (needs the product summary OR any .md): child issue
+   │  assigned to the UX Designer (status=todo)
+   │     ▼
+   │   UX Designer — works in solutions/UI/, two phases
+   │      ├─ PHASE 1: stages every input the feature has (documents, personas +
+   │      │          journeys, capabilities, product summary(-ies), data model,
+   │      │          architecture, test cases, plus client-supplied designs from
+   │      │          requirements/UI/ which are AUTHORITATIVE when present),
+   │      │          runs the `ui-mockup-generator` skill
+   │      │          → solutions/UI/outputs/mockups.json (JSON only — never HTML),
+   │      │          MUST render via `node scripts/render-mockups.mjs <project> <feature>`
+   │      │          (non-zero exit = blocker), then re-renders the feature's SINGLE
+   │      │          page, attaches the JSON, raises an approval gate
+   │      └─ PHASE 2 (after human approves): verifies the artefacts, re-renders the
+   │                 single page, posts the screen count + uncovered stories + both
+   │                 URLs, closes. NOTHING is published.
+   │
    └─ UI flow: Delivery Lead dispatches the Developer and UX Auditor directly, as
               SIBLINGS under the Build UI issue (not a chain). The Delivery Lead is re-woken
               automatically (issue_children_completed) after each child finishes.
@@ -214,6 +234,15 @@ requirement-generator/                         workspace root (cwd for all agent
 │       │   ├── productsummary/              (input, optional)
 │       │   ├── capabilities/                (input, optional — from solutions/Capabilities/outputs/)
 │       │   └── outputs/                     (personas-journeys.md, personas.json, journey-map.json)
+│       ├── UI/                              (the UX Designer's working folder)
+│       │   ├── documents/<category>/        (input — every .md under the feature, staged by category)
+│       │   ├── personas/                    (input, optional — personas.json + journey-map.json)
+│       │   ├── capabilities/                (input, optional)
+│       │   ├── productsummary/              (input, optional — product summary + stories)
+│       │   ├── DataModel/                   (input, optional — real field names + picklists)
+│       │   ├── Architecture/                (input, optional)
+│       │   ├── QA/                          (input, optional — the failure paths become screen states)
+│       │   └── outputs/mockups.json         (output — fixed name; JSON only, never HTML)
 │       └── Capabilities/                    (the Capabilities Process Architect's working folder)
 │           ├── documents/<category>/        (input — every .md under the feature, staged by category)
 │           ├── capability-reference/        (optional input — house capability taxonomy)
@@ -227,8 +256,10 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── salesforce-data-modeler/SKILL.md
 │   ├── salesforce-service-cloud-architecture/SKILL.md
 │   ├── requirements-test-case-generator/SKILL.md
-│   └── persona-journey-map/SKILL.md
-├── generated-apps/<project>-<feature>/        Developer writes the scaffolded React app here
+│   ├── persona-journey-map/SKILL.md
+│   └── ui-mockup-generator/SKILL.md
+├── generated-apps/<project>-<feature>/        the feature's SINGLE page (index.html)
+│   └── mockups/                                one page per screen + index.html (render-mockups.mjs)
 ├── examples/               (gold-standard reference docs — house style for the BA; the FALLBACK when a project has no requirements/templates/)
 │   ├── gold-product-summary.pdf
 │   └── gold-story.doc
@@ -241,6 +272,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │   ├── solution-architect.json
 │   ├── qa-architect.json
 │   ├── service-designer.json
+│   ├── ux-designer.json    (UI mockups — publishes nothing)
 │   ├── ui.json
 │   └── ux-auditor.json
 ├── scyne-chatbot/          (the React + Vite + Express chatbot — see its own README.md)
@@ -271,11 +303,12 @@ requirement-generator/                         workspace root (cwd for all agent
 | Solution Architect | `bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb` (reports to the Architecture Lead) |
 | QA Architect | `eeeeeee1-eeee-4eee-8eee-eeeeeeeeeeee` (reports to the Business Lead) |
 | Service Designer | `fffffff1-ffff-4fff-8fff-ffffffffffff` (reports to the Architecture Lead) |
+| UX Designer | `9999999a-9999-4999-8999-999999999999` (reports to the Architecture Lead) |
 | Architecture Lead | `aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa` (reports to the Delivery Lead) |
 | Developer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (dispatched by the Delivery Lead)          |
 | UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (dispatched by the Delivery Lead)          |
 
-The Delivery Lead dispatches all six workers (one child issue each, routed by title prefix). Org-chart reporting: BA → Business Lead; Data Modeler, Capabilities Process Architect → Architecture Lead; Architecture Lead, Developer, UX Auditor, UX Designer → Architecture Lead/Delivery Lead per `scripts/bootstrap.mjs`. The human approval gate between stages is what QAs each output — not the leads. The placeholder IDs (`ddddddd1-…`, `aaaaaaa1-…`, `ccccccc1-…`) are added to `OLD_IDS` in `scripts/bootstrap.mjs` and swapped exactly like the BA/Developer/UX placeholders.
+The Delivery Lead dispatches every worker (one child issue each, routed by title prefix). Org-chart reporting: BA → Business Lead; QA Architect → Business Lead; Data Modeler, Capabilities Process Architect, Solution Architect, Service Designer, UX Designer, Developer, UX Auditor → Architecture Lead per `scripts/bootstrap.mjs`. The human approval gate between stages is what QAs each output — not the leads. The placeholder IDs (`ddddddd1-…`, `aaaaaaa1-…`, `ccccccc1-…`, `9999999a-…`) are added to `OLD_IDS` in `scripts/bootstrap.mjs` and swapped exactly like the BA/Developer/UX placeholders — the bootstrap throws if a placeholder survives the swap, so `OLD_IDS` and `pm.json` must stay in sync.
 
 In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everything, swaps the placeholder IDs in `pm.json`, and writes `.bootstrap/ids.json`. If you change the placeholder UUIDs themselves (the values in `OLD_IDS` in `scripts/bootstrap.mjs` must match the ones written in `agent-instructions/pm.json`), keep both in sync. The Delivery Lead dispatches the BA, Data Modeler, Architecture Lead, Capabilities Process Architect, Developer, and UX Auditor — all six placeholder IDs are baked into `pm.json` and swapped at bootstrap.
 
@@ -313,7 +346,7 @@ In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everyt
 
 ## The Skills
 
-Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
+Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each worker invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills` registers them with Paperclip from these files (any agent listing the slug in `desiredSkills` triggers registration). To edit a skill, change its `SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated content.
 
 **`requirement-generator`** (the BA, Phase 1):
 - Input layout: `./projects/<project>/<feature>/requirements/{SOP,Transcripts,Notes,UI}/`.
@@ -349,6 +382,13 @@ Seven registered company skills live under `./skills/<slug>/SKILL.md`. Each work
 - The discipline is evidence: every persona and every pain point cites the source document, and inferences are labelled as inferences. Three evidenced personas beat seven invented ones.
 - The two JSON files are a build contract, so the agent must pass `node scripts/validate-experience.mjs <project> <feature>` before it raises the approval gate.
 
+**`ui-mockup-generator`** (the UX Designer — working folder `solutions/UI/`):
+- Inputs (staged by the agent): `documents/<category>/` and `productsummary/` (at least one of the two is required) + `personas/`, `capabilities/`, `DataModel/`, `Architecture/` and `QA/` (all optional). Client-supplied designs in `requirements/UI/` are **authoritative** when present — the skill reflects them rather than inventing a layout.
+- Output: `solutions/UI/outputs/mockups.json` (fixed name) — screens, each with `realises` traceability and one or more `states`, built from a fixed vocabulary of **13 block types** (header, banner, stepper, tabs, form, table, detail, cards, list, timeline, buttons, placeholder, note).
+- **The agent writes JSON only.** `scripts/render-mockups.mjs` owns every pixel, which is what keeps the screens matching the companion app's theme and identical run-to-run. A hand-written page is overwritten by the next render.
+- The discipline is real content: field names, picklist values and required-ness come from the data model, and a story needing a field the data model lacks is recorded in `notes` rather than invented — that gap is a finding worth surfacing.
+- The failure, empty and blocked paths in the test pack become **screen states**, so a reviewer sees the design problem instead of only the happy path.
+
 **`solution-design-document`** (the Architecture Lead, Phase 1 — working folder `solutions/Design/`):
 - Inputs (staged by the agent): `productsummary/` (copied from the approved product summary) + `DataModel/` (copied from `solutions/DataModel/outputs/`).
 - Output: `solutions/Design/outputs/solution-design.md` (fixed name) — declarative-first (OOB → low-code → code) component design and a Mermaid `flowchart`.
@@ -380,6 +420,8 @@ open http://127.0.0.1:5173
 | POST   | `/api/solution-architecture/trigger` | Creates a `Generate solution architecture — …` issue. Gated: `409 no_product_summary` only — the data model is optional enrichment |
 | POST   | `/api/test-cases/trigger`         | Creates a `Generate test cases — …` issue. Gated: `409 no_product_summary` only — the data model and architecture are optional enrichment |
 | POST   | `/api/personas/trigger`           | Creates a `Generate personas — …` issue. No pipeline prerequisite; `409 no_documents` only. Publishes, so it carries the Confluence space key |
+| POST   | `/api/ui-mockups/trigger`         | Creates a `Generate UI mockups — …` issue (UX Designer → wireframes). No pipeline prerequisite; `409 no_documents` only — the skill needs the product summary *or* the discovery documents. Carries no Atlassian keys, so approval skips provisioning |
+| GET    | `/api/companion-app/:project/:feature/mockups/:file` | Serves one rendered mockup page. `.html` only; `404 not_generated` before `render-mockups.mjs` has run |
 | GET    | `/api/capability-map/:project/:feature` | Serves the feature's SINGLE page `generated-apps/<project>-<feature>/index.html`; `404 not_generated` before it has been rendered. Kept as an alias so older links resolve |
 | GET    | `/api/status/:issueId`            | Normalised view: tree + stage + activity + approvals + extracted links. Stage labels adapt to the flow (BA / Data Modeler / Architecture Lead / Developer) |
 | POST   | `/api/approve/:approvalId`        | Resolves an approval gate; wakes the gate's own issue assignee. Atlassian auto-provisioning is keyed on the keys in the issue description: requirements ensures Jira project + Confluence space; data-model/solution-design ensure just the space; Build UI carries no keys → skipped |
@@ -418,6 +460,7 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
 - `trigger_solution_architecture` — fires the solution architecture flow (`Generate solution architecture — …`). Gated on the product summary only. **Distinct from `trigger_solution_design`** — if the user just says "do the architecture", the bot asks which one rather than guessing.
 - `trigger_test_cases` — fires the test-case flow (`Generate test cases — …`). Gated on the product summary only; the data model and architecture enrich the pack when present.
 - `trigger_personas` — fires the persona + journey flow (`Generate personas — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Its `personas.json` / `journey-map.json` feed the companion app.
+- `trigger_ui_mockups` — fires the UI mockup flow (`Generate UI mockups — …`). No hard prerequisite: it needs the product summary *or* the discovery documents. **Distinct from `trigger_ui_build`** — mockups are wireframes of the client's future screens (UX Designer); the UI build renders the companion app page (Developer). If the user just says "do the UI", the bot asks which one.
 - `save_project_definition` — writes `projects/<project>/description.md` from the user's own words. The system prompt lists which projects have one and which do not, and tells the bot to ask once — never to block a run on it.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
 
@@ -533,7 +576,8 @@ in its own document.
 | 4 | `datamodel` | `/salesforce-data-modeler` | Data Modeler | product summary |
 | 5 | `architecture` | `/salesforce-service-cloud-architecture` | Solution Architect | product summary |
 | 6 | `qa` | `/requirements-test-case-generator` | QA Architect | product summary |
-| 7 | `app` | `node scripts/render-companion-app.mjs` | Developer | anything |
+| 7 | `ui` | `/ui-mockup-generator` | UX Designer | product summary *or* documents |
+| 8 | `app` | `node scripts/render-companion-app.mjs` | Developer | anything |
 | — | `design` | `/solution-design-document` | Architecture Lead | data model |
 
 `design` is an **optional side stage**, deliberately outside the numbered order:
@@ -550,7 +594,17 @@ npm run stage RTWSA Demo requirements   # then /requirement-generator
 npm run stage RTWSA Demo datamodel      # then /salesforce-data-modeler
 npm run stage RTWSA Demo architecture   # then /salesforce-service-cloud-architecture
 npm run stage RTWSA Demo qa             # then /requirements-test-case-generator
+npm run stage RTWSA Demo ui             # then /ui-mockup-generator
 npm run stage RTWSA Demo app            # then npm run app RTWSA Demo
+```
+
+Stage 7 (`ui`) needs two commands after the skill, both printed by the staging
+output — the renderer, then the companion app so its **UI** tab picks the screens
+up:
+
+```bash
+node scripts/render-mockups.mjs        RTWSA Demo   # validates the JSON, writes one page per screen
+node scripts/render-companion-app.mjs  RTWSA Demo   # UI tab now lists them
 ```
 
 Two stages have a **validator that must pass** before the output is trusted; the
@@ -700,6 +754,8 @@ Three Node scripts power the UI / a11y / capability agents:
 
 - `scripts/stage.mjs <project> <feature> <stage>` — the local, Paperclip-free path. Replicates each agent's Phase 1 staging for every stage, converts source documents to markdown first, refuses a stage whose hard prerequisite is missing (naming the stage that would satisfy it), and prints the exact skill command to run next. With no `<stage>` it reports which stages a feature has run; with no arguments, that grid for every feature. Replaced `stage-datamodel.mjs`, which covered only the Data Modeler.
 - `scripts/extract-brand.mjs <url> <project> <feature>` — reads a client's site and writes `design/style-guides/theme.json` (palette, wordmark, font stack, logo as a data URI) plus `brand-source.json` recording why each value was chosen. Server-side only: the companion app itself makes zero network requests. Refuses to overwrite a hand-authored theme without `--force`.
+- `scripts/render-mockups.mjs <project> <feature>` — used by the **UX Designer**. Reads `solutions/UI/outputs/mockups.json`, validates it (non-zero exit naming the offending screen and field), and emits `generated-apps/<project>-<feature>/mockups/` — one self-contained themed page per screen plus an index. Reads the same `design/style-guides/theme.json` the companion app reads, so a feature branded once renders in the client's palette in both artefacts. Screen pages carry a state toggle, browser chrome, traceability chips, and links back to both the mockup index and the companion app.
+  > **Its theme tokens are duplicated from `render-companion-app.mjs`** rather than imported, because the companion app builds its CSS inline inside a template literal. If that is ever extracted into a module, both should read it from there — until then, a palette change has to be made in both files.
 - `scripts/validate-experience.mjs <project> <feature>` — used by the **Service Designer**. Validates `solutions/Experience/outputs/{personas.json,journey-map.json}` against the companion-app contract: required fields, unique IDs, `avatarColor` in the app's palette, satisfaction scores as integers 1–5, no semicolons in persona bullets (the app's CSV loader splits on them), no `:`/`;` in journey step names (breaks the Mermaid `journey` parser), every journey's `personaId` resolving to a persona, every "moment that matters" resolving to a step, and every persona having exactly one journey. Reports **every** problem in one run and exits non-zero. This is the only guard between this stage and a companion-app build that happens weeks later.
 - `scripts/render-capability-map.mjs <project> <feature>` — used by the **Capabilities Process Architect**. Reads `solutions/Capabilities/outputs/{capability-map.json,process-model.json}`, validates them (non-zero exit naming the offending file/field), and — with `--validate-only`, which is how the pipeline calls it — exits without writing anything. It is the **contract guard** for the two Capabilities JSON files, which is the part the agent cannot self-check. Its own page renderer is retained in the file but is no longer wired into the pipeline: a feature has ONE page, rendered by `scripts/render-companion-app.mjs`.
   > **It reads the same `design/style-guides/theme.json` the companion app reads**, so a feature branded once (`npm run brand`) renders in the client's palette, wordmark and font in *both* artefacts; a feature with no theme falls back to the Scyne palette. Re-run this renderer after `npm run brand`, or the map keeps the old colours.

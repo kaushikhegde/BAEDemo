@@ -117,6 +117,13 @@ export const triggerTestCases = (project: string, feature: string) =>
 export const triggerPersonas = (project: string, feature: string) =>
   postStageTrigger("/api/personas/trigger", "Personas trigger", project, feature);
 
+// Fire the UI MOCKUPS stage (UX Designer → wireframes). No pipeline prerequisite
+// — gated server-side only on the feature having documents (409 no_documents),
+// since the skill needs either the product summary or the discovery documents.
+// NOT the same as triggerUiBuild, which renders the companion app page.
+export const triggerUiMockups = (project: string, feature: string) =>
+  postStageTrigger("/api/ui-mockups/trigger", "UI mockups trigger", project, feature);
+
 export type BrandTheme = {
   brand?: string;
   brandDeep?: string;

@@ -60,7 +60,15 @@ const STAGES = {
     agent: "Capabilities Process Architect",
     skill: "capability-process-map",
     work: "solutions/Capabilities",
-    produces: ["outputs/capability-process.md", "outputs/capability-map.json", "outputs/process-model.json"],
+    // `produces` paths are relative to the FEATURE directory, not to `work` —
+    // stageIsDone resolves them against the feature root, and it is also what
+    // decides whether a later stage reports this one's output as an available
+    // input. A path relative to `work` silently reports "never run".
+    produces: [
+      "solutions/Capabilities/outputs/capability-process.md",
+      "solutions/Capabilities/outputs/capability-map.json",
+      "solutions/Capabilities/outputs/process-model.json",
+    ],
     requires: [],
     then: "node scripts/render-capability-map.mjs <project> <feature> --validate-only",
     stage: stageCapabilities,
@@ -71,7 +79,11 @@ const STAGES = {
     agent: "Service Designer",
     skill: "persona-journey-map",
     work: "solutions/Experience",
-    produces: ["outputs/personas-journeys.md", "outputs/personas.json", "outputs/journey-map.json"],
+    produces: [
+      "solutions/Experience/outputs/personas-journeys.md",
+      "solutions/Experience/outputs/personas.json",
+      "solutions/Experience/outputs/journey-map.json",
+    ],
     requires: [],
     then: "node scripts/validate-experience.mjs <project> <feature>",
     stage: stagePersonas,
@@ -127,6 +139,17 @@ const STAGES = {
     requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
     stage: stageQA,
   },
+  ui: {
+    order: 6.5,
+    label: "UI Mockups",
+    agent: "UX Designer",
+    skill: "ui-mockup-generator",
+    work: "solutions/UI",
+    produces: ["solutions/UI/outputs/mockups.json"],
+    requires: [{ path: "outputs/product-summary.md", from: "requirements" }],
+    then: "node scripts/render-mockups.mjs <project> <feature>",
+    stage: stageUI,
+  },
   app: {
     order: 7,
     label: "Companion App",
@@ -134,6 +157,8 @@ const STAGES = {
     script: "node scripts/render-companion-app.mjs <project> <feature>",
     work: "-",
     produces: [],
+    // The only stage whose output lands outside the feature directory.
+    producesInWorkspace: ["generated-apps/<key>/index.html"],
     requires: [],
     stage: stageApp,
   },
@@ -366,6 +391,48 @@ async function stageQA(ctx) {
   if (a + d === 0) staged.push(`Architecture/  — neither architecture nor design run yet (optional)`);
 }
 
+
+// The mockup generator reads more inputs than any other stage: the discovery
+// documents for real terminology, personas and journeys for who and when,
+// capabilities for what it realises, the product summary for the stories, the
+// data model for field names, architecture for the surface, and the test cases
+// for the states a screen must be able to show.
+async function stageUI(ctx) {
+  const { featureDir, work, staged } = ctx;
+  const dirs = await mkdirs(work, ["documents", "personas", "capabilities", "productsummary", "DataModel", "Architecture", "QA", "outputs"]);
+
+  const docs = await findDocs(featureDir, { skipTemplates: true });
+  if (docs.length) await copyDocsByCategory(docs, dirs.documents, staged);
+
+  const copyIf = async (src, destDir, label) => {
+    if (await exists(src)) await copyOne(src, destDir, staged, label);
+  };
+  const copyDirMd = async (dir, destDir, label) => {
+    for (const f of (await fs.readdir(dir).catch(() => []))) {
+      if (f.toLowerCase().endsWith(".md") || f.toLowerCase().endsWith(".json")) {
+        await copyOne(path.join(dir, f), destDir, staged, label);
+      }
+    }
+  };
+
+  await copyIf(path.join(featureDir, "solutions", "Experience", "outputs", "personas.json"), dirs.personas, "personas");
+  await copyIf(path.join(featureDir, "solutions", "Experience", "outputs", "journey-map.json"), dirs.personas, "personas");
+  await copyIf(path.join(featureDir, "solutions", "Capabilities", "outputs", "capability-map.json"), dirs.capabilities, "capabilities");
+  await copyIf(path.join(featureDir, "solutions", "Capabilities", "outputs", "process-model.json"), dirs.capabilities, "capabilities");
+  await copyIf(path.join(featureDir, "outputs", "product-summary.md"), dirs.productsummary, "productsummary");
+  await copyIf(path.join(featureDir, "outputs", "stories.md"), dirs.productsummary, "productsummary");
+  await copyDirMd(path.join(featureDir, "outputs", "product-summaries"), dirs.productsummary, "productsummary");
+  await copyDirMd(path.join(featureDir, "solutions", "DataModel", "outputs"), dirs.DataModel, "DataModel");
+  await copyDirMd(path.join(featureDir, "solutions", "Architecture", "outputs"), dirs.Architecture, "Architecture");
+  await copyIf(path.join(featureDir, "solutions", "QA", "outputs", "test-cases.md"), dirs.QA, "QA");
+  await copyDirMd(path.join(featureDir, "solutions", "QA", "outputs", "test-cases"), dirs.QA, "QA");
+
+  const supplied = (await fs.readdir(path.join(featureDir, "requirements", "UI")).catch(() => []));
+  staged.push(supplied.length
+    ? `requirements/UI/  — ${supplied.length} supplied mockup(s): reflect these rather than inventing a layout`
+    : `requirements/UI/  — empty (no client designs supplied; the skill designs from requirements)`);
+}
+
 async function stageApp(ctx) {
   const { featureDir, staged } = ctx;
   // Nothing to copy: the renderer reads the feature's artefacts in place.
@@ -387,18 +454,30 @@ async function stageApp(ctx) {
 // Status
 // ---------------------------------------------------------------------------
 
-async function stageIsDone(featureDir, def) {
-  if (!def.produces.length) return false;
+// `project`/`feature` are only needed for the app stage, whose output lands in
+// generated-apps/ rather than under the feature. Callers that only have the
+// feature directory can omit them; the app row then reports not-run, which is
+// what the staging report wants anyway (it lists feature inputs).
+async function stageIsDone(featureDir, def, project, feature) {
+  const outside = def.producesInWorkspace ?? [];
+  if (!def.produces.length && !outside.length) return false;
   for (const p of def.produces) {
     if (!(await exists(path.join(featureDir, p)))) return false;
+  }
+  if (outside.length) {
+    if (!project || !feature) return false;
+    for (const p of outside) {
+      const resolved = p.replace("<key>", `${project}-${feature}`);
+      if (!(await exists(path.join(WORKSPACE, resolved)))) return false;
+    }
   }
   return true;
 }
 
-async function featureStatus(featureDir) {
+async function featureStatus(featureDir, project, feature) {
   const rows = [];
   for (const [key, def] of ORDERED) {
-    rows.push({ key, def, done: await stageIsDone(featureDir, def) });
+    rows.push({ key, def, done: await stageIsDone(featureDir, def, project, feature) });
   }
   return rows;
 }
@@ -432,7 +511,7 @@ async function printAllFeatures() {
   const head = ORDERED.map(([k]) => k.slice(0, 4).padEnd(4)).join(" ");
   console.log(`  ${"".padEnd(38)}${head}`);
   for (const f of features) {
-    const rows = await featureStatus(f.dir);
+    const rows = await featureStatus(f.dir, f.project, f.feature);
     const marks = rows.map((r) => (r.done ? "  ✓ " : "  · ").padEnd(5)).join("").trimEnd();
     console.log(`  ${`${f.project} / ${f.feature}`.padEnd(38)}${marks}`);
   }
@@ -440,18 +519,23 @@ async function printAllFeatures() {
 }
 
 async function printFeatureStatus(project, feature, featureDir) {
-  const rows = await featureStatus(featureDir);
+  const rows = await featureStatus(featureDir, project, feature);
   console.log(`\n${project} / ${feature}\n`);
   for (const { key, def, done } of rows) {
     const mark = done ? "✓" : def.optional ? "·" : "·";
     console.log(`  ${mark} ${key.padEnd(14)}${def.label}`);
   }
   const next = rows.find((r) => !r.done && !r.def.optional && r.key !== "app");
-  console.log(
-    next
-      ? `\nNext:  npm run stage ${project} "${feature}" ${next.key}\n`
-      : `\nEvery stage has run. Build the companion app:\n  npm run stage ${project} "${feature}" app\n`,
-  );
+  const appBuilt = rows.find((r) => r.key === "app")?.done;
+  if (next) {
+    console.log(`\nNext:  npm run stage ${project} "${feature}" ${next.key}\n`);
+  } else if (!appBuilt) {
+    console.log(`\nEvery stage has run. Build the companion app:\n  npm run stage ${project} "${feature}" app\n`);
+  } else {
+    // The page is progressive, so it is only current as of the last render —
+    // re-rendering is cheap and idempotent, so always offer it.
+    console.log(`\nEvery stage has run and the companion app is built.\nRe-render it to pick up any later edit:\n  ${RENDER_CMD.replace("<project>", project).replace("<feature>", `"${feature}"`)}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

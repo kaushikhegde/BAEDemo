@@ -107,7 +107,7 @@ function inline(s) {
   return t;
 }
 
-function mdToHtml(md, diagrams) {
+function mdToHtml(md, diagrams, diagramsSkipped) {
   const lines = String(md).replace(/\r\n/g, "\n").split("\n");
   const out = [];
   let i = 0;
@@ -131,9 +131,15 @@ function mdToHtml(md, diagrams) {
       if (lang === "mermaid") {
         const key = diagramKey(src);
         const svg = diagrams.get(key);
+        // A missing SVG means one of two very different things, and a reader
+        // cannot tell them apart from raw source alone: either the diagram
+        // failed, or this page was built with --no-diagrams. Say which.
+        const why = diagramsSkipped
+          ? "Diagram not rendered — this page was built with --no-diagrams. Re-run without that flag."
+          : "Diagram source (this diagram failed to render)";
         out.push(svg
           ? `<figure class="diagram" role="group" aria-label="Diagram" tabindex="0"><div class="diagram-inner">${svg}</div></figure>`
-          : `<figure class="diagram diagram-fallback"><figcaption>Diagram source (not rendered)</figcaption><pre tabindex="0"><code>${esc(src)}</code></pre></figure>`);
+          : `<figure class="diagram diagram-fallback"><figcaption>${esc(why)}</figcaption><pre tabindex="0"><code>${esc(src)}</code></pre></figure>`);
       } else {
         out.push(`<pre tabindex="0"><code>${esc(src)}</code></pre>`);
       }
@@ -175,7 +181,7 @@ function mdToHtml(md, diagrams) {
       closeList();
       const buf = [];
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
-      out.push(`<blockquote>${mdToHtml(buf.join("\n"), diagrams)}</blockquote>`);
+      out.push(`<blockquote>${mdToHtml(buf.join("\n"), diagrams, diagramsSkipped)}</blockquote>`);
       continue;
     }
 
@@ -456,6 +462,58 @@ async function loadTheme(featureRoot) {
 
 // ------------------------------------------------------------------ inputs
 
+
+/**
+ * A collection of documents that share a folder — hundreds of product summaries
+ * for one feature, or the test packs that cover them.
+ *
+ * Each file may carry YAML-ish front matter:
+ *   ---
+ *   id: PS-001
+ *   title: Expression of Interest
+ *   productSummary: PS-001      # test packs only — what this pack covers
+ *   ---
+ *
+ * `id` is what links the two collections in both directions, so a file can be
+ * renamed without breaking the link. Missing front matter is tolerated: the id
+ * falls back to the filename stem and the title to the first heading.
+ */
+function parseFrontMatter(text) {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text);
+  if (!m) return { meta: {}, body: text };
+  const meta = {};
+  for (const line of m[1].split("\n")) {
+    const kv = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
+    if (kv) meta[kv[1]] = kv[2].replace(/^["']|["']$/g, "").trim();
+  }
+  return { meta, body: text.slice(m[0].length) };
+}
+
+async function readCollection(dir, kind) {
+  let names = [];
+  try {
+    names = (await fs.readdir(dir)).filter((f) => f.toLowerCase().endsWith(".md")).sort();
+  } catch { return []; }
+  const out = [];
+  for (const name of names) {
+    const raw = await fs.readFile(path.join(dir, name), "utf8").catch(() => null);
+    if (!raw) continue;
+    const { meta, body } = parseFrontMatter(raw);
+    const stem = name.replace(/\.md$/i, "");
+    const heading = (/^#\s+(.+)$/m.exec(body) || [])[1];
+    out.push({
+      kind,
+      id: meta.id || stem,
+      title: meta.title || heading || stem,
+      covers: meta.productSummary || meta.covers || null,
+      summary: meta.summary || null,
+      file: name,
+      body,
+    });
+  }
+  return out;
+}
+
 async function loadArtefacts(featureRoot) {
   const R = (...p) => path.join(featureRoot, ...p);
   const [
@@ -499,6 +557,45 @@ async function loadArtefacts(featureRoot) {
 }
 
 /**
+ * Product summaries and their test packs.
+ *
+ * A feature may hold hundreds of product summaries, so the folder form is the
+ * primary shape. The historic single-file form is still read and presented as a
+ * collection of one, so features generated before this change keep working.
+ */
+async function loadCollections(featureRoot) {
+  const R = (...p) => path.join(featureRoot, ...p);
+  const [summaries, packs, legacySummary, legacyPack] = await Promise.all([
+    readCollection(R("outputs", "product-summaries"), "summary"),
+    readCollection(R("solutions", "QA", "outputs", "test-cases"), "testcase"),
+    readText(R("outputs", "product-summary.md")),
+    readText(R("solutions", "QA", "outputs", "test-cases.md")),
+  ]);
+
+  if (!summaries.length && legacySummary) {
+    const { meta, body } = parseFrontMatter(legacySummary);
+    summaries.push({
+      kind: "summary",
+      id: meta.id || "PS-001",
+      title: meta.title || (/^#\s+(.+)$/m.exec(body) || [])[1] || "Product Summary",
+      covers: null, file: "product-summary.md", body,
+    });
+  }
+  if (!packs.length && legacyPack) {
+    const { meta, body } = parseFrontMatter(legacyPack);
+    packs.push({
+      kind: "testcase",
+      id: meta.id || "TC-001",
+      title: meta.title || (/^#\s+(.+)$/m.exec(body) || [])[1] || "Test Cases",
+      // With one of each and no declared link, the pairing is unambiguous.
+      covers: meta.productSummary || (summaries.length === 1 ? summaries[0].id : null),
+      file: "test-cases.md", body,
+    });
+  }
+  return { summaries, packs };
+}
+
+/**
  * Optional artwork, keyed by persona id:
  *   design/personas/<id>.png        -> the round avatar on the persona card
  *   design/journeys/<id>-journey.png -> the full journey diagram
@@ -524,6 +621,7 @@ async function loadImages(featureRoot, personas) {
 // ------------------------------------------------------------------ page
 
 function page({ project, feature, generatedOn, a, docHtml, theme }) {
+  const uiScreens = Array.isArray(a.mockups?.screens) ? a.mockups.screens : [];
   const title = `${feature} — Companion App`;
 
   // Personas leads and is the default view. Journeys is NOT a top-level tab —
@@ -534,11 +632,12 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
   if (a.personas.length) push("personas", "Personas", a.personas.length);
   if (a.capabilities.length) push("capabilities", "Capabilities", a.capabilities.length);
   if (a.activities.length) push("process", "Process", a.activities.length);
-  if (a.productSummary) push("summary", "Product Summary", null);
+  if (a.summaries.length) push("summary", "Product Summary", a.summaries.length > 1 ? a.summaries.length : null);
   if (a.dataModel) push("datamodel", "Data Model", null);
   if (a.solutionDesign) push("design", "Solution Design", null);
   if (a.solutionArchitecture) push("architecture", "Architecture", null);
-  if (a.testCases) push("testcases", "Test Cases", null);
+  if (uiScreens.length) push("ui", "UI", uiScreens.length);
+  if (a.packs.length) push("testcases", "Test Cases", a.packs.length > 1 ? a.packs.length : null);
   // A feature with nothing at all still needs one landing panel.
   if (!sections.length) push("empty", "Nothing generated yet", null);
   const DEFAULT_SECTION = sections[0].id;
@@ -548,6 +647,8 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
     personas: a.personas, journeys: a.journeys,
     capabilities: a.capabilities, activities: a.activities,
     images: a.images || {},
+    summaries: docHtml.summaries || [],
+    packs: docHtml.packs || [],
     defaultSection: DEFAULT_SECTION,
   });
 
@@ -562,6 +663,25 @@ function page({ project, feature, generatedOn, a, docHtml, theme }) {
   // "CAPABILITIES · PROCESS · COVERAGE".
   const eyebrowTrail = sections.slice(0, 4)
     .map((s) => s.label).join(" · ") || "Solution guide";
+
+  const collPanel = (id, eyebrow, heading) => `
+    <section class="panel" id="panel-${id}" role="tabpanel" aria-labelledby="tab-${id}" hidden>
+      <div class="coll-list" id="${id}-list">
+        <div class="sec-head">
+          <div class="eyebrow">${esc(eyebrow)}</div>
+          <h2 class="panel-h">${esc(heading)}</h2>
+          <p class="lede" id="${id}-lede"></p>
+        </div>
+        <label class="visually-hidden" for="${id}-q" style="position:absolute;left:-9999px">Search ${esc(heading)}</label>
+        <input id="${id}-q" class="search coll-search" type="search" placeholder="Search ${esc(heading.toLowerCase())}…" autocomplete="off"/>
+        <div class="coll-rows" id="${id}-rows"></div>
+      </div>
+      <div class="coll-detail" id="${id}-detail" hidden>
+        <button class="backbtn" data-coll-back="${id}" type="button">← All ${esc(heading.toLowerCase())}</button>
+        <div class="coll-links" id="${id}-links"></div>
+        <div class="doc" id="${id}-doc"></div>
+      </div>
+    </section>`;
 
   const docPanel = (id, heading, html) => html
     ? `<section class="panel" id="panel-${id}" role="tabpanel" aria-labelledby="tab-${id}" hidden>
@@ -658,7 +778,7 @@ nav.perspectives::-webkit-scrollbar{display:none}
 .pbtn[aria-selected="true"] .lbl{color:var(--brand-fg,var(--brand-deep))}
 .pbtn .badge{font-size:.625rem;font-weight:700;padding:.05rem .375rem;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--muted)}
 .pbtn[aria-selected="true"] .badge{border-color:var(--brand);color:var(--brand-fg,var(--brand-deep))}
-#underline{position:absolute;bottom:0;height:2px;background:var(--brand-fg,var(--brand-deep));border-radius:999px;transition:transform .28s cubic-bezier(.17,.89,.32,1.06),width .28s cubic-bezier(.17,.89,.32,1.06);transform-origin:left;width:0}
+#underline{position:absolute;left:0;bottom:0;height:2px;background:var(--brand-fg,var(--brand-deep));border-radius:999px;transition:transform .28s cubic-bezier(.17,.89,.32,1.06),width .28s cubic-bezier(.17,.89,.32,1.06);transform-origin:left;width:0}
 @media (prefers-reduced-motion: reduce){#underline{transition:none}}
 .wrap{max-width:var(--maxw);margin:0 auto;padding:1.75rem var(--pad) 2.5rem}
 main{min-width:0}
@@ -713,6 +833,118 @@ main{min-width:0}
 .klabel{font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 .kval{margin:.35rem 0 0;font-weight:700;font-size:.95rem;color:var(--brand-fg,var(--brand-deep));line-height:1.4}
 
+
+/* ---------- Today vs Tomorrow journey diagram ---------- */
+.jd{margin:0 0 2rem;border:1px solid var(--line);border-radius:16px;background:var(--bg);padding:1.5rem;overflow:hidden}
+.jd-head{display:flex;justify-content:space-between;align-items:flex-start;gap:1.5rem;flex-wrap:wrap;
+  border-bottom:3px solid var(--accent-fg,var(--accent));padding-bottom:1rem;margin-bottom:1.5rem}
+.jd-title{margin:0;font-size:1.4rem;font-weight:700;color:var(--brand-fg,var(--brand-deep));line-height:1.25}
+.jd-sub{margin:.4rem 0 0;font-size:.9rem;color:var(--muted)}
+.jd-meta{display:flex;flex-direction:column;align-items:flex-end;gap:.15rem;font-size:.72rem;font-style:italic;color:var(--muted);text-align:right}
+.jd-body{display:grid;grid-template-columns:15rem minmax(0,1fr);gap:1.5rem;align-items:start}
+@media (max-width:1000px){.jd-body{grid-template-columns:1fr}}
+
+.jd-persona{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:1.15rem}
+.jd-avatar{width:64px;height:64px;margin:0 auto 1rem;border-radius:50%;display:grid;place-items:center;
+  font-weight:700;font-size:1.15rem;background:var(--pc,var(--brand));color:var(--pcfg,#fff);
+  box-shadow:0 0 0 4px var(--panel),0 0 0 6px var(--pc,var(--brand))}
+.jd-avatar.has-img{background:none;box-shadow:0 0 0 4px var(--panel),0 0 0 6px var(--line);overflow:hidden}
+.jd-avatar img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+.jd-facts{border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-bottom:1rem;background:var(--bg)}
+.jd-fact{display:grid;grid-template-columns:5rem minmax(0,1fr);border-bottom:1px solid var(--line)}
+.jd-fact:last-child{border-bottom:0}
+.jd-fact-k{padding:.5rem .6rem;font-size:.72rem;font-weight:700;color:var(--brand-fg,var(--brand-deep));background:var(--panel)}
+.jd-fact-v{padding:.5rem .6rem;font-size:.75rem;line-height:1.45;color:var(--ink)}
+.jd-tt{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.jd-tt-pill{display:block;text-align:center;font-size:.62rem;font-weight:700;letter-spacing:.09em;
+  padding:.25rem;border-radius:5px;margin-bottom:.5rem}
+.jd-tt-today{background:var(--today-bg);color:var(--today-lbl);border:1px solid var(--today-line)}
+.jd-tt-tmrw{background:var(--tmrw-bg);color:var(--tmrw-lbl);border:1px solid var(--tmrw-line)}
+.jd-tt ul{margin:0;padding-left:.9rem;display:flex;flex-direction:column;gap:.4rem}
+.jd-tt li{font-size:.7rem;line-height:1.4;color:var(--ink)}
+
+.jd-scroll{overflow-x:auto;padding-bottom:.5rem}
+.jd-canvas{display:flex;flex-direction:column;gap:.6rem}
+.jd-row{display:grid}
+.jd-stage{background:var(--sel-bg);color:var(--sel-fg);border-radius:7px;padding:.55rem .6rem;
+  font-size:.72rem;font-weight:700;line-height:1.3;text-align:center;display:flex;align-items:center;justify-content:center;min-height:3rem}
+.jd-future{background:color-mix(in srgb,var(--brand) 12%,var(--bg));border:1px solid var(--line);border-radius:7px;
+  padding:.5rem .55rem;font-size:.68rem;line-height:1.35;text-align:center;color:var(--ink);min-height:3rem;
+  display:flex;align-items:center;justify-content:center}
+.jd-pain{background:var(--tmrw-bg);border:1px solid var(--tmrw-line);border-radius:7px;
+  padding:.5rem .55rem;font-size:.68rem;line-height:1.35;text-align:center;color:var(--ink);min-height:3.25rem;
+  display:flex;align-items:center;justify-content:center}
+.jd-chart{display:block}
+.jd-grid{stroke:var(--line);stroke-width:1}
+.jd-line-future{fill:none;stroke:var(--sel-bg);stroke-width:2.5;stroke-linejoin:round}
+.jd-line-today{fill:none;stroke:var(--ok);stroke-width:2;stroke-dasharray:6 5;stroke-linejoin:round}
+.jd-dot-future{fill:var(--sel-bg)}
+.jd-dot-today{fill:var(--bg);stroke:var(--ok);stroke-width:2.5}
+.jd-tick{fill:none;stroke:var(--sel-fg);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.jd-feel{fill:var(--ok);font-size:11px;font-weight:700;font-style:italic;text-anchor:middle}
+.jd-legend{display:flex;flex-wrap:wrap;gap:1.25rem;margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--line);
+  font-size:.72rem;color:var(--muted)}
+.jd-key{display:inline-flex;align-items:center;gap:.4rem}
+.jd-key i{width:1.5rem;height:3px;border-radius:2px;display:block}
+.jd-k-future{background:var(--sel-bg)}
+.jd-k-today{background:var(--ok)}
+.jd-k-cap{background:color-mix(in srgb,var(--brand) 30%,var(--bg));height:.7rem!important;border:1px solid var(--line)}
+.jd-k-pain{background:var(--tmrw-bg);height:.7rem!important;border:1px solid var(--tmrw-line)}
+
+/* ---------- document collections (product summaries / test packs) ---------- */
+.coll-search{width:min(30rem,100%);margin-bottom:1.25rem}
+.coll-rows{display:flex;flex-direction:column;gap:.5rem}
+.coll-row{display:flex;align-items:center;gap:.9rem;width:100%;text-align:left;font:inherit;color:inherit;
+  background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:.85rem 1rem;cursor:pointer;
+  transition:border-color .18s ease,box-shadow .18s ease}
+.coll-row:hover{border-color:var(--brand);box-shadow:var(--shadow)}
+.coll-id{flex:none;font-size:.7rem;font-weight:700;letter-spacing:.04em;color:var(--sel-fg);background:var(--sel-bg);
+  border-radius:6px;padding:.2rem .45rem}
+.coll-mid{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.coll-title{font-size:.92rem;font-weight:600;color:var(--ink);line-height:1.35}
+.coll-sub{font-size:.75rem;color:var(--muted)}
+.coll-head{display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem}
+.coll-h{margin:0;font-size:1.25rem;font-weight:700;color:var(--brand-fg,var(--brand-deep))}
+.coll-rel{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;padding:.85rem 1rem;margin-bottom:1.5rem;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.coll-chip{font:inherit;font-size:.78rem;font-weight:600;cursor:pointer;padding:.25rem .6rem;border-radius:999px;
+  background:var(--bg);border:1px solid var(--brand);color:var(--brand-fg,var(--brand-deep))}
+.coll-chip:hover{background:var(--sel-bg);color:var(--sel-fg)}
+.coll-none{font-size:.8rem;color:var(--muted);font-style:italic}
+
+/* ---------- capability detail slide-over ---------- */
+.so-scrim{position:fixed;inset:0;background:rgba(15,20,30,.45);z-index:60}
+.so-scrim[hidden]{display:none}
+.slideover{
+  position:fixed;top:0;right:0;bottom:0;width:min(30rem,100vw);z-index:61;
+  background:var(--bg);border-left:1px solid var(--line);box-shadow:-12px 0 36px rgba(20,24,40,.14);
+  display:flex;flex-direction:column;
+  animation:so-in .36s cubic-bezier(.17,.89,.32,1.06);
+}
+.slideover[hidden]{display:none}
+@keyframes so-in{from{transform:translateX(24px);opacity:.4}to{transform:translateX(0);opacity:1}}
+@media (prefers-reduced-motion: reduce){.slideover{animation:none}}
+.so-head{display:flex;align-items:flex-start;gap:1rem;padding:1.25rem 1.35rem;border-bottom:1px solid var(--line)}
+.so-head h2{margin:.35rem 0 0;font-size:1.1rem;font-weight:700;color:var(--brand-fg,var(--brand-deep));line-height:1.3}
+.so-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;font-size:.72rem}
+.so-crumb{background:none;border:0;padding:0;font:inherit;font-size:.72rem;color:var(--muted);cursor:pointer}
+.so-crumb:hover{color:var(--brand-fg,var(--brand-deep));text-decoration:underline}
+.so-sep{color:var(--line)}
+.so-x{margin-left:auto;flex:none;background:none;border:0;font-size:1.75rem;line-height:1;color:var(--muted);cursor:pointer;padding:0 .25rem}
+.so-x:hover{color:var(--brand-fg,var(--brand-deep))}
+.so-body{padding:1.25rem 1.35rem 2rem;overflow-y:auto}
+.so-meta{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-bottom:1rem}
+.so-desc{margin:0 0 1.25rem;font-size:.88rem;line-height:1.6;color:var(--muted)}
+.so-h{margin:1.5rem 0 .65rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.so-list{display:flex;flex-direction:column;gap:.4rem}
+.so-item{display:flex;flex-direction:column;gap:.15rem;text-align:left;width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:.6rem .7rem;font:inherit;font-size:.82rem;color:var(--ink);cursor:pointer}
+.so-item:hover{border-color:var(--brand)}
+.so-item-static{cursor:default}
+.so-item-static:hover{border-color:var(--line)}
+.so-item-n{font-size:.68rem;font-weight:700;color:var(--muted)}
+.so-item-sub{font-size:.72rem;color:var(--muted)}
+.cap-tile{text-align:left;width:100%;font:inherit;color:inherit;cursor:pointer}
+.cap-tile:hover{border-color:var(--brand);box-shadow:var(--shadow)}
 
 /* ---------- supplied artwork (persona avatar + journey diagram) ---------- */
 .pavatar-img{padding:0;overflow:hidden;background:var(--pc,var(--brand))}
@@ -817,7 +1049,7 @@ main{min-width:0}
 .subtab:hover svg,.subtab:hover span{color:var(--ink)}
 .subtab[aria-selected="true"] svg{color:var(--accent-fg,var(--accent))}
 .subtab[aria-selected="true"] span{color:var(--brand-fg,var(--brand-deep))}
-#sub-underline{position:absolute;bottom:-1px;height:2px;background:var(--brand-fg,var(--brand-deep));border-radius:999px;transition:transform .28s cubic-bezier(.17,.89,.32,1.06),width .28s cubic-bezier(.17,.89,.32,1.06);transform-origin:left;width:0}
+#sub-underline{position:absolute;left:0;bottom:-1px;height:2px;background:var(--brand-fg,var(--brand-deep));border-radius:999px;transition:transform .28s cubic-bezier(.17,.89,.32,1.06),width .28s cubic-bezier(.17,.89,.32,1.06);transform-origin:left;width:0}
 @media (prefers-reduced-motion: reduce){#sub-underline{transition:none}}
 
 /* ---------- journey persona strip ---------- */
@@ -1025,14 +1257,47 @@ ${(() => {
       <div id="proc-body"></div>
     </section>
 
-    ${docPanel("summary", "Product Summary", docHtml.productSummary)}
+    ${collPanel("summary", "Product summaries", "Product Summary")}
     ${docPanel("datamodel", a.dataModelKind || "Data Model", docHtml.dataModel)}
     ${docPanel("design", "Solution Design", docHtml.solutionDesign)}
     ${docPanel("architecture", "Solution Architecture", docHtml.solutionArchitecture)}
-    ${docPanel("testcases", "Test Cases", docHtml.testCases)}
+    ${collPanel("testcases", "Test packs", "Test Cases")}
+    ${uiScreens.length ? `
+    <section class="panel" id="panel-ui" role="tabpanel" aria-labelledby="tab-ui" hidden>
+      <div class="sec-head">
+        <div class="eyebrow">UI mockups</div>
+        <h2 class="panel-h">${uiScreens.length} screen${uiScreens.length === 1 ? "" : "s"}.</h2>
+        <p class="lede">Wireframes derived from this feature's requirements, personas, capabilities, data model and test cases. Each opens as its own page in the same theme.</p>
+      </div>
+      <p><a class="btn" href="mockups/index.html">Open all screens →</a></p>
+      <div class="coll-rows">${uiScreens.map((sc) => {
+        const meta = [sc.persona, sc.surface].filter(Boolean).map(esc).join(" · ");
+        const stories = Array.isArray(sc?.realises?.stories) ? sc.realises.stories : [];
+        const nStates = Array.isArray(sc.states) ? sc.states.length : 1;
+        return `<a class="coll-row" href="mockups/${esc(String(sc.id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))}.html">
+          <span class="coll-id">${esc(sc.id)}</span>
+          <span class="coll-mid">
+            <span class="coll-title">${esc(sc.name || sc.id)}</span>
+            <span class="coll-sub">${meta}${meta ? " · " : ""}${nStates} state${nStates === 1 ? "" : "s"}${stories.length ? ` · stories ${stories.map(esc).join(", ")}` : ""}</span>
+          </span>
+          <span class="chev">›</span>
+        </a>`;
+      }).join("")}</div>
+    </section>` : ""}
   </main>
 </div>
 
+<div class="so-scrim" id="so-scrim" hidden></div>
+<aside class="slideover" id="so" hidden role="dialog" aria-modal="true" aria-labelledby="so-title">
+  <div class="so-head">
+    <div>
+      <div class="so-crumbs" id="so-crumbs"></div>
+      <h2 id="so-title"></h2>
+    </div>
+    <button class="so-x" id="so-x" type="button" aria-label="Close panel">&times;</button>
+  </div>
+  <div class="so-body" id="so-body"></div>
+</aside>
 <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Journey diagram">
   <button class="lb-close" id="lb-close" type="button" aria-label="Close">&times;</button>
   <img id="lb-img" alt=""/>
@@ -1096,6 +1361,11 @@ ${(() => {
   });
 
   // ---------------- personas
+  // Journey diagram column geometry. Declared here, at the top of the script,
+  // because drawJourney() runs during setup — further down, these would still
+  // be undefined when it first fires, and every derived value would be NaN.
+  var JD_COL = 176, JD_GAP = 10, JD_CHART_H = 250;
+
   var DEFAULT = DATA.defaultSection || "personas";
 
   // ---------------- persona sub-tabs (Overview | Journeys)
@@ -1316,6 +1586,151 @@ ${(() => {
   function personaName(id){ var p = personaOf(id); return p ? p.name : ""; }
   function personaRole(id){ var p = personaOf(id); return p ? p.role : ""; }
 
+
+  function journeyDiagram(j, steps, persona){
+    var n = steps.length;
+    var wrap = el("figure","jd");
+    var width = n * JD_COL + (n - 1) * JD_GAP;
+
+    // --- title block
+    var head = el("div","jd-head");
+    var hl = el("div");
+    hl.appendChild(el("h3","jd-title",
+      (persona ? persona.name + "'s Journey — " : "") + (persona && persona.role ? persona.role + " " : "") + "Today vs Tomorrow"));
+    if(j.scenario) hl.appendChild(el("p","jd-sub", j.scenario));
+    head.appendChild(hl);
+    var hr = el("div","jd-meta");
+    hr.appendChild(el("span", null, DATA.project + " · " + DATA.feature));
+    hr.appendChild(el("span", null, "persona journey — today vs tomorrow"));
+    head.appendChild(hr);
+    wrap.appendChild(head);
+
+    var body = el("div","jd-body");
+
+    // --- persona card
+    if(persona){
+      var pc = el("aside","jd-persona");
+      var av = el("div","jd-avatar");
+      var pic = (DATA.images || {})[persona.id] || {};
+      if(pic.avatar){
+        var im = document.createElement("img"); im.src = pic.avatar; im.alt = "";
+        av.appendChild(im); av.classList.add("has-img");
+      } else {
+        av.textContent = initials(persona.name);
+        av.style.setProperty("--pc", personaColour(persona));
+        av.style.setProperty("--pcfg", readableOn(personaColour(persona)));
+      }
+      pc.appendChild(av);
+      var tbl = el("div","jd-facts");
+      [["Name", persona.name], ["Role", persona.role], ["Context", persona.context]].forEach(function(r){
+        if(!r[1]) return;
+        var row = el("div","jd-fact");
+        row.appendChild(el("span","jd-fact-k", r[0]));
+        row.appendChild(el("span","jd-fact-v", r[1]));
+        tbl.appendChild(row);
+      });
+      pc.appendChild(tbl);
+      var tt = el("div","jd-tt");
+      [["TODAY","jd-tt-today", persona.today||[]], ["TOMORROW","jd-tt-tmrw", persona.tomorrow||[]]].forEach(function(c){
+        var col = el("div");
+        col.appendChild(el("span","jd-tt-pill " + c[1], c[0]));
+        var ul = el("ul");
+        c[2].forEach(function(x){ ul.appendChild(el("li", null, x)); });
+        col.appendChild(ul);
+        tt.appendChild(col);
+      });
+      pc.appendChild(tt);
+      body.appendChild(pc);
+    }
+
+    // --- the diagram itself, horizontally scrollable when there are many steps
+    var scroll = el("div","jd-scroll");
+    var canvas = el("div","jd-canvas");
+    canvas.style.setProperty("width", width + "px");
+
+    // Set each property on its own. style.cssText rejects the WHOLE declaration
+    // if any part of it is invalid, which silently leaves the grid at one column.
+    var layoutRow = function(node){
+      node.style.setProperty("grid-template-columns", "repeat(" + n + ", " + JD_COL + "px)");
+      node.style.setProperty("gap", JD_GAP + "px");
+      return node;
+    };
+    var rStage = layoutRow(el("div","jd-row jd-stagerow"));
+    var rFuture = layoutRow(el("div","jd-row jd-futurerow"));
+    var rPain = layoutRow(el("div","jd-row jd-painrow"));
+    steps.forEach(function(s){
+      rStage.appendChild(el("div","jd-stage", s.step.name));
+      rFuture.appendChild(el("div","jd-future", (s.step.opportunities || [])[0] || "—"));
+      rPain.appendChild(el("div","jd-pain", (s.step.painPoints || [])[0] || "—"));
+    });
+    canvas.appendChild(rStage);
+    canvas.appendChild(rFuture);
+    canvas.appendChild(journeyCurves(steps, width));
+    canvas.appendChild(rPain);
+    scroll.appendChild(canvas);
+    body.appendChild(scroll);
+    wrap.appendChild(body);
+
+    var legend = el("figcaption","jd-legend");
+    [["jd-k-future","Future state experience"],["jd-k-today","Current state experience"],
+     ["jd-k-cap","Capability unlocked"],["jd-k-pain","Current pain point"]].forEach(function(k){
+      var i = el("span","jd-key");
+      i.appendChild(el("i", k[0]));
+      i.appendChild(el("span", null, k[1]));
+      legend.appendChild(i);
+    });
+    wrap.appendChild(legend);
+    return wrap;
+  }
+
+  // The two curves, drawn against the same column geometry as the grid rows.
+  function journeyCurves(steps, width){
+    var ns = "http://www.w3.org/2000/svg";
+    var H = JD_CHART_H, PAD_T = 26, PAD_B = 34;
+    var svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class","jd-chart");
+    svg.setAttribute("viewBox","0 0 " + width + " " + H);
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", H);
+    svg.setAttribute("role","img");
+    svg.setAttribute("aria-label",
+      "Journey satisfaction across " + steps.length + " steps. The solid line is the target state, the dashed line is today; 1 is poor and 5 is excellent.");
+    var add = function(tag, attrs, parent){
+      var e = document.createElementNS(ns, tag);
+      for(var k in attrs) e.setAttribute(k, attrs[k]);
+      (parent || svg).appendChild(e);
+      return e;
+    };
+    var cx = function(i){ return i * (JD_COL + JD_GAP) + JD_COL / 2; };
+    var cy = function(v){ var t = (Math.max(1, Math.min(5, v || 1)) - 1) / 4; return H - PAD_B - t * (H - PAD_T - PAD_B); };
+
+    // baseline grid
+    [1,2,3,4,5].forEach(function(v){
+      add("line", { x1:0, y1:cy(v), x2:width, y2:cy(v), class:"jd-grid" });
+    });
+
+    var todayPts = steps.map(function(s,i){ return cx(i) + "," + cy(s.step.todayScore); }).join(" ");
+    var targetPts = steps.map(function(s,i){ return cx(i) + "," + cy(s.step.targetScore); }).join(" ");
+    add("polyline", { points: todayPts, class:"jd-line-today" });
+    add("polyline", { points: targetPts, class:"jd-line-future" });
+
+    steps.forEach(function(s,i){
+      var yT = cy(s.step.todayScore), yF = cy(s.step.targetScore);
+      add("circle", { cx:cx(i), cy:yT, r:6, class:"jd-dot-today" });
+      add("circle", { cx:cx(i), cy:yF, r:8, class:"jd-dot-future" });
+      // tick inside the future-state dot
+      var p = add("path", { d:"M" + (cx(i)-3.4) + " " + yF + " l2.4 2.5 l4.4 -5", class:"jd-tick" });
+      // the feeling word sits with the current-state point, below it when the
+      // two curves are close so the labels never collide with the target line
+      if(s.step.feeling){
+        var below = Math.abs(yT - yF) < 26 || yT < yF;
+        var t = add("text", { x:cx(i), y: below ? yT + 22 : yT - 14, class:"jd-feel" });
+        t.textContent = s.step.feeling;
+      }
+    });
+    return svg;
+  }
+
   function drawJourney(id){
     var j = journeys.filter(function(x){ return x.id === id; })[0];
     var host = $("#journey-body"); host.innerHTML = "";
@@ -1351,15 +1766,14 @@ ${(() => {
     var steps = [];
     (j.stages||[]).forEach(function(st){ (st.steps||[]).forEach(function(s){ steps.push({ stage: st.name, step: s }); }); });
 
-    // Satisfaction curve — hand-drawn SVG, no charting library.
+    // ---- Today vs Tomorrow journey diagram.
+    // One COLUMN per step. Four bands, read top to bottom:
+    //   1 step name        2 capability the target state unlocks
+    //   3 the two curves    4 the pain the current state carries
+    // Built as a grid plus one SVG rather than a charting library, because the
+    // page must stay a single self-contained file.
     if(steps.length){
-      var fig = el("figure","diagram");
-      fig.appendChild(chart(steps));
-      var cap = el("figcaption");
-      cap.style.cssText = "color:var(--muted);font-size:.8rem;margin-top:.5rem;text-align:center";
-      cap.textContent = "Satisfaction across the journey — solid red is today, dashed green is the target state (1 = harmful, 5 = excellent).";
-      fig.appendChild(cap);
-      host.appendChild(fig);
+      host.appendChild(journeyDiagram(j, steps, jp));
     }
 
     (j.stages||[]).forEach(function(st){
@@ -1465,6 +1879,105 @@ ${(() => {
   }
 
   // ---------------- capabilities
+  // ---------------- product summaries + test packs
+  // A feature can hold hundreds of each, so both tabs are a searchable LIST
+  // that opens a detail view. The two are linked by id in both directions.
+  var SUMS = DATA.summaries || [], PACKS = DATA.packs || [];
+  var packsBySummary = {};
+  PACKS.forEach(function(t){ if(t.covers){ (packsBySummary[t.covers] = packsBySummary[t.covers] || []).push(t); } });
+  var byIdColl = {};
+  SUMS.concat(PACKS).forEach(function(d){ byIdColl[d.kind + ":" + d.id] = d; });
+
+  function collOf(kind){ return kind === "summary" ? SUMS : PACKS; }
+
+  // The data kind is summary/testcase; the PANEL ids are summary/testcases.
+  // Keeping the two straight is the whole reason this helper exists.
+  function panelIdOf(kind){ return kind === "summary" ? "summary" : "testcases"; }
+
+  function openColl(kind, id){
+    var d = byIdColl[kind + ":" + id]; if(!d) return;
+    var pid = panelIdOf(kind);
+    var listEl = $("#" + pid + "-list"), det = $("#" + pid + "-detail");
+    if(!listEl || !det) return;
+    listEl.hidden = true; det.hidden = false;
+    $("#" + pid + "-doc").innerHTML = d.html || "";
+
+    var links = $("#" + pid + "-links"); links.innerHTML = "";
+    var head = el("div","coll-head");
+    head.appendChild(el("span","coll-id", d.id));
+    head.appendChild(el("h2","coll-h", d.title));
+    links.appendChild(head);
+
+    var rel = el("div","coll-rel");
+    if(kind === "summary"){
+      var packs = packsBySummary[d.id] || [];
+      rel.appendChild(el("span","klabel", packs.length ? "Test packs covering this" : "Test coverage"));
+      if(!packs.length) rel.appendChild(el("span","coll-none","No test pack references this product summary."));
+      packs.forEach(function(t){
+        var b = el("button","coll-chip"); b.type = "button";
+        b.textContent = t.id + " · " + t.title;
+        b.addEventListener("click", function(){ closeColl("summary"); show("testcases", false); openColl("testcase", t.id); });
+        rel.appendChild(b);
+      });
+    } else {
+      rel.appendChild(el("span","klabel","Covers"));
+      var ps = d.covers ? byIdColl["summary:" + d.covers] : null;
+      if(ps){
+        var b2 = el("button","coll-chip"); b2.type = "button";
+        b2.textContent = ps.id + " · " + ps.title;
+        b2.addEventListener("click", function(){ closeColl("testcase"); show("summary", false); openColl("summary", ps.id); });
+        rel.appendChild(b2);
+      } else {
+        rel.appendChild(el("span","coll-none", d.covers ? "Declares " + d.covers + ", which does not exist." : "No product summary declared."));
+      }
+    }
+    links.appendChild(rel);
+    $("#main").scrollIntoView({ block: "start" });
+  }
+  function closeColl(kind){
+    var pid = panelIdOf(kind);
+    var listEl = $("#" + pid + "-list"), det = $("#" + pid + "-detail");
+    if(listEl) listEl.hidden = false;
+    if(det) det.hidden = true;
+  }
+  // The panel ids are summary/testcases; the data kinds are summary/testcase.
+  function kindOfPanel(pid){ return pid === "summary" ? "summary" : "testcase"; }
+  ["summary","testcases"].forEach(function(pid){
+    var rows = $("#" + pid + "-rows");
+    if(!rows) return;
+    var kind = kindOfPanel(pid);
+    var items = collOf(kind);
+    var lede = $("#" + pid + "-lede");
+    if(lede) lede.textContent = items.length === 1 ? "One document." : items.length + " documents. Search by title or identifier, then open one.";
+    var q = $("#" + pid + "-q");
+    var draw = function(){
+      var term = (q ? q.value : "").trim().toLowerCase();
+      rows.innerHTML = "";
+      var shown = items.filter(function(d){ return !term || (d.id + " " + d.title).toLowerCase().indexOf(term) >= 0; });
+      if(!shown.length){ rows.appendChild(el("div","empty","Nothing matches that search.")); return; }
+      shown.forEach(function(d){
+        var b = el("button","coll-row"); b.type = "button";
+        b.appendChild(el("span","coll-id", d.id));
+        var mid = el("span","coll-mid");
+        mid.appendChild(el("span","coll-title", d.title));
+        var n = (packsBySummary[d.id] || []).length;
+        mid.appendChild(el("span","coll-sub", kind === "summary"
+          ? (n ? n + " test pack" + (n===1?"":"s") : "no test pack yet")
+          : (d.covers ? "covers " + d.covers : "not linked")));
+        b.appendChild(mid);
+        b.appendChild(el("span","chev","›"));
+        b.addEventListener("click", function(){ openColl(kind, d.id); });
+        rows.appendChild(b);
+      });
+    };
+    if(q) q.addEventListener("input", draw);
+    draw();
+    if(items.length === 1) openColl(kind, items[0].id);
+  });
+  $$("[data-coll-back]").forEach(function(b){
+    b.addEventListener("click", function(){ closeColl(kindOfPanel(b.dataset.collBack)); });
+  });
+
   // ---------------- capabilities: L1 section -> L2 area card -> L3 tile.
   // Filters DIM non-matching rows to 30% rather than hiding them, so the shape
   // of the map never changes under the reader — the reference's behaviour.
@@ -1556,7 +2069,8 @@ ${(() => {
         var tiles = el("div","cap-tiles");
         var leafList = kids[area.id] || [area];
         leafList.forEach(function(leaf){
-          var t = el("div","cap-tile"); t.dataset.capId = leaf.id;
+          var t = el("button","cap-tile"); t.type = "button"; t.dataset.capId = leaf.id;
+          t.setAttribute("aria-haspopup","dialog");
           t.dataset.hay = [leaf.id, leaf.name, leaf.description, leaf.stage, (leaf.sourceDocs||[]).join(" ")].join(" ").toLowerCase();
           t.dataset.root = r.id;
           var th = el("div","cap-tile-h");
@@ -1565,6 +2079,7 @@ ${(() => {
           t.appendChild(th);
           t.appendChild(dots(leaf));
           if(leaf.stage) t.appendChild(el("span","cap-stage", leaf.stage));
+          t.addEventListener("click", function(){ openCapability(leaf.id); });
           tiles.appendChild(t);
         });
         card.appendChild(tiles);
@@ -1574,6 +2089,90 @@ ${(() => {
       capCanvas.appendChild(sec);
     });
     if(!caps.length) capCanvas.appendChild(el("div","empty","No capability map generated for this feature yet."));
+
+    // ---- capability detail slide-over
+    var byId = {};
+    caps.forEach(function(c){ byId[c.id] = c; });
+    var soLastFocus = null;
+    function chain(c){
+      var out = [], cur = c, guard = 0;
+      while(cur && guard++ < 12){ out.unshift(cur); cur = cur.parentId ? byId[cur.parentId] : null; }
+      return out;
+    }
+    function openCapability(id){
+      var c = byId[id]; if(!c) return;
+      soLastFocus = document.activeElement;
+      var crumbs = $("#so-crumbs"); crumbs.innerHTML = "";
+      chain(c).slice(0, -1).forEach(function(p, i){
+        if(i) crumbs.appendChild(el("span","so-sep","›"));
+        var b = el("button","so-crumb", (p.id ? p.id + " " : "") + (p.name || ""));
+        b.type = "button";
+        b.addEventListener("click", function(){ openCapability(p.id); });
+        crumbs.appendChild(b);
+      });
+      $("#so-title").textContent = (c.id ? c.id + "  " : "") + (c.name || c.id);
+
+      var body = $("#so-body"); body.innerHTML = "";
+      var meta = el("div","so-meta");
+      meta.appendChild(dots(c));
+      if(c.stage) meta.appendChild(el("span","chip", c.stage));
+      if(c.level) meta.appendChild(el("span","chip chip-quiet", "L" + c.level));
+      body.appendChild(meta);
+      if(c.description) body.appendChild(el("p","so-desc", c.description));
+
+      var kidsOf = caps.filter(function(x){ return x.parentId === c.id; });
+      if(kidsOf.length){
+        body.appendChild(el("h3","so-h","Child capabilities"));
+        var ul = el("div","so-list");
+        kidsOf.forEach(function(k){
+          var b = el("button","so-item"); b.type = "button";
+          b.appendChild(el("span","so-item-n", k.id));
+          b.appendChild(el("span", null, k.name || k.id));
+          b.addEventListener("click", function(){ openCapability(k.id); });
+          ul.appendChild(b);
+        });
+        body.appendChild(ul);
+      }
+
+      // Which process activities realise this capability — our equivalent of
+      // the reference's "supporting components".
+      var realised = (DATA.activities || []).filter(function(a){
+        return (a.capabilityIds || []).indexOf(c.id) >= 0;
+      });
+      if(realised.length){
+        body.appendChild(el("h3","so-h", "Realised by " + realised.length + " process " + (realised.length===1?"activity":"activities")));
+        var rl = el("div","so-list");
+        realised.forEach(function(a){
+          var it = el("div","so-item so-item-static");
+          it.appendChild(el("span", null, a.l3));
+          it.appendChild(el("span","so-item-sub", a.l1 + " › " + a.l2 + (a.actor ? "  ·  " + a.actor : "")));
+          rl.appendChild(it);
+        });
+        body.appendChild(rl);
+      } else {
+        body.appendChild(el("h3","so-h","Process coverage"));
+        body.appendChild(el("p","so-desc","No process activity references this capability. That is a coverage gap worth checking."));
+      }
+
+      if((c.sourceDocs||[]).length){
+        body.appendChild(el("h3","so-h","Evidence"));
+        var ev = el("div","chips");
+        c.sourceDocs.forEach(function(d){ ev.appendChild(el("span","chip chip-quiet", d)); });
+        body.appendChild(ev);
+      }
+
+      $("#so").hidden = false; $("#so-scrim").hidden = false;
+      document.body.style.overflow = "hidden";
+      $("#so-x").focus();
+    }
+    function closeCapability(){
+      $("#so").hidden = true; $("#so-scrim").hidden = true;
+      document.body.style.overflow = "";
+      if(soLastFocus && soLastFocus.focus) soLastFocus.focus();
+    }
+    $("#so-x").addEventListener("click", closeCapability);
+    $("#so-scrim").addEventListener("click", closeCapability);
+    document.addEventListener("keydown", function(e){ if(e.key === "Escape" && !$("#so").hidden) closeCapability(); });
 
     function applyCapFilter(){
       var active = !!(F.q || F.domains.length);
@@ -1840,6 +2439,13 @@ async function main() {
 
   const a = await loadArtefacts(featureRoot);
   a.images = await loadImages(featureRoot, a.personas);
+  // Mockups are rendered as their own pages by scripts/render-mockups.mjs. The
+  // companion app links to them rather than embedding them, so a screen stays a
+  // full-width page in its own right.
+  a.mockups = await readJson(path.join(featureRoot, "solutions", "UI", "outputs", "mockups.json"));
+  const coll = await loadCollections(featureRoot);
+  a.summaries = coll.summaries;
+  a.packs = coll.packs;
   const theme = await loadTheme(featureRoot);
 
   const present = [
@@ -1861,18 +2467,22 @@ async function main() {
         `  Run at least one stage (requirements, personas, capability map, …) first.`);
   }
 
-  const docs = [a.productSummary, a.dataModel, a.solutionDesign, a.solutionArchitecture, a.testCases, a.gaps, a.storiesMd];
+  const docs = [a.dataModel, a.solutionDesign, a.solutionArchitecture, a.gaps, a.storiesMd]
+    .concat(a.summaries.map((d) => d.body))
+    .concat(a.packs.map((d) => d.body));
   const mermaid = collectMermaid(docs);
   if (mermaid.size) console.log(`[render-companion-app] rendering ${mermaid.size} diagram(s)…`);
-  const diagrams = await renderDiagrams(mermaid, { skip: flags.has("--no-diagrams") });
+  const noDiagrams = flags.has("--no-diagrams");
+  const diagrams = await renderDiagrams(mermaid, { skip: noDiagrams });
+  if (noDiagrams && mermaid.size) console.warn(`[render-companion-app] WARN --no-diagrams: ${mermaid.size} diagram(s) shown as source, NOT rendered. Do not ship this build.`);
 
   const docHtml = {
-    productSummary: a.productSummary ? mdToHtml(a.productSummary, diagrams) : null,
-    dataModel: a.dataModel ? mdToHtml(a.dataModel, diagrams) : null,
-    solutionDesign: a.solutionDesign ? mdToHtml(a.solutionDesign, diagrams) : null,
-    solutionArchitecture: a.solutionArchitecture ? mdToHtml(a.solutionArchitecture, diagrams) : null,
-    testCases: a.testCases ? mdToHtml(a.testCases, diagrams) : null,
-    gaps: a.gaps ? mdToHtml(a.gaps, diagrams) : null,
+    summaries: a.summaries.map((d) => ({ ...d, html: mdToHtml(d.body, diagrams, noDiagrams), body: undefined })),
+    packs: a.packs.map((d) => ({ ...d, html: mdToHtml(d.body, diagrams, noDiagrams), body: undefined })),
+    dataModel: a.dataModel ? mdToHtml(a.dataModel, diagrams, noDiagrams) : null,
+    solutionDesign: a.solutionDesign ? mdToHtml(a.solutionDesign, diagrams, noDiagrams) : null,
+    solutionArchitecture: a.solutionArchitecture ? mdToHtml(a.solutionArchitecture, diagrams, noDiagrams) : null,
+    gaps: a.gaps ? mdToHtml(a.gaps, diagrams, noDiagrams) : null,
   };
 
   const generatedOn = new Date().toISOString().slice(0, 10);
@@ -1887,6 +2497,11 @@ async function main() {
   // Registry entry. Keeps `devUrl` so the chatbot's preview pane and
   // scripts/audit-a11y.mjs keep working unchanged — it now points at the route
   // that serves this file rather than at a dev server.
+  //
+  // The TRAILING SLASH matters: the UI tab links into the sibling mockups/
+  // directory relatively (so the pack also works from disk), and a relative link
+  // on a URL with no trailing slash resolves one segment too high. The server
+  // redirects the bare form here anyway; pointing straight at it saves the hop.
   const registryPath = path.join(WORKSPACE, "generated-apps", "registry.json");
   let registry = {};
   try { registry = JSON.parse(await fs.readFile(registryPath, "utf8")); } catch {}
@@ -1895,7 +2510,7 @@ async function main() {
     appPath: path.relative(WORKSPACE, appDir),
     htmlPath: path.relative(WORKSPACE, htmlPath),
     kind: "static-html",
-    devUrl: `${PREVIEW_ORIGIN}/api/companion-app/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`,
+    devUrl: `${PREVIEW_ORIGIN}/api/companion-app/${encodeURIComponent(project)}/${encodeURIComponent(feature)}/`,
     // Preserved across renders — the Developer sets these when it pushes.
     branch: prev.branch ?? null,
     repoUrl: prev.repoUrl ?? null,

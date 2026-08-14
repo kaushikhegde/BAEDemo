@@ -3,6 +3,36 @@ name: requirement-generator
 description: Generate a Confluence Product Summary (with Mermaid process-flow diagrams) and Jira user stories from meeting transcripts, SOP/policy documents, and UI screens. Use when the user provides a project + feature and asks to produce requirements, user stories, a product summary, or Jira tickets.
 ---
 
+## Output location and identity — many product summaries per feature
+
+A feature may hold **hundreds** of product summaries. Write each one as its own
+file:
+
+```
+projects/<project>/<feature>/outputs/product-summaries/PS-<nnn>-<slug>.md
+```
+
+Every file MUST open with front matter carrying a stable identifier:
+
+```markdown
+---
+id: PS-001
+title: Expression of Interest
+---
+```
+
+- `id` is `PS-` plus a zero-padded number, unique within the feature. It is the
+  link target used by the test-case pack and by the companion app, so **never
+  renumber an existing id** — allocate the next free one.
+- `title` is a short human name, not the whole heading.
+- The 11-section template below is the body of each file, after the front matter.
+
+Before writing, list `outputs/product-summaries/` and continue the numbering from
+the highest existing id. If the folder does not exist, start at `PS-001`.
+
+A feature that legitimately has only one product summary still uses this folder
+and still carries an id.
+
 ## Project definition — read this first
 
 Before reading any discovery document, read:
