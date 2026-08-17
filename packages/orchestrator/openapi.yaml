@@ -1,0 +1,871 @@
+openapi: 3.1.0
+info:
+  title: Scyne Orchestrator
+  version: 0.1.0
+  description: |
+    Local orchestration for Claude Code agents. Workflows are declared as data;
+    the engine executes them deterministically, one wake at a time, parking at
+    anything that waits on something external (a human approval gate, or a
+    spawned child flow). No authentication — the service binds to loopback
+    only and is meant to run alongside the process that embeds it.
+servers:
+  - url: http://127.0.0.1:3100
+    description: Default local bind (see `serve --port`)
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness and dependency check
+      description: >-
+        Confirms the process is up and can reach its database. `claude`
+        reports the Claude Code CLI version found on PATH, or `"unknown"` if
+        it could not be resolved — this endpoint never fails the request just
+        because that lookup did.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, db, claude]
+                properties:
+                  ok:     { type: boolean }
+                  db:     { type: string, example: "pglite / PostgreSQL 16.4" }
+                  claude: { type: string, example: "2.1.232" }
+              example:
+                ok: true
+                db: "pglite / PostgreSQL 16.4"
+                claude: "2.1.232"
+
+  /agents:
+    get:
+      operationId: listAgents
+      summary: List every agent in the org chart
+      description: >-
+        Returns every agent upserted from `config.org` on the last startup —
+        the config file is the source of truth, and this reflects the
+        database's mirror of it.
+      responses:
+        "200":
+          description: Agents, oldest hired first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Agent" }
+              example:
+                - key: "ba"
+                  name: "BA"
+                  adapter: "claude_local"
+                  status: "idle"
+
+  /agents/{key}:
+    get:
+      operationId: getAgent
+      summary: Fetch one agent by its config key
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      responses:
+        "200":
+          description: The agent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      operationId: patchAgent
+      summary: Adjust an agent's runtime (adapter, model, effort, fallback models, budget)
+      description: >-
+        A narrow patch, not a full replace — every field is optional, and any
+        field left out keeps its current value. Reconstructs the full agent
+        spec under the hood and round-trips it through the same
+        `upsertAgent` the config-file reconciliation on startup uses, so a
+        PATCH and a config-file edit converge on the same row shape.
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                adapter:       { type: string, description: "Key into the registered adapters (see GET /runners)." }
+                model:         { type: string }
+                effort:        { type: string, enum: [low, medium, high, xhigh, max] }
+                fallbackModel: { type: array, items: { type: string }, description: "Tried in order when the primary is overloaded." }
+                budget:
+                  type: object
+                  properties:
+                    maxTokens:     { type: number }
+                    maxCostUsd:    { type: number }
+                    maxDurationMs: { type: number }
+            example:
+              model: "claude-opus-4-6"
+              effort: "high"
+              budget: { maxCostUsd: 5 }
+      responses:
+        "200":
+          description: The updated agent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "400":
+          description: An invalid `effort` was supplied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /agents/{key}/runs:
+    get:
+      operationId: listAgentRuns
+      summary: Every run this agent has been assigned, most recent first
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      responses:
+        "200":
+          description: Runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Run" }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /runners:
+    get:
+      operationId: listRunners
+      summary: Registered adapter keys
+      description: >-
+        The keys of `config.adapters` — what an agent step or `PATCH
+        /agents/{key}` may name as `adapter`. Not the adapters themselves
+        (they hold live runner instances, not serialisable data).
+      responses:
+        "200":
+          description: Adapter keys
+          content:
+            application/json:
+              schema: { type: array, items: { type: string } }
+              example: ["claude_local"]
+
+  /issues:
+    post:
+      operationId: createIssue
+      summary: Start a workflow
+      description: >-
+        Creates the top-level issue for `workflow` and immediately calls
+        `engine.advance()` on it in the background (fire-and-forget — the
+        response does not wait for the first step to finish). Poll `GET
+        /issues/{id}` for progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workflow]
+              properties:
+                workflow: { type: string, description: "A key from config.workflows." }
+                params:   { type: object, additionalProperties: true, description: "e.g. { project, feature }" }
+            example:
+              workflow: "requirements"
+              params: { project: "RTWSA", feature: "Appeals & Reviews" }
+      responses:
+        "201":
+          description: The created issue (workflow's first steps may already have run by the time this returns)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "400":
+          description: Missing `workflow`, or the named workflow does not exist
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listIssues
+      summary: List issues, optionally filtered
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [todo, in_progress, in_review, blocked, done, cancelled] }
+          description: Exact status match
+        - name: parentId
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            An issue uuid to list only that issue's children, or the literal
+            string `"null"` to list only top-level issues.
+        - name: assigneeAgentId
+          in: query
+          required: false
+          schema: { type: string }
+          description: An agent uuid, or the literal string `"null"` for unassigned issues.
+      responses:
+        "200":
+          description: Issues, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Issue" }
+
+  /issues/{id}:
+    get:
+      operationId: getIssue
+      summary: Fetch one issue
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: The issue
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "404":
+          description: No issue has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      operationId: patchIssue
+      summary: Update issue fields directly
+      description: >-
+        A low-level escape hatch (title, description, status, assignee,
+        workflow key, step index, params) — most callers should drive issue
+        state through `POST /issues`, `POST /gates/{id}/approve` and `POST
+        /gates/{id}/reject` instead, which also advance the engine.
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:           { type: string }
+                description:     { type: [string, "null"] }
+                status:          { type: string, enum: [todo, in_progress, in_review, blocked, done, cancelled] }
+                assigneeAgentId: { type: [string, "null"] }
+                workflowKey:     { type: [string, "null"] }
+                stepIndex:       { type: integer }
+                params:          { type: object, additionalProperties: true }
+            example:
+              status: "blocked"
+      responses:
+        "200":
+          description: The updated issue
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "404":
+          description: No issue has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /issues/{id}/comments:
+    get:
+      operationId: listIssueComments
+      summary: An issue's activity feed
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: Comments, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Comment" }
+    post:
+      operationId: addIssueComment
+      summary: Post a comment
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body:           { type: string }
+                authorAgentId:  { type: string, description: "Set when an agent is posting." }
+                authorUser:     { type: string, description: "Set when a human is posting; defaults to \"api\"." }
+            example:
+              body: "Looks good, approving."
+              authorUser: "tagari"
+      responses:
+        "201":
+          description: The created comment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+        "400":
+          description: Missing `body`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /issues/{id}/work-products:
+    get:
+      operationId: listWorkProducts
+      summary: Files and links attached to an issue
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: Work products, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkProduct" }
+
+  /issues/{id}/gates:
+    get:
+      operationId: listIssueGates
+      summary: An issue's approval gates
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: Gates, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Gate" }
+
+  /gates/{id}/approve:
+    post:
+      operationId: approveGate
+      summary: Approve a pending gate and resume the workflow
+      description: >-
+        Advances the issue's step index past the gate and calls
+        `engine.advance()` — the next step (typically a `publish` phase)
+        runs before this responds if it completes quickly.
+      parameters:
+        - $ref: "#/components/parameters/GateId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GateDecisionInput" }
+            example: { note: "Ship it.", by: "tagari" }
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties: { ok: { type: boolean } }
+        "404":
+          description: No gate has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /gates/{id}/reject:
+    post:
+      operationId: rejectGate
+      summary: Reject a pending gate and rewind to the generating step
+      description: >-
+        Rewinds the issue to the last `agent` step at or before the gate —
+        rejection means "the generated output was wrong", so the natural
+        resume point is the step that generated it, and the issue is set
+        back to `todo` there rather than re-raising the same gate.
+      parameters:
+        - $ref: "#/components/parameters/GateId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GateDecisionInput" }
+            example: { note: "Wrong personas — regenerate.", by: "tagari" }
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties: { ok: { type: boolean } }
+        "404":
+          description: No gate has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /issues/{id}/runs:
+    get:
+      operationId: listIssueRuns
+      summary: Every run this issue has spawned, most recent first
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: Runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Run" }
+
+  /runs/{id}:
+    get:
+      operationId: getRun
+      summary: Fetch one run
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "404":
+          description: No run has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /runs/{id}/log:
+    get:
+      operationId: getRunLog
+      summary: Raw run log, from an optional byte offset
+      description: >-
+        The unfiltered JSONL log written by the runner (`{ts, stream,
+        chunk}` per line). Poll with `offset = nextOffset` from the previous
+        response to fetch only what has been appended since.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/LogOffset"
+      responses:
+        "200":
+          description: A slice of the raw log
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [content, nextOffset]
+                properties:
+                  content:    { type: string }
+                  nextOffset: { type: integer }
+        "404":
+          description: No run has this id, or its log file no longer exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /runs/{id}/transcript:
+    get:
+      operationId: getRunTranscript
+      summary: Filtered, client-safe transcript events, from an optional byte offset
+      description: >-
+        The same log as `GET /runs/{id}/log`, run through
+        `filterRunLog()` — assistant text, tool calls/results, skill
+        invocations and framing lines, with known secret patterns redacted.
+        `nextOffset` is relative to the SAME raw byte stream as the `log`
+        endpoint, so the two can be polled with the same cursor.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/LogOffset"
+      responses:
+        "200":
+          description: A slice of the filtered transcript
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, nextOffset]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/TranscriptEvent" }
+                  nextOffset: { type: integer }
+              example:
+                events:
+                  - { ts: "14:32:01", kind: "assistant", text: "Reading the discovery documents…" }
+                  - { ts: "14:32:04", kind: "tool_use", tool: "Read", preview: "requirements/SOP/policy.md" }
+                nextOffset: 4096
+        "404":
+          description: No run has this id, or its log file no longer exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /usage:
+    get:
+      operationId: getUsage
+      summary: Aggregate token and cost usage across every run for this company
+      responses:
+        "200":
+          description: Usage totals
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Usage" }
+              example:
+                runCount: 42
+                inputTokens: 1250000
+                outputTokens: 98000
+                cacheReadTokens: 300000
+                cacheCreationTokens: 50000
+                costUsd: 12.4351
+
+  /config:
+    get:
+      operationId: getConfig
+      summary: A sanitised view of the loaded orchestrator config
+      description: >-
+        Workspace, company, registered adapter keys, defaults, the resolved
+        theme, and a summary of each workflow — never the adapter instances
+        themselves (they are runner objects, not serialisable data, and may
+        carry credentials).
+      responses:
+        "200":
+          description: Config summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, company, adapters, defaults, theme, workflows]
+                properties:
+                  workspace: { type: string }
+                  company:   { type: string }
+                  adapters:  { type: array, items: { type: string } }
+                  defaults:
+                    type: object
+                    properties:
+                      adapter: { type: string }
+                      model:   { type: string }
+                      effort:  { type: string, enum: [low, medium, high, xhigh, max] }
+                  theme:     { $ref: "#/components/schemas/Theme" }
+                  workflows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:      { type: string }
+                        label:    { type: string }
+                        assignee: { type: string }
+                        steps:    { type: integer }
+
+  /openapi.json:
+    get:
+      operationId: getOpenApiJson
+      summary: This contract, as JSON
+      description: The parsed `openapi.yaml`, served verbatim as JSON — what `GET /docs` itself renders from.
+      responses:
+        "200":
+          description: The OpenAPI document
+          content:
+            application/json:
+              schema: { type: object }
+
+  /docs:
+    get:
+      operationId: getDocs
+      summary: Self-contained, themed API reference
+      description: >-
+        A hand-rolled HTML page rendered from `openapi.yaml` — no CDN-loaded
+        Swagger UI or Redoc, no external stylesheets or fonts, zero network
+        requests. Styled with the same CSS custom properties `themeCss()`
+        exposes to any other page in this package, so an `orchestrator.config
+        .ts` theme override repaints it without a code change.
+      responses:
+        "200":
+          description: The rendered docs page
+          content:
+            text/html:
+              schema: { type: string }
+
+components:
+  parameters:
+    AgentKey:
+      name: key
+      in: path
+      required: true
+      schema: { type: string }
+      description: The agent's stable config key (e.g. `"ba"`), not its uuid.
+      example: "ba"
+    IssueId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      example: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+    GateId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    LogOffset:
+      name: offset
+      in: query
+      required: false
+      schema: { type: integer, default: 0 }
+      description: Byte offset into the raw log to resume from; omit (or 0) to fetch from the start.
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+      example:
+        error: "issue 'bad-id' not found"
+
+    Agent:
+      type: object
+      required: [id, company_id, key, name, adapter, status, created_at, updated_at]
+      properties:
+        id:             { type: string, format: uuid }
+        company_id:     { type: string, format: uuid }
+        key:            { type: string }
+        name:           { type: string }
+        title:          { type: [string, "null"] }
+        icon:           { type: [string, "null"] }
+        reports_to:     { type: [string, "null"], format: uuid }
+        adapter:        { type: string }
+        model:          { type: [string, "null"] }
+        effort:         { type: [string, "null"], enum: [low, medium, high, xhigh, max, null] }
+        fallback_model: { type: array, items: { type: string } }
+        cwd:            { type: [string, "null"] }
+        mcp_enabled:    { type: boolean }
+        extra_args:     { type: array, items: { type: string } }
+        bundle_path:    { type: [string, "null"] }
+        status:         { type: string, enum: [idle, running, disabled] }
+        created_at:     { type: string, format: date-time }
+        updated_at:     { type: string, format: date-time }
+      example:
+        id: "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        company_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        key: "ba"
+        name: "BA"
+        title: "Business Analyst"
+        icon: null
+        reports_to: null
+        adapter: "claude_local"
+        model: "claude-sonnet-4-6"
+        effort: "medium"
+        fallback_model: []
+        cwd: null
+        mcp_enabled: true
+        extra_args: []
+        bundle_path: "agent-instructions/ba.json"
+        status: "idle"
+        created_at: "2026-08-17T09:00:00.000Z"
+        updated_at: "2026-08-17T09:00:00.000Z"
+
+    Issue:
+      type: object
+      required: [id, company_id, identifier, title, status, step_index, params]
+      properties:
+        id:                { type: string, format: uuid }
+        company_id:        { type: string, format: uuid }
+        identifier:        { type: string, example: "SCY-7" }
+        parent_id:         { type: [string, "null"], format: uuid }
+        title:             { type: string }
+        description:       { type: [string, "null"] }
+        status:            { type: string, enum: [todo, in_progress, in_review, blocked, done, cancelled] }
+        assignee_agent_id: { type: [string, "null"], format: uuid }
+        workflow_key:      { type: [string, "null"] }
+        step_index:        { type: integer }
+        params:            { type: object, additionalProperties: true }
+      example:
+        id: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+        company_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        identifier: "SCY-7"
+        parent_id: null
+        title: "Requirements — RTWSA"
+        description: null
+        status: "in_review"
+        assignee_agent_id: "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        workflow_key: "requirements"
+        step_index: 3
+        params: { project: "RTWSA", feature: "Appeals & Reviews" }
+
+    Comment:
+      type: object
+      required: [id, issue_id, body, created_at]
+      properties:
+        id:              { type: string, format: uuid }
+        issue_id:        { type: string, format: uuid }
+        author_agent_id: { type: [string, "null"], format: uuid }
+        author_user:     { type: [string, "null"] }
+        body:            { type: string }
+        created_at:      { type: string, format: date-time }
+      example:
+        id: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+        issue_id: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+        author_agent_id: null
+        author_user: "tagari"
+        body: "Approved: ship it."
+        created_at: "2026-08-17T09:15:00.000Z"
+
+    WorkProduct:
+      type: object
+      required: [id, issue_id, type, provider, title, url, created_at]
+      properties:
+        id:         { type: string, format: uuid }
+        issue_id:   { type: string, format: uuid }
+        type:       { type: string, example: "document" }
+        provider:   { type: string, enum: [local, confluence, jira] }
+        title:      { type: string }
+        url:        { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+      example:
+        id: "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+        issue_id: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+        type: "document"
+        provider: "local"
+        title: "product-summary.md"
+        url: "file:///workspace/projects/RTWSA/Appeals/outputs/product-summary.md"
+        created_at: "2026-08-17T09:10:00.000Z"
+
+    Gate:
+      type: object
+      required: [id, issue_id, kind, status, payload]
+      properties:
+        id:            { type: string, format: uuid }
+        issue_id:      { type: string, format: uuid }
+        kind:          { type: string, example: "approval" }
+        status:        { type: string, enum: [pending, approved, rejected, cancelled] }
+        payload:
+          type: object
+          required: [title]
+          properties:
+            title:     { type: string }
+            summary:   { type: string }
+            stepIndex: { type: integer }
+        decision_note: { type: [string, "null"] }
+        decided_by:    { type: [string, "null"] }
+        decided_at:    { type: [string, "null"], format: date-time }
+      example:
+        id: "3c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f"
+        issue_id: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+        kind: "approval"
+        status: "pending"
+        payload: { title: "Approve Requirements", summary: "5 stories, 1 gap.", stepIndex: 3 }
+        decision_note: null
+        decided_by: null
+        decided_at: null
+
+    GateDecisionInput:
+      type: object
+      properties:
+        note: { type: string, description: "Recorded as a comment on the issue when present." }
+        by:   { type: string, description: "Who decided; defaults to \"orchestrator\"." }
+
+    Run:
+      type: object
+      required: [id, issue_id, status, started_at, log_path]
+      properties:
+        id:                    { type: string, format: uuid }
+        issue_id:              { type: string, format: uuid }
+        agent_id:              { type: [string, "null"], format: uuid }
+        step_index:            { type: [integer, "null"] }
+        phase:                 { type: [string, "null"], example: "generate" }
+        status:                { type: string, enum: [running, succeeded, failed, over_budget, orphaned] }
+        started_at:            { type: string, format: date-time }
+        finished_at:           { type: [string, "null"], format: date-time }
+        exit_code:             { type: [integer, "null"] }
+        log_path:              { type: string }
+        session_id:            { type: [string, "null"] }
+        input_tokens:          { type: [string, "null"], description: "bigint, returned as a string" }
+        output_tokens:         { type: [string, "null"] }
+        cache_read_tokens:     { type: [string, "null"] }
+        cache_creation_tokens: { type: [string, "null"] }
+        cost_usd:              { type: [string, "null"] }
+        duration_ms:           { type: [string, "null"] }
+        num_turns:             { type: [integer, "null"] }
+      example:
+        id: "4d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a"
+        issue_id: "8f14e2b1-9c3a-4e77-8b2d-1a2b3c4d5e6f"
+        agent_id: "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        step_index: 1
+        phase: "generate"
+        status: "succeeded"
+        started_at: "2026-08-17T09:05:00.000Z"
+        finished_at: "2026-08-17T09:08:30.000Z"
+        exit_code: 0
+        log_path: ".orchestrator/runs/8f14e2b1-1.jsonl"
+        session_id: "sess_abc123"
+        input_tokens: "12500"
+        output_tokens: "3400"
+        cache_read_tokens: "8000"
+        cache_creation_tokens: "500"
+        cost_usd: "0.184200"
+        duration_ms: "210000"
+        num_turns: 14
+
+    Usage:
+      type: object
+      required: [runCount, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd]
+      properties:
+        runCount:            { type: integer }
+        inputTokens:         { type: number }
+        outputTokens:        { type: number }
+        cacheReadTokens:     { type: number }
+        cacheCreationTokens: { type: number }
+        costUsd:             { type: number }
+
+    TranscriptEvent:
+      type: object
+      required: [ts, kind]
+      properties:
+        ts:      { type: string, example: "14:32:01" }
+        kind:    { type: string, enum: [assistant, tool_use, tool_result, skill, framing] }
+        text:    { type: string }
+        tool:    { type: string }
+        preview: { type: string }
+        name:    { type: string }
+
+    Theme:
+      type: object
+      description: The 15-token palette `resolveTheme()` returns — see src/http/theme.ts.
+      required: [brand, brandDeep, line, accent, ink50, ink100, ink200, ink500, glow, success, warning, danger, info, fontFamily, logoText]
+      properties:
+        brand:      { type: string, example: "#464E7E" }
+        brandDeep:  { type: string, example: "#363C63" }
+        line:       { type: string, example: "#E7E9F0" }
+        accent:     { type: string, example: "#C8A878" }
+        ink50:      { type: string, example: "#EEF0F7" }
+        ink100:     { type: string, example: "#D9DDEB" }
+        ink200:     { type: string, example: "#B6BDD6" }
+        ink500:     { type: string, example: "#5C6593" }
+        glow:       { type: string, example: "#7C82C8" }
+        success:    { type: string, example: "#10B981" }
+        warning:    { type: string, example: "#F59E0B" }
+        danger:     { type: string, example: "#F43F5E" }
+        info:       { type: string, example: "#3B82F6" }
+        fontFamily: { type: string }
+        logoText:   { type: string, example: "Scyne Orchestrator" }

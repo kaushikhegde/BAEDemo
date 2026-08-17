@@ -46,3 +46,6 @@ coverage/
 
 # Client handoff base-image tarball (hundreds of MB — never commit)
 paperclip-base.tar.gz
+
+# Scyne orchestrator runtime data (PGlite data dir, run logs)
+.orchestrator/
