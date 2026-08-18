@@ -2376,3 +2376,93 @@ orchestrator with no Paperclip process running.
 - A Skills tab in the console (spec §12) — skill *registration* was a Paperclip
   concept that died with it; what remains worth surfacing is symlink health,
   which belongs in Health if it earns its place.
+
+---
+
+## Task 11 (partial) — first real agent run, 18 Aug 2026
+
+Run: `revise-datamodel --project SAPN_DEMO --feature interiam-benifits`, SCY-6.
+Chosen over a fresh `datamodel` because a revision exercises three unproven
+things in one pass — agent spawn with a thin bundle, publishing, and the
+small-diff discipline — and because `projects/` is gitignored, so a regenerate
+would have destroyed an artefact with no way back. The existing document was
+backed up before the run regardless.
+
+**Total spend: $4.15** across four runs. Two findings, both real, both fixed.
+
+| Run | Phase | Result |
+|---|---|---|
+| 1 | revise | succeeded · 120s · $1.196 · 11 turns |
+| 2 | publish | **failed** · 1190s · $2.730 · 33 turns — the finding below |
+| 3 | publish (retry, after the fix) | succeeded · **42s · $0.226 · 4 turns** |
+| 4 | exec render | companion app re-rendered |
+
+### Proven
+
+- **The agent step works.** `dataModeler` spawned with
+  `agent-instructions/data-modeler.thin.md`, invoked the `salesforce-data-modeler`
+  skill (`Launching skill: salesforce-data-modeler` in the transcript), and wrote
+  its output. Skill resolution through `.claude/skills/` held.
+- **Revision mode holds — this is the headline.** 1062 → 1065 lines: three lines
+  added, four modified. The instruction (add an SLA breach flag) produced the
+  field-dictionary row, the ERD entity line, **and two consequences nobody asked
+  for and both correct** — the object's custom-field count corrected 76 → 77 in
+  §1, and the R-22 traceability row updated to say the flag is a reporting field
+  that does not replace the Entitlement Process. Version bumped 0.2 → 0.3 with a
+  `## Revision History` entry naming every section touched. That is exactly the
+  behaviour the whole `reads` primitive exists to produce.
+- **Publishing works**, after the fix: page created then updated to version 3,
+  ONE page (no duplicate), 4 `<ac:image>` references all resolving to attached
+  PNGs, `.published.json` recorded. Verified by reading the page back, not by
+  trusting the API's 200.
+- **The retry path works.** `blocked → POST /issues/:id/advance → publish →
+  render → done`, restarting at the step that blocked rather than the beginning.
+- **The error path works.** SIGKILLing the looping child produced run `failed`,
+  exit 143, cost captured, issue `blocked` with a comment.
+
+### Finding 1 (CRITICAL, fixed): the publish step routed 110 KB through the model
+
+The prompt told the agent to create the page via the MCP, which means passing the
+document as a tool argument. The data model is 110 KB. The agent read it into
+context three times building the call, hit a context compaction 13 minutes in
+(a 06:33 → 06:46 gap in the transcript), lost its place, and restarted the same
+approach. $2.73, no page, and it would have run to the 45-minute budget kill.
+
+This is not a model failure. Moving 110 KB from disk to Confluence is not a
+reasoning task and should never have been given to a language model.
+
+**Fix:** `scripts/confluence-publish.mjs` — same auth story as
+`confluence-attach.mjs`, which exists for the same class of reason. One command
+renders every `mermaid` block to PNG, converts markdown to storage format,
+creates **or updates** the page (idempotent by title, so a revision cannot
+duplicate), uploads the diagrams, and writes `.published.json`. **13 seconds**
+for the work the agent spent 20 minutes failing at. The publish prompt is now
+that one command plus the two judgement calls that genuinely need a model:
+which space, and what title.
+
+Also extracted `scripts/lib/atlassian.mjs` (shared credential loader, used by
+both scripts) and anchored the `.env` lookup to the repo root rather than
+`process.cwd()` — the agent had cd'd into a temp diagram directory, and a
+credentials error naming a path nobody chose is a bad way to learn that.
+
+### Finding 2 (fixed): a retried step appended to the previous attempt's log
+
+`logPath` was `<issueId>-<stepIndex>.jsonl` with no attempt in it, and the runner
+opens it in append mode. So the retry's run row pointed at the failed attempt's
+file, and the console rendered the failed attempt's events inside the successful
+run's transcript — actively misleading. Now suffixed `-retry<n>` from the second
+attempt on; the first keeps the plain name so nothing on disk is orphaned.
+
+### Still not proven
+
+- **Jira.** The `requirements` publish step pushes stories; no `requirements` run
+  has happened, so that half of the publish prompt is still untested.
+- **The other seven stages' agent steps.** One of eight bundles has been
+  exercised. The rest are the same shape, which is an argument, not evidence.
+- **`capabilities` / `personas`**, and their validators as a gate on a real run.
+
+### Cosmetic leftover
+
+The manual verification published under filenames `erd-*.png` before the script
+standardised on `diagram-N.png`, so page 28803073 carries four orphaned
+attachments. Harmless, unreferenced, deletable.

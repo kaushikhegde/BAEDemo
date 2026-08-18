@@ -184,7 +184,16 @@ export function createEngine(deps: {
           return "blocked";
         }
 
-        const logPath = join(config.workspace, ".orchestrator", "runs", `${issue.id}-${issue.step_index}.jsonl`);
+        // The attempt number is part of the filename because the runner opens
+        // the log in APPEND mode: without it a retried step appends to the
+        // previous attempt's log, two run rows point at one file, and the
+        // console renders the failed attempt's events inside the successful
+        // run's transcript. The first attempt keeps the plain name, so nothing
+        // already on disk is orphaned.
+        const attempt = (await repo.listRuns(issue.id))
+          .filter(r => r.step_index === issue.step_index).length;
+        const logPath = join(config.workspace, ".orchestrator", "runs",
+          `${issue.id}-${issue.step_index}${attempt ? `-retry${attempt}` : ""}.jsonl`);
         const run = await repo.startRun({
           issueId: issue.id, agentId: agentRow?.id ?? null,
           stepIndex: issue.step_index, phase: step.phase, logPath,

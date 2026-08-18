@@ -223,6 +223,27 @@ describe("engine", () => {
     expect(issue.title).toBe("P / F — Requirements");
   });
 
+  it("gives a retried step its own log file", async () => {
+    // The log path used to be `<issueId>-<stepIndex>.jsonl` with no attempt in
+    // it, and the runner opens it in append mode — so a retried step appended
+    // to the previous attempt's log, two run rows pointed at one file, and the
+    // console showed the FAILED attempt's events inside the successful run's
+    // transcript. Observed live while re-running a blocked publish step.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);              // agent runs, attach blocks (no outputs/)
+    expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
+
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    await repo.updateIssue(issue.id, { stepIndex: 1 });   // rewind to the agent step
+    await engine.retry(issue.id);
+
+    const logs = (await repo.listRuns(issue.id)).map(r => r.log_path);
+    expect(logs).toHaveLength(2);
+    expect(new Set(logs).size).toBe(2);          // two runs, two files
+  });
+
   it("reads files into the agent's prompt", async () => {
     mkdirSync(join(dir, "outputs"), { recursive: true });
     writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
