@@ -19,14 +19,21 @@ export { createClaudeRunner, buildArgs, type Runner, type RunRequest, type RunRe
 export { extractUsage, type RunUsage } from "./core/usage.js";
 export { filterRunLog, type TranscriptEvent } from "./core/transcript.js";
 export { interpolate } from "./core/interpolate.js";
+export {
+  loadOverrides, saveOverrides, applyOverrides, withAgentPatch, overridesPath,
+  type Overrides,
+} from "./core/overrides.js";
 
 import { openDb, migrate, type Db } from "./core/db.js";
 import { createRepo } from "./core/repo.js";
 import { createEngine } from "./core/engine.js";
 import { validateConfig, type OrchestratorConfig } from "./config.js";
+import { loadOverrides, applyOverrides } from "./core/overrides.js";
 
 export interface Orchestrator {
   db: Db;
+  /** The org as it was actually seeded: config file + console overrides. */
+  org: ReturnType<typeof applyOverrides>;
   repo: ReturnType<typeof createRepo>;
   engine: ReturnType<typeof createEngine>;
   companyId: string;
@@ -55,7 +62,12 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   // truth for the org chart, so every agent it declares is upserted here on
   // every startup — not only hired once and left to drift.
   const companyId = await repo.ensureCompany(config.company ?? "Scyne");
-  for (const a of config.org) await repo.upsertAgent(companyId, a);
+  // The config file is the default; `.orchestrator/overrides.json` is what an
+  // operator changed through the console. Without this merge every console edit
+  // would be reverted by the next boot — which would make the console's own
+  // controls a lie. See core/overrides.ts.
+  const org = applyOverrides(config.org, await loadOverrides(config.workspace));
+  for (const a of org) await repo.upsertAgent(companyId, a);
 
   // No runner is passed to createEngine — it resolves one per agent step
   // from config.adapters at the moment it is needed (step → agent →
@@ -73,7 +85,7 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   await engine.recoverOrphans();
 
   return {
-    db, repo, engine, companyId, config,
+    db, repo, engine, companyId, config, org,
     close: () => db.close(),
   };
 }

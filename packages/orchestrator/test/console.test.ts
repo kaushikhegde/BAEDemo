@@ -16,7 +16,11 @@ describe("console", () => {
     // silent visual regression nobody attributes to a CDN.
     expect(html).not.toMatch(/<script[^>]+src=/);
     expect(html).not.toMatch(/<link[^>]+href="https?:/);
-    expect(html).not.toMatch(/https?:\/\/(?!127\.0\.0\.1|localhost)/);
+    // `http://www.w3.org/2000/svg` is allowed through by name: it is the XML
+    // namespace identifier the inline favicon needs to render, and it is never
+    // fetched. Everything else that looks like an off-box URL is a failure.
+    const external = html.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, "");
+    expect(external).not.toMatch(/https?:\/\/(?!127\.0\.0\.1|localhost)/);
   });
 
   it("carries the theme's brand colour and every tab", () => {
@@ -24,6 +28,28 @@ describe("console", () => {
     for (const tab of ["Runs", "Issues", "Gates", "Org", "Budgets", "Config", "Health"]) {
       expect(html, `missing tab ${tab}`).toContain(`>${tab}</a>`);
     }
+  });
+
+  it("the browser script actually parses", () => {
+    // The real guard. Grepping the HTML for `id="hire"` proves a string is
+    // present, not that the page RUNS — a stray apostrophe inside a
+    // single-quoted JS string shipped a console that rendered "Loading…" and
+    // nothing else, with the failure only visible in the browser's own
+    // devtools. `new Function` parses without executing, which is exactly the
+    // check that was missing.
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("has no nested template literal in the browser script", () => {
+    // The whole page is one TypeScript template literal, so a backtick or a
+    // dollar-brace inside the browser <script> — comments included — closes it
+    // early and gets interpolated at build time against variables that only
+    // exist in the browser. It fails as a confusing syntax error hundreds of
+    // lines away from the cause. Cost an hour once; pinned here instead.
+    const script = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+    expect(script).not.toContain("`");
+    expect(script).not.toMatch(/\$\{/);
   });
 
   it("defines both light and dark palettes", () => {

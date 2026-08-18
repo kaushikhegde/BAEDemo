@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOrchestrator, type Orchestrator } from "../src/index.js";
@@ -412,6 +412,111 @@ describe("router: console and bundles", () => {
     expect(declaredNone.content).toBe("");
 
     expect((await fetch(`${baseUrl}/agents/nope/bundle`)).status).toBe(404);
+  });
+});
+
+describe("router: org and budget control", () => {
+  it("hires an agent, persists it to the overlay, and refuses a duplicate key", async () => {
+    const res = await fetch(`${baseUrl}/agents`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "sec", name: "Security Reviewer", reportsTo: "ba", model: "claude-opus-5" }),
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()).key).toBe("sec");
+
+    // Written to the overlay too — without that, the next boot reconciles the
+    // org from the config file and the new agent simply disappears.
+    const overlay = JSON.parse(readFileSync(join(dir, ".orchestrator", "overrides.json"), "utf8"));
+    expect(overlay.added.map((a: { key: string }) => a.key)).toContain("sec");
+
+    const dup = await fetch(`${baseUrl}/agents`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "sec", name: "Again" }),
+    });
+    expect(dup.status).toBe(400);
+  });
+
+  it("refuses a hire with an unregistered adapter or a malformed key", async () => {
+    const badAdapter = await fetch(`${baseUrl}/agents`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "x1", name: "X", adapter: "gemini_local" }),
+    });
+    expect(badAdapter.status).toBe(400);
+    expect((await badAdapter.json()).error).toMatch(/not registered/);
+
+    const badKey = await fetch(`${baseUrl}/agents`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "9 bad key", name: "X" }),
+    });
+    expect(badKey.status).toBe(400);
+  });
+
+  it("records a PATCHed model in the overlay so it survives a restart", async () => {
+    const res = await fetch(`${baseUrl}/agents/ba`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-opus-5", budget: { maxCostUsd: 25 } }),
+    });
+    expect(res.status).toBe(200);
+    const overlay = JSON.parse(readFileSync(join(dir, ".orchestrator", "overrides.json"), "utf8"));
+    expect(overlay.agents.ba.model).toBe("claude-opus-5");
+    expect(overlay.agents.ba.budget.maxCostUsd).toBe(25);
+    // A field nobody supplied must stay inherited from the config file rather
+    // than being frozen into the overlay at its current value.
+    expect(overlay.agents.ba.adapter).toBeUndefined();
+  });
+
+  it("disables an agent, but not one that still owns an open issue", async () => {
+    const { issue } = await createAndSettle();          // assigned to `ba`, parked at its gate
+    const blocked = await fetch(`${baseUrl}/agents/ba`, { method: "DELETE" });
+    expect(blocked.status).toBe(400);
+    expect((await blocked.json()).error).toContain("open issue");
+
+    await fetch(`${baseUrl}/issues/${issue.id}`, { method: "DELETE" });
+    const okRes = await fetch(`${baseUrl}/agents/ba`, { method: "DELETE" });
+    expect(okRes.status).toBe(200);
+    expect((await (await fetch(`${baseUrl}/agents/ba`)).json()).status).toBe("disabled");
+  });
+
+  it("sets, lists and clears a budget", async () => {
+    const set = await fetch(`${baseUrl}/budgets`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "workflow", scopeKey: "requirements", maxCostUsd: 12, maxDurationMs: 900000 }),
+    });
+    expect(set.status).toBe(200);
+
+    const list = await (await fetch(`${baseUrl}/budgets`)).json();
+    const row = list.find((b: { scope_key: string }) => b.scope_key === "requirements");
+    expect(row.scope).toBe("workflow");
+    expect(Number(row.max_cost_usd)).toBe(12);
+
+    // No limits supplied means "clear", not "an empty budget that blocks everything".
+    await fetch(`${baseUrl}/budgets`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "workflow", scopeKey: "requirements" }),
+    });
+    expect((await (await fetch(`${baseUrl}/budgets`)).json())).toHaveLength(0);
+
+    const bad = await fetch(`${baseUrl}/budgets`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "galaxy", scopeKey: "x" }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it("deletes an issue and its subtree, but not one with a run in flight", async () => {
+    const { issue } = await createAndSettle();
+    const res = await fetch(`${baseUrl}/issues/${issue.id}`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    expect((await fetch(`${baseUrl}/issues/${issue.id}`)).status).toBe(404);
+    // Cascade: its runs went with it.
+    expect((await (await fetch(`${baseUrl}/issues`)).json())).toHaveLength(0);
+  });
+
+  it("health reports the registered adapters and the queue, not one hardcoded runtime", async () => {
+    const h = await (await fetch(`${baseUrl}/health`)).json();
+    expect(h.adapters.map((a: { key: string }) => a.key)).toEqual(["claude_local"]);
+    expect(h.queue).toHaveProperty("awaitingApproval");
+    expect(h).toHaveProperty("unfinishedRuns");
   });
 });
 

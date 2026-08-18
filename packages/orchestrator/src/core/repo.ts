@@ -375,6 +375,38 @@ export function createRepo(db: Db) {
     },
 
     /** Used by engine.recoverOrphans(). */
+    /**
+     * Delete an issue and everything hanging off it. The schema cascades
+     * comments, work products, gates, runs AND child issues, so this is one
+     * statement rather than a hand-rolled teardown that would drift from the
+     * schema the first time a table is added.
+     */
+    async deleteIssue(id: string): Promise<boolean> {
+      const { rows } = await db.query<{ id: string }>(
+        `delete from issues where id=$1 returning id`, [id]);
+      return rows.length > 0;
+    },
+
+    /** Every budget for a company — agent, workflow and project scopes together. */
+    async listBudgets(companyId: string): Promise<BudgetRow[]> {
+      const { rows } = await db.query<BudgetRow>(
+        `select * from budgets where company_id=$1 order by scope, scope_key`, [companyId]);
+      return rows;
+    },
+
+    async clearBudget(companyId: string, scope: string, scopeKey: string): Promise<void> {
+      await db.query(`delete from budgets where company_id=$1 and scope=$2 and scope_key=$3`,
+        [companyId, scope, scopeKey]);
+    },
+
+    /** `active` | `disabled`. Disabling keeps the history and hides the agent. */
+    async setAgentStatus(companyId: string, key: string, status: string): Promise<AgentRow | null> {
+      const { rows } = await db.query<AgentRow>(
+        `update agents set status=$3, updated_at=now() where company_id=$1 and key=$2 returning *`,
+        [companyId, key, status]);
+      return rows[0] ? { ...rows[0], fallback_model: rows[0].fallback_model ?? [], extra_args: rows[0].extra_args ?? [] } : null;
+    },
+
     async listUnfinishedRuns(): Promise<RunRow[]> {
       const { rows } = await db.query<RunRow>(`select * from runs where finished_at is null`);
       return rows;

@@ -17,6 +17,7 @@ import type {
   AgentBudget, AgentRow, AgentSpec, Effort, ListIssuesFilter, RunRow, UpdateIssuePatch,
 } from "../core/repo.js";
 import { resolveTheme } from "./theme.js";
+import { loadOverrides, saveOverrides, withAgentPatch } from "../core/overrides.js";
 import { createDocsHandlers } from "./docs.js";
 import { renderConsole } from "./console.js";
 import type { createOrchestrator } from "../index.js";
@@ -34,6 +35,8 @@ import type { createOrchestrator } from "../index.js";
 export const ROUTES = [
   { method: "GET",   path: "/health" },
   { method: "GET",   path: "/agents" },
+  { method: "POST",  path: "/agents" },          // hire
+  { method: "DELETE", path: "/agents/{key}" },   // disable
   { method: "GET",   path: "/agents/{key}" },
   { method: "PATCH", path: "/agents/{key}" },   // adapter · model · effort · fallbackModel · budget
   { method: "GET",   path: "/agents/{key}/runs" },
@@ -43,6 +46,7 @@ export const ROUTES = [
   { method: "GET",   path: "/issues" },
   { method: "GET",   path: "/issues/{id}" },
   { method: "PATCH", path: "/issues/{id}" },
+  { method: "DELETE", path: "/issues/{id}" },
   { method: "POST",  path: "/issues/{id}/advance" },
   { method: "GET",   path: "/issues/{id}/comments" },
   { method: "POST",  path: "/issues/{id}/comments" },
@@ -54,6 +58,8 @@ export const ROUTES = [
   { method: "GET",   path: "/runs/{id}" },
   { method: "GET",   path: "/runs/{id}/log" },
   { method: "GET",   path: "/runs/{id}/transcript" },
+  { method: "GET",   path: "/budgets" },
+  { method: "POST",  path: "/budgets" },
   { method: "GET",   path: "/usage" },
   { method: "GET",   path: "/config" },
   { method: "GET",   path: "/orch" },
@@ -78,6 +84,7 @@ function pathParam(v: string | string[]): string {
 }
 
 const execFileAsync = promisify(execFile);
+
 
 // Memoised for the life of the process: the Claude Code binary on PATH does
 // not change between requests, so re-spawning it on every /health poll would
@@ -138,7 +145,36 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     const v = await orch.db.query<{ version: string }>(`select version()`);
     const raw = v.rows[0]?.version ?? "unknown";
     const short = raw.match(/PostgreSQL [\d.]+/)?.[0] ?? raw;
-    ok(res, { ok: true, db: `${orch.config.db.driver} / ${short}`, claude: await getClaudeVersion() });
+
+    // Report every REGISTERED adapter, not a hardcoded `claude --version`.
+    // A console that says "Claude Code" no matter what is running tells an
+    // operator nothing once a second adapter exists — and it reads as though
+    // the runtime is nailed down, which is exactly what the adapter registry
+    // exists to avoid. Version probing is per-adapter; only the process ones
+    // have a binary to ask, so the rest report what the registry knows.
+    const adapters = await Promise.all(
+      Object.keys(orch.config.adapters).map(async (key) => ({
+        key,
+        version: key.endsWith("_local") ? await getClaudeVersion() : "n/a",
+      })));
+
+    const stale = await orch.repo.listUnfinishedRuns();
+    const issues = await orch.repo.listIssues(orch.companyId);
+
+    ok(res, {
+      ok: true,
+      db: `${orch.config.db.driver} / ${short}`,
+      adapters,
+      queue: {
+        todo: issues.filter(i => i.status === "todo").length,
+        inProgress: issues.filter(i => i.status === "in_progress").length,
+        awaitingApproval: issues.filter(i => i.status === "in_review").length,
+        blocked: issues.filter(i => i.status === "blocked").length,
+      },
+      unfinishedRuns: stale.length,
+      // Kept for the chatbot and anything else already reading it.
+      claude: adapters.find(a => a.version !== "n/a")?.version ?? "unknown",
+    });
   }));
 
   // ---- agents ---------------------------------------------------------------
@@ -173,7 +209,86 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     if (patch.budget !== undefined) spec.budget = patch.budget;
 
     await orch.repo.upsertAgent(orch.companyId, spec);
+
+    // Persist to the overlay, or the next boot reconciles this away from the
+    // config file and the operator's change silently vanishes. Only fields the
+    // caller actually supplied are recorded — an absent field must stay
+    // inherited from the config file, not be frozen at its current value.
+    const overlay: Partial<AgentSpec> = {};
+    if (patch.adapter !== undefined) overlay.adapter = patch.adapter;
+    if (patch.model !== undefined) overlay.model = patch.model;
+    if (patch.effort !== undefined) overlay.effort = patch.effort;
+    if (patch.fallbackModel !== undefined) overlay.fallbackModel = patch.fallbackModel;
+    if (patch.budget !== undefined) overlay.budget = patch.budget;
+    if (Object.keys(overlay).length) {
+      await saveOverrides(orch.config.workspace,
+        withAgentPatch(await loadOverrides(orch.config.workspace), key, overlay));
+    }
     ok(res, await orch.repo.getAgentByKey(orch.companyId, key));
+  }));
+
+  /**
+   * Hire. The agent is written to the database AND to the overlay, because the
+   * config file is re-read on every boot and an agent that exists only in the
+   * database would disappear on restart.
+   */
+  r.post("/agents", wrap(async (req, res) => {
+    const spec = (req.body ?? {}) as AgentSpec;
+    if (!spec.key || !spec.name) { badRequest(res, "key and name are required"); return; }
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(spec.key)) {
+      badRequest(res, `key '${spec.key}' must start with a letter and contain only letters, digits, - or _`);
+      return;
+    }
+    if (await orch.repo.getAgentByKey(orch.companyId, spec.key)) {
+      badRequest(res, `agent '${spec.key}' already exists`);
+      return;
+    }
+    const adapter = spec.adapter ?? orch.config.defaults?.adapter ?? "claude_local";
+    if (!orch.config.adapters[adapter]) {
+      badRequest(res, `adapter '${adapter}' is not registered — available: ${Object.keys(orch.config.adapters).join(", ")}`);
+      return;
+    }
+    if (spec.effort && !EFFORTS.includes(spec.effort)) {
+      badRequest(res, `effort must be one of ${EFFORTS.join(", ")}`);
+      return;
+    }
+    await orch.repo.upsertAgent(orch.companyId, { ...spec, adapter });
+
+    const o = await loadOverrides(orch.config.workspace);
+    await saveOverrides(orch.config.workspace, {
+      ...o,
+      added: [...(o.added ?? []).filter(a => a.key !== spec.key), { ...spec, adapter }],
+      removed: (o.removed ?? []).filter(k => k !== spec.key),
+    });
+    res.status(201).json(await orch.repo.getAgentByKey(orch.companyId, spec.key));
+  }));
+
+  /**
+   * Disable, not destroy. Runs and issues reference agents, and an agent that
+   * has done work is part of the audit trail — deleting the row would either
+   * fail on the foreign key or orphan the history that explains a spend figure.
+   */
+  r.delete("/agents/:key", wrap(async (req, res) => {
+    const key = pathParam(req.params.key);
+    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    if (!agent) { notFound(res, `agent '${key}'`); return; }
+
+    const assigned = (await orch.repo.listIssues(orch.companyId, { assigneeAgentId: agent.id }))
+      .filter(i => i.status !== "done");
+    if (assigned.length) {
+      badRequest(res, `agent '${key}' still owns ${assigned.length} open issue(s): ` +
+        assigned.map(i => i.identifier).join(", "));
+      return;
+    }
+
+    await orch.repo.setAgentStatus(orch.companyId, key, "disabled");
+    const o = await loadOverrides(orch.config.workspace);
+    await saveOverrides(orch.config.workspace, {
+      ...o,
+      added: (o.added ?? []).filter(a => a.key !== key),
+      removed: [...new Set([...(o.removed ?? []), key])],
+    });
+    ok(res, { ok: true, key, status: "disabled" });
   }));
 
   r.get("/agents/:key/runs", wrap(async (req, res) => {
@@ -286,6 +401,24 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     res.status(202).json({ ok: true, issueId: id });
   }));
 
+  /**
+   * Delete an issue and its whole subtree. Refused while a run is in flight:
+   * the child process would keep writing to a log whose run row no longer
+   * exists, and its cost would vanish from the spend figures.
+   */
+  r.delete("/issues/:id", wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    const issue = await orch.repo.getIssue(id);
+    if (!issue) { notFound(res, `issue '${id}'`); return; }
+    const live = (await orch.repo.listRuns(id)).filter(r2 => !r2.finished_at);
+    if (live.length) {
+      badRequest(res, `issue ${issue.identifier} has a run in flight — wait for it, or stop the process first`);
+      return;
+    }
+    await orch.repo.deleteIssue(id);
+    ok(res, { ok: true, deleted: issue.identifier });
+  }));
+
   r.get("/issues/:id/comments", wrap(async (req, res) => {
     ok(res, await orch.repo.listComments(pathParam(req.params.id)));
   }));
@@ -378,6 +511,33 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   }));
 
   // ---- usage / config -----------------------------------------------------
+
+  r.get("/budgets", wrap(async (_req, res) => {
+    ok(res, await orch.repo.listBudgets(orch.companyId));
+  }));
+
+  /**
+   * Set (or clear) a limit. `scope` is agent | workflow | project; the engine
+   * reads the WORKFLOW budget first and falls back to the agent's, so a limit
+   * set here takes effect on the next run with no restart.
+   */
+  r.post("/budgets", wrap(async (req, res) => {
+    const { scope, scopeKey, maxTokens, maxCostUsd, maxDurationMs } =
+      (req.body ?? {}) as { scope?: string; scopeKey?: string;
+                            maxTokens?: number; maxCostUsd?: number; maxDurationMs?: number };
+    if (!scope || !scopeKey) { badRequest(res, "scope and scopeKey are required"); return; }
+    if (!["agent", "workflow", "project"].includes(scope)) {
+      badRequest(res, `scope must be one of agent, workflow, project`);
+      return;
+    }
+    if (maxTokens == null && maxCostUsd == null && maxDurationMs == null) {
+      await orch.repo.clearBudget(orch.companyId, scope, scopeKey);
+      ok(res, { ok: true, cleared: true, scope, scopeKey });
+      return;
+    }
+    await orch.repo.setBudget(orch.companyId, scope, scopeKey, { maxTokens, maxCostUsd, maxDurationMs });
+    ok(res, { ok: true, scope, scopeKey, maxTokens, maxCostUsd, maxDurationMs });
+  }));
 
   r.get("/usage", wrap(async (_req, res) => {
     const { rows } = await orch.db.query<{

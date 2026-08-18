@@ -61,6 +61,48 @@ paths:
                   adapter: "claude_local"
                   status: "idle"
 
+    post:
+      operationId: hireAgent
+      summary: Add an agent to the org
+      description: >-
+        Writes the agent to the database AND to `.orchestrator/overrides.json`.
+        Both are required: the org reconciles from the consumer's config file on
+        every boot, so an agent that existed only in the database would vanish on
+        the next restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, name]
+              properties:
+                key:           { type: string, description: "Address of the agent. Letters, digits, - and _." }
+                name:          { type: string }
+                title:         { type: string }
+                icon:          { type: string }
+                reportsTo:     { type: [string, "null"], description: "Another agent's key" }
+                adapter:       { type: string }
+                model:         { type: string }
+                effort:        { type: string, enum: [low, medium, high, xhigh, max] }
+                fallbackModel: { type: array, items: { type: string } }
+                mcpEnabled:    { type: boolean }
+                bundlePath:    { type: string }
+                budget:        { $ref: "#/components/schemas/Budget" }
+            example:
+              key: "securityReviewer"
+              name: "Security Reviewer"
+              reportsTo: "archLead"
+              model: "claude-sonnet-4-6"
+      responses:
+        "201":
+          description: The hired agent
+        "400":
+          description: Key already taken, malformed key, or an unregistered adapter
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /agents/{key}:
     get:
       operationId: getAgent
@@ -118,6 +160,31 @@ paths:
               schema: { $ref: "#/components/schemas/Agent" }
         "400":
           description: An invalid `effort` was supplied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+    delete:
+      operationId: disableAgent
+      summary: Disable an agent
+      description: >-
+        Sets the agent's status to `disabled` and records the removal in the
+        overlay. The row is kept, not destroyed: runs and issues reference
+        agents, and an agent that has done work is part of the audit trail that
+        explains a spend figure. Refused while the agent still owns an open
+        issue.
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      responses:
+        "200":
+          description: The agent is disabled
+        "400":
+          description: The agent still owns open issues
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -305,6 +372,30 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Issue" }
+        "404":
+          description: No issue has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+    delete:
+      operationId: deleteIssue
+      summary: Delete an issue and its whole subtree
+      description: >-
+        Cascades to comments, work products, gates, runs and child issues.
+        Refused while a run is in flight — the child process would keep writing
+        to a log whose run row no longer exists, and its cost would disappear
+        from the spend figures.
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "200":
+          description: Deleted
+        "400":
+          description: A run is still in flight
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: No issue has this id
           content:
@@ -589,6 +680,48 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /budgets:
+    get:
+      operationId: listBudgets
+      summary: Every budget limit set for this company
+      responses:
+        "200":
+          description: Budgets across the agent, workflow and project scopes
+    post:
+      operationId: setBudget
+      summary: Set or clear a budget limit
+      description: >-
+        `scope` is agent, workflow or project. The engine reads the WORKFLOW
+        budget first and falls back to the agent's, so a limit set here applies
+        to the next run with no restart. Omitting all three limits clears the
+        budget instead of setting an empty one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope, scopeKey]
+              properties:
+                scope:         { type: string, enum: [agent, workflow, project] }
+                scopeKey:      { type: string, description: "Agent key, workflow key, or project name" }
+                maxTokens:     { type: number }
+                maxCostUsd:    { type: number }
+                maxDurationMs: { type: number }
+            example:
+              scope: "agent"
+              scopeKey: "dataModeler"
+              maxCostUsd: 15
+              maxDurationMs: 2700000
+      responses:
+        "200":
+          description: The budget as stored, or a confirmation that it was cleared
+        "400":
+          description: Missing or invalid scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /usage:
     get:
       operationId: getUsage
@@ -722,6 +855,12 @@ components:
       description: Byte offset into the raw log to resume from; omit (or 0) to fetch from the start.
 
   schemas:
+    Budget:
+      type: object
+      properties:
+        maxTokens:     { type: number }
+        maxCostUsd:    { type: number }
+        maxDurationMs: { type: number }
     Error:
       type: object
       required: [error]
