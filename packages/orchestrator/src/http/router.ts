@@ -66,6 +66,7 @@ export const ROUTES = [
   { method: "GET",   path: "/budgets" },
   { method: "POST",  path: "/budgets" },
   { method: "GET",   path: "/usage" },
+  { method: "GET",   path: "/workflows/{key}" },   // the full step list, prompts included
   { method: "GET",   path: "/config" },
   { method: "GET",   path: "/orch" },
   { method: "GET",   path: "/openapi.json" },
@@ -743,6 +744,48 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
           type: s.type, phase: s.type === "agent" ? s.phase : undefined,
         })),
       })),
+    });
+  }));
+
+  /**
+   * One workflow in full — every step, and for agent steps the PROMPT itself.
+   *
+   * `GET /config` deliberately omits prompts: it is a summary, and a workflow's
+   * prompts run to kilobytes each. But "what is this agent actually told" has
+   * no other answer — the prompt reaches Claude Code on stdin rather than argv,
+   * and the transcript filter has no event kind for it, so without this
+   * endpoint the instruction a run received is unrecoverable after the fact.
+   *
+   * Read-only on purpose. These strings are COMPILED from the consumer's
+   * pipeline definition, which is what makes "add a stage, get a workflow for
+   * free" true; an editable override would quietly make one workflow
+   * hand-maintained and a later pipeline change would stop reaching it. The
+   * layers meant to be edited — the agent's bundle and the skill — already are.
+   */
+  r.get("/workflows/:key", wrap(async (req, res) => {
+    const key = pathParam(req.params.key);
+    const wf = orch.config.workflows.find(w => w.key === key);
+    if (!wf) { notFound(res, `workflow '${key}'`); return; }
+    ok(res, {
+      key: wf.key, label: wf.label, assignee: wf.assignee, title: wf.title ?? null,
+      variantOf: wf.variantOf, variant: wf.variant,
+      params: workflowParams(wf),
+      steps: wf.steps.map(step => {
+        switch (step.type) {
+          case "exec":
+            return { type: step.type, cmd: step.cmd, cwd: step.cwd, timeoutMs: step.timeoutMs };
+          case "agent":
+            return {
+              type: step.type, phase: step.phase, skill: step.skill,
+              agent: step.agent ?? wf.assignee, adapter: step.adapter,
+              model: step.model, effort: step.effort,
+              reads: step.reads, prompt: step.prompt,
+            };
+          case "attach": return { type: step.type, files: step.files };
+          case "gate":   return { type: step.type, title: step.title, summary: step.summary };
+          case "flow":   return { type: step.type, workflow: step.workflow, params: step.params };
+        }
+      }),
     });
   }));
 

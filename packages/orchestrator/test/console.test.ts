@@ -231,4 +231,19 @@ describe("console", () => {
     expect(html).toContain("setting ");
     expect(html).toContain("does not set the other");
   });
+
+  it("shows the prompt each agent step actually sends, read-only", () => {
+    // There is no other way to see it: the prompt reaches Claude Code on stdin
+    // rather than argv, /config strips prompts, and the transcript filter has
+    // no event kind for it.
+    expect(html).toContain("async function renderWorkflow(");
+    expect(html).toContain('api("/workflows/"');
+    expect(html).toContain("const withVars =");           // {placeholder} highlighting
+    // Read-only: no PUT, and the page says where edits DO belong.
+    const page = html.slice(html.indexOf("async function renderWorkflow("),
+                            html.indexOf("/* ---- health"));
+    expect(page).not.toContain('"PUT"');
+    expect(page).toContain("Changing what an agent is told");
+    expect(page).toContain("#bundle/");
+  });
 });

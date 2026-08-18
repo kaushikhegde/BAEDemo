@@ -452,6 +452,9 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 .tagl:hover { border-color: var(--brand); text-decoration: underline; }
 .tagl .x { color: var(--muted); font-size: .68rem; }
 .tags { display: flex; flex-wrap: wrap; gap: .3rem; }
+/* A {placeholder} inside a prompt: filled in per run, so it reads differently
+   from the fixed text around it. */
+.ph { color: var(--on-accent); font-weight: 700; }
 
 /* ---- transcript ---- */
 #transcript { font-family: var(--mono); font-size: .76rem; line-height: 1.62;
@@ -978,7 +981,8 @@ async function renderIssue(id) {
       // ---- right column
       '<div>' +
         '<h2>Detail</h2><div class="card">' +
-          detailRow("workflow", esc(issue.workflow_key || "—") + (wf ? ' <span class="muted">(' + esc(wf.label) + ')</span>' : "")) +
+          detailRow("workflow", (issue.workflow_key ? wfLink(issue.workflow_key) : "—") +
+            (wf ? ' <span class="muted">' + esc(wf.label) + '</span>' : "")) +
           detailRow("assignee", esc(agentName[issue.assignee_agent_id] || "—")) +
           detailRow("spend", esc(money(spend))) +
           detailRow("created", esc(when(issue.created_at))) +
@@ -1116,30 +1120,37 @@ const skillsFor = (all, agentKey) =>
   (all.skills || []).filter(sk => sk.agents.indexOf(agentKey) !== -1);
 
 /* A skill invoked from a stage AND from that stage's own revision is invoked
-   from one place, twice. Printing both keys doubles the column and says nothing
-   the parent key did not. */
-const wfSummary = (keys) => {
-  if (!CFG) return keys.join(", ");
+   from one place, twice. Printing both full keys doubles the column and says
+   nothing the parent key did not — so a variant collapses to its mode label,
+   still linked to its own page. */
+const wfChips = (keys) => {
+  if (!keys.length) return '<span class="muted">—</span>';
+  if (!CFG) return '<span class="tags">' + keys.map(k => wfLink(k)).join("") + '</span>';
   const by = {};
   keys.forEach(k => {
     const w = CFG.workflows.find(x => x.key === k);
     const base = (w && w.variantOf) ? w.variantOf : k;
-    (by[base] = by[base] || []).push(w && w.variantOf ? (w.variant || k) : null);
+    (by[base] = by[base] || { base: base, variants: [] });
+    if (w && w.variantOf) by[base].variants.push(w);
   });
-  return Object.keys(by).map(base => {
-    const modes = by[base].filter(Boolean);
-    return base + (modes.length ? " (+" + modes.join(", ") + ")" : "");
-  }).join(", ");
+  return '<span class="tags">' + Object.keys(by).map(base => {
+    const g = by[base];
+    return wfLink(base) + g.variants.map(v =>
+      '<a href="#workflow/' + encodeURIComponent(v.key) + '" class="tagl" data-stop="1" title="' +
+      esc(v.key) + '"><span class="muted">&#8627;</span>' + esc(v.variant || v.key) + '</a>').join("");
+  }).join("") + '</span>';
 };
 
-/** A skill name as a link to its own page. Used inside clickable rows, so the
-    click must not also trigger the row underneath it. */
 const skillLink = (name, extra) =>
   '<a href="#skill/' + encodeURIComponent(name) + '" class="tagl" data-stop="1">' +
   esc(name) + (extra ? '<span class="x">' + esc(extra) + '</span>' : "") + '</a>';
 
 const agentLink = (key) =>
   '<a href="#agent/' + encodeURIComponent(key) + '" class="tagl" data-stop="1">' + esc(key) + '</a>';
+
+const wfLink = (key, extra) =>
+  '<a href="#workflow/' + encodeURIComponent(key) + '" class="tagl" data-stop="1">' + esc(key) +
+  (extra ? '<span class="x">' + esc(extra) + '</span>' : "") + '</a>';
 
 /* A link inside a clickable table row would otherwise navigate twice — the
    anchor, then the row handler. Delegated once, in the capture phase. */
@@ -1332,8 +1343,7 @@ async function renderAgent(key, target) {
               (sk.status === "missing"
                 ? ' ' + st("blocked") + '<span class="muted" style="font-size:.74rem">no SKILL.md — every run ' +
                   'of this stage will die with Unknown skill</span>'
-                : '<span class="muted mono" style="font-size:.72rem">via ' +
-                  esc(wfSummary(sk.workflows)) + '</span>') +
+                : '<span class="muted" style="font-size:.72rem">via</span>' + wfChips(sk.workflows)) +
             '</div>' +
             (sk.summary ? '<div class="muted" style="font-size:.76rem;max-width:70ch">' +
               esc(sk.summary.slice(0, 160)) + (sk.summary.length > 160 ? "…" : "") + '</div>' : "")
@@ -1529,7 +1539,7 @@ async function renderBundle(key) {
    run. */
 async function renderSkills() {
   setHead("Skills", "What each agent invokes, and whether the file is there.");
-  await config();          // wfSummary needs the variant relationships
+  await config();          // wfChips needs the variant relationships
   const out = await api("/skills");
   const rows = out.skills;
 
@@ -1569,7 +1579,7 @@ async function renderSkills() {
       '<td>' + (r.agents.length
         ? '<span class="tags">' + r.agents.map(agentLink).join("") + '</span>'
         : '<span class="muted">—</span>') + '</td>' +
-      '<td class="mono" style="font-size:.72rem">' + (esc(wfSummary(r.workflows)) || '<span class="muted">—</span>') + '</td>' +
+      '<td>' + wfChips(r.workflows) + '</td>' +
       '<td>' + st(r.status === "missing" ? "blocked" : (r.status === "unused" ? "todo" : "done")) +
         ' <span class="muted mono" style="font-size:.68rem">' + esc(r.status) + '</span></td>' +
       '<td class="num">' + (r.lines == null ? "—" : num(r.lines)) + '</td>' +
@@ -1605,7 +1615,7 @@ async function renderSkill(name) {
             : '<span class="muted">nobody</span>') +
           '</div><div class="s">' + (sk.agents.length > 1 ? "agents" : "agent") + '</div></div>' +
         '<div class="metric"><div class="l">workflows</div><div class="v" style="font-size:.95rem">' +
-          (esc(wfSummary(sk.workflows)) || "none") + '</div></div>' +
+          wfChips(sk.workflows) + '</div></div>' +
         '<div class="metric"><div class="l">size</div><div class="v" style="font-size:1.1rem">' +
           (sk.lines == null ? "—" : num(sk.lines) + " lines") + '</div></div>' +
       '</div>' +
@@ -1696,10 +1706,12 @@ async function renderBudgets() {
     .forEach(w => orderedWf.push(w));   // an orphaned variant must still be reachable
 
   const mins = (ms) => ms ? Math.round(Number(ms) / 60000) : "";
+  // label is trusted MARKUP here (a workflow row passes a link), so it is not
+  // escaped — every caller below builds it from esc()'d parts.
   const limitRow = (scope, key, label, spendCell) => {
     const l = limit(scope, key);
     return '<tr data-scope="' + esc(scope) + '" data-key="' + esc(key) + '">' +
-      '<td>' + esc(label) + '</td>' + spendCell +
+      '<td>' + label + '</td>' + spendCell +
       '<td><input class="b-tokens" type="number" aria-label="max tokens" value="' + esc(plain(l.max_tokens)) + '"></td>' +
       '<td><input class="b-cost" type="number" step="0.01" aria-label="max cost" value="' + esc(plain(l.max_cost_usd)) + '"></td>' +
       '<td><input class="b-mins" type="number" aria-label="max minutes" value="' + esc(mins(l.max_duration_ms)) + '"></td>' +
@@ -1724,7 +1736,7 @@ async function renderBudgets() {
     '<th class="num">Max min</th><th></th></tr></thead><tbody>' +
     agents.map(a => {
       const p = perAgent.find(x => x.key === a.key);
-      return limitRow("agent", a.key, a.name,
+      return limitRow("agent", a.key, agentLink(a.key) + ' <span class="muted">' + esc(a.name) + '</span>',
         '<td class="mono">' + esc(money(p.cost)) + ' <span class="muted">(' + num(p.runs) + ')</span></td>');
     }).join("") + '</tbody></table></div></div>' +
 
@@ -1736,7 +1748,7 @@ async function renderBudgets() {
     // genuinely separate ceilings — and a revision is a small diff that should
     // be allowed less than a fresh generation, not the same.
     orderedWf.map(w => limitRow("workflow", w.key,
-      (w.variantOf ? "↳ " : "") + w.key,
+      (w.variantOf ? '<span class="muted">&#8627;</span> ' : "") + wfLink(w.key),
       '<td class="mono muted">' + esc(w.assignee) + '</td>')).join("") +
     '</tbody></table></div></div>' +
     '<p class="hint">A variant carries its own ceiling. The engine reads the budget by workflow key, so setting ' +
@@ -1786,11 +1798,12 @@ async function renderConfig() {
     '<thead><tr><th>Workflow</th><th>Assignee</th><th class="num">Steps</th><th>Parameters</th></tr></thead><tbody>' +
     bases.map(w => {
       const vs = variantsOf[w.key] || [];
-      return '<tr><td><div class="mono" style="font-weight:600">' + esc(w.key) + '</div>' +
-        '<div class="muted" style="font-size:.76rem">' + esc(w.label) + '</div>' +
+      return '<tr><td><div>' + wfLink(w.key, w.steps + " steps") + '</div>' +
+        '<div class="muted" style="font-size:.76rem;margin-top:.2rem">' + esc(w.label) + '</div>' +
         (vs.length ? '<div class="tags" style="margin-top:.3rem">' + vs.map(v =>
-          '<span class="tagl" title="' + esc(v.key) + '">' + esc(v.variant || v.key) +
-          '<span class="x">' + esc(v.steps) + ' steps</span></span>').join("") + '</div>' : "") +
+          '<a href="#workflow/' + encodeURIComponent(v.key) + '" class="tagl" data-stop="1" title="' +
+          esc(v.key) + '">' + esc(v.variant || v.key) +
+          '<span class="x">' + esc(v.steps) + ' steps</span></a>').join("") + '</div>' : "") +
         '</td>' +
         '<td class="mono">' + esc(w.assignee) + '</td><td class="num">' + esc(w.steps) + '</td>' +
         '<td class="mono" style="font-size:.76rem">' + esc((w.params || []).join(", ") || "—") +
@@ -1803,6 +1816,111 @@ async function renderConfig() {
     'consumer as <span class="mono">variantOf</span> rather than guessed from its name. The engine runs one ' +
     'exactly like the other. Parameters are derived by scanning each workflow&rsquo;s own step templates, so ' +
     'they cannot drift from what the steps interpolate.</p>';
+}
+
+/* ---- one workflow, in full -------------------------------------------------
+   The only place the prompt an agent is actually handed can be read. It is
+   read-only: these strings are compiled from the pipeline definition, so the
+   page's job is to show them AND to point at the two layers that are meant to
+   be edited. */
+async function renderWorkflow(key) {
+  const c = await config();
+  const wf = await api("/workflows/" + encodeURIComponent(key));
+  setHead(wf.key, wf.label + " · " + wf.steps.length + " steps · " + wf.assignee);
+
+  const variants = c.workflows.filter(w => w.variantOf === wf.key);
+
+  // Highlight the placeholders so it is obvious which parts are filled in per
+  // run and which are fixed text.
+  const withVars = (text) => esc(text).replace(/\\{(\\w+)\\}/g, '<b class="ph">{$1}</b>');
+
+  const stepCard = (st2, i) => {
+    const head = '<div class="wrap" style="justify-content:space-between">' +
+      '<div class="wrap"><span class="mono muted" style="font-size:.72rem">step ' + i + '</span>' +
+      '<span class="st ' + (st2.type === "gate" ? "in_review" : (st2.type === "agent" ? "in_progress" : "todo")) +
+        '">' + esc(st2.type) + '</span>' +
+      (st2.phase ? '<span class="mono" style="font-size:.76rem;font-weight:600">' + esc(st2.phase) + '</span>' : "") +
+      '</div>' +
+      '<div class="tags">' +
+        (st2.agent ? agentLink(st2.agent) : "") +
+        (st2.skill ? skillLink(st2.skill) : "") +
+      '</div></div>';
+
+    let body = "";
+    if (st2.type === "exec") {
+      body = '<pre class="block">' + withVars(st2.cmd) + '</pre>';
+    } else if (st2.type === "attach") {
+      body = '<p class="hint" style="margin:.4rem 0 0">Blocks before any gate if one of these is missing — ' +
+        'nobody is asked to approve output that was not produced.</p><pre class="block">' +
+        st2.files.map(withVars).join("\\n") + '</pre>';
+    } else if (st2.type === "gate") {
+      body = '<div style="margin-top:.4rem"><b style="font-size:.84rem">' + withVars(st2.title) + '</b></div>' +
+        (st2.summary ? '<pre class="block">' + withVars(st2.summary) + '</pre>' : "");
+    } else if (st2.type === "flow") {
+      body = '<p class="hint" style="margin:.4rem 0 0">Spawns <span class="mono">' + esc(st2.workflow) +
+        '</span>. Present but unused — parent-resume-on-child-completion is not implemented.</p>';
+    } else if (st2.type === "agent") {
+      const reads = st2.reads || {};
+      const names = Object.keys(reads);
+      body =
+        (names.length
+          ? '<div style="margin-top:.5rem"><div class="l" style="font-size:.66rem;letter-spacing:.06em;' +
+            'text-transform:uppercase;color:var(--muted);font-weight:650">Reads</div>' +
+            names.map(n => '<div class="mono" style="font-size:.74rem;margin-top:.15rem">' +
+              '<b class="ph">{' + esc(n) + '}</b> &larr; ' + withVars(reads[n]) + '</div>').join("") +
+            '<p class="hint" style="margin:.35rem 0 0">Read at step time and injected into the prompt. A missing ' +
+            'file blocks BEFORE the agent is spawned — naming the variable and the resolved path — so a run with ' +
+            'nothing to work from costs nothing.</p></div>'
+          : "") +
+        (st2.prompt
+          ? '<pre class="block" style="max-height:34rem;overflow:auto">' + withVars(st2.prompt) + '</pre>'
+          : '<p class="hint" style="margin:.5rem 0 0">No explicit prompt. The engine builds a default from the ' +
+            'phase and the issue&rsquo;s parameters.</p>');
+    }
+    return '<div class="card" style="margin-bottom:.6rem">' + head + body + '</div>';
+  };
+
+  view.innerHTML =
+    '<div class="card">' +
+      '<div class="wrap" style="justify-content:space-between;align-items:flex-start">' +
+        '<div><h3 style="margin:0" class="mono">' + esc(wf.key) + '</h3>' +
+        '<span class="muted" style="font-size:.82rem">' + esc(wf.label) + '</span></div>' +
+        '<div class="tags">' + agentLink(wf.assignee) + '</div>' +
+      '</div>' +
+      (wf.variantOf
+        ? '<p class="hint" style="margin:.6rem 0 0">A <b>' + esc(wf.variant || "variant") + '</b> of ' +
+          '<a href="#workflow/' + encodeURIComponent(wf.variantOf) + '">' + esc(wf.variantOf) + '</a> — ' +
+          'the same stage in another mode. The engine runs it identically, and it carries its own budget.</p>'
+        : (variants.length
+          ? '<p class="hint" style="margin:.6rem 0 0">Modes: ' + variants.map(v =>
+              '<a href="#workflow/' + encodeURIComponent(v.key) + '">' + esc(v.key) + '</a>').join(", ") + '</p>'
+          : "")) +
+      '<div class="grid" style="margin-top:.9rem">' +
+        '<div class="metric"><div class="l">parameters</div><div class="v" style="font-size:.95rem">' +
+          (esc((wf.params || []).join(", ")) || "none") + '</div><div class="s">asked for at start</div></div>' +
+        '<div class="metric"><div class="l">issue title</div><div class="v" style="font-size:.85rem">' +
+          (wf.title ? withVars(wf.title) : '<span class="muted">default</span>') + '</div></div>' +
+      '</div>' +
+    '</div>' +
+
+    '<h2 style="margin-top:1.3rem">Steps</h2>' +
+    wf.steps.map(stepCard).join("") +
+
+    '<h2>Changing what an agent is told</h2>' +
+    '<div class="card"><p class="hint" style="margin:0 0 .6rem">These prompts are <b>compiled</b> from the ' +
+    'pipeline definition — that is what makes adding a stage add its workflow for free — so they are not ' +
+    'editable here. An override would make this one workflow hand-maintained, and a later pipeline change would ' +
+    'silently stop reaching it. The two layers that <i>are</i> meant to be edited:</p>' +
+    '<div class="stack" style="gap:.5rem">' +
+      '<div><b style="font-size:.82rem">How it does the work</b> — the skill, including its ' +
+      '<span class="mono">## Revision mode</span> section' +
+      '<div class="tags" style="margin-top:.25rem">' +
+        (wf.steps.filter(x => x.skill).map(x => skillLink(x.skill)).join("") ||
+         '<span class="muted" style="font-size:.78rem">this workflow invokes no skill</span>') + '</div></div>' +
+      '<div><b style="font-size:.82rem">Who it is</b> — the agent&rsquo;s system prompt' +
+      '<div class="tags" style="margin-top:.25rem"><a href="#bundle/' + encodeURIComponent(wf.assignee) +
+      '" class="tagl">' + esc(wf.assignee) + '<span class="x">instructions</span></a></div></div>' +
+    '</div></div>';
 }
 
 /* ---- health -------------------------------------------------------------- */
@@ -1861,7 +1979,7 @@ const ROUTES = { runs: renderRuns, issues: renderIssues, gates: renderGates,
 // agent and its bundle to Org, an issue to Issues — otherwise drilling in
 // leaves the rail with nothing selected and you lose your place.
 const OWNER = { run: "runs", issue: "issues", agent: "org", bundle: "org",
-                skill: "skills", "new": "runs" };
+                skill: "skills", workflow: "config", "new": "runs" };
 
 async function route() {
   stopPolling();
@@ -1875,6 +1993,7 @@ async function route() {
     if (hash.indexOf("issue/") === 0) { await renderIssue(hash.slice(6)); return; }
     if (hash.indexOf("bundle/") === 0) { await renderBundle(hash.slice(7)); return; }
     if (hash.indexOf("skill/") === 0) { await renderSkill(decodeURIComponent(hash.slice(6))); return; }
+    if (hash.indexOf("workflow/") === 0) { await renderWorkflow(decodeURIComponent(hash.slice(9))); return; }
     if (hash.indexOf("agent/") === 0) { await renderOrg(hash.slice(6)); return; }
     const fn = ROUTES[hash];
     if (!fn) {

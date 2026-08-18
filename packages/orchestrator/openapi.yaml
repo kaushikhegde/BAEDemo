@@ -893,6 +893,85 @@ paths:
                 cacheCreationTokens: 50000
                 costUsd: 12.4351
 
+  /workflows/{key}:
+    get:
+      operationId: getWorkflow
+      summary: One workflow in full, including each agent step's prompt
+      description: >-
+        `GET /config` omits prompts — it is a summary and these run to kilobytes
+        each. This is the only way to see what an agent is actually told: the
+        prompt reaches the runtime on stdin rather than argv, and the transcript
+        filter has no event kind for it, so after a run the instruction it
+        received is otherwise unrecoverable. Read-only by design — these strings
+        are compiled from the consumer's pipeline definition, and an override
+        would make one workflow hand-maintained while a later pipeline change
+        silently stopped reaching it. The layers meant to be edited are the
+        agent's bundle (`PUT /agents/{key}/bundle`) and the skill
+        (`PUT /skills/{name}`).
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: The workflow key.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The workflow and every step
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, label, assignee, params, steps]
+                properties:
+                  key:       { type: string }
+                  label:     { type: string }
+                  assignee:  { type: string }
+                  title:     { type: [string, "null"] }
+                  variantOf: { type: string }
+                  variant:   { type: string }
+                  params:    { type: array, items: { type: string } }
+                  steps:
+                    type: array
+                    description: >-
+                      Shaped per step type. `exec` carries cmd/cwd/timeoutMs;
+                      `agent` carries phase, skill, the resolved agent, runtime
+                      overrides, `reads` and `prompt`; `attach` carries files;
+                      `gate` carries title and summary; `flow` carries the child
+                      workflow and its params.
+                    items:
+                      type: object
+                      required: [type]
+                      properties:
+                        type:      { type: string, enum: [exec, agent, attach, gate, flow] }
+                        cmd:       { type: string }
+                        cwd:       { type: string }
+                        timeoutMs: { type: integer }
+                        phase:     { type: string }
+                        skill:     { type: string }
+                        agent:     { type: string, description: "Resolved: the step's agent, else the workflow's assignee." }
+                        adapter:   { type: string }
+                        model:     { type: string }
+                        effort:    { type: string, enum: [low, medium, high, xhigh, max] }
+                        reads:
+                          type: object
+                          additionalProperties: { type: string }
+                          description: "Variable name to workspace-relative path template."
+                        prompt:
+                          type: string
+                          description: >-
+                            The verbatim prompt template. Absent when the step
+                            declares none — the engine then builds a default
+                            from the phase and the issue's params.
+                        files:     { type: array, items: { type: string } }
+                        title:     { type: string }
+                        summary:   { type: string }
+                        workflow:  { type: string }
+        "404":
+          description: No workflow has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /config:
     get:
       operationId: getConfig
