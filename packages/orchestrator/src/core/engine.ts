@@ -13,7 +13,7 @@
 // Claude process and no shell is ever spawned by the engine itself.
 
 import { exec as nodeExec } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { interpolate } from "./interpolate.js";
@@ -27,10 +27,29 @@ type Repo = ReturnType<typeof createRepo>;
 export type ExecFn = (cmd: string, cwd: string, timeoutMs?: number)
   => Promise<{ code: number; stdout: string; stderr: string }>;
 
+/**
+ * Ceiling on how much of one file is injected into a prompt. A product summary
+ * is ~40 KB and a stories.json ~85 KB, so this is roughly 3x the largest real
+ * artefact — high enough never to fire in normal use, low enough that a
+ * pathological input cannot blow the context window before the agent has read
+ * its own instructions.
+ */
+export const MAX_READ_CHARS = 256_000;
+
 export interface Engine {
   start(workflowKey: string, params: Record<string, string>): Promise<IssueRow>;
   advance(issueId: string): Promise<void>;
-  decideGate(gateId: string, status: "approved" | "rejected", note?: string, by?: string): Promise<void>;
+  retry(issueId: string): Promise<void>;
+  /**
+   * Record a gate decision and, unless `opts.advance` is false, carry the issue
+   * forward from it. HTTP callers pass `{ advance: false }` and fire `advance()`
+   * themselves in the background: resuming runs an agent step, and a request
+   * that waits for one holds the connection open for tens of minutes. Returns
+   * the issue the gate belongs to, so a caller that opted out knows what to
+   * advance.
+   */
+  decideGate(gateId: string, status: "approved" | "rejected", note?: string, by?: string,
+             opts?: { advance?: boolean }): Promise<{ issueId: string }>;
   recoverOrphans(): Promise<void>;
 }
 
@@ -84,12 +103,45 @@ export function createEngine(deps: {
     return { adapter: agent.adapter, model: agent.model ?? undefined, effort: agent.effort ?? undefined };
   }
 
+  /**
+   * Resolve an agent step's `reads` into prompt variables. Returns the
+   * variables it could read AND the entries it could not, so the caller can
+   * block naming every missing path at once rather than one per retry.
+   */
+  async function readVars(
+    step: Extract<Step, { type: "agent" }>,
+    vars: Record<string, string>,
+  ): Promise<{ vars: Record<string, string>; missing: string[] }> {
+    const out: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const [name, tpl] of Object.entries(step.reads ?? {})) {
+      const rel = interpolate(tpl, vars);
+      try {
+        const body = await readFile(resolve(config.workspace, rel), "utf8");
+        out[name] = body.length > MAX_READ_CHARS
+          ? `${body.slice(0, MAX_READ_CHARS)}\n\n[…truncated at ${MAX_READ_CHARS} characters]`
+          : body;
+      } catch {
+        missing.push(`${name} → ${rel}`);
+      }
+    }
+    return { vars: out, missing };
+  }
+
   function buildPrompt(step: Extract<Step, { type: "agent" }>, wf: WorkflowDef, vars: Record<string, string>): string {
-    if (step.prompt) return interpolate(step.prompt, vars);
+    const params = Object.entries(vars)
+      .filter(([k]) => k !== "workspace" && k !== "issueId" && !(k in (step.reads ?? {})))
+      .map(([k, v]) => `  ${k}: ${v}`);
+
+    if (step.prompt) {
+      // The appendix is not decoration: it is how an explicit prompt reaches
+      // optional params (confluenceSpace, jiraProjectKey, startingStoryNumber)
+      // without a `{placeholder}` that would throw on every run omitting them.
+      return [interpolate(step.prompt, vars), ``, `Parameters:`, ...params].join("\n");
+    }
     return [
       `Run PHASE ${step.phase} for workflow \`${wf.key}\`.`,
-      ...Object.entries(vars).filter(([k]) => k !== "workspace" && k !== "issueId")
-        .map(([k, v]) => `  ${k}: ${v}`),
+      ...params,
       step.skill ? `  Invoke skill: ${step.skill}` : "",
       ``,
       `Do not call any API. Do not change issue status. Exit when your files are written.`,
@@ -111,6 +163,16 @@ export function createEngine(deps: {
       case "agent": {
         const agentKey = step.agent ?? wf.assignee;
         const agentRow = await repo.getAgentByKey(issue.company_id, agentKey);
+
+        const read = await readVars(step, vars);
+        if (read.missing.length) {
+          // Block BEFORE startRun(): a run row for a step that never spawned a
+          // process shows in the console as a zero-token mystery failure.
+          await block(issue.id,
+            `Step ${issue.step_index} (\`agent\`) cannot read its required input file(s):\n` +
+            read.missing.map(m => `- \`${m}\``).join("\n"));
+          return "blocked";
+        }
 
         // Resolve adapter / model / effort: step → agent → defaults.
         const rt = resolveRuntime(step, toRuntimeAgent(agentRow), config.defaults);
@@ -150,7 +212,7 @@ export function createEngine(deps: {
           model: rt.model,
           effort: rt.effort,
           fallbackModel: agentRow?.fallback_model ?? [],
-          prompt: buildPrompt(step, wf, vars),
+          prompt: buildPrompt(step, wf, { ...vars, ...read.vars }),
           cwd: config.workspace,
           logPath,
           budget,
@@ -303,15 +365,37 @@ export function createEngine(deps: {
       const wf = workflow(workflowKey);
       const companyId = await repo.ensureCompany(config.company ?? "Scyne");
       const agent = await repo.getAgentByKey(companyId, wf.assignee);
+      const title = wf.title
+        ? interpolate(wf.title, params)
+        : `${wf.label} — ${params.project ?? ""}`.trim();
       return repo.createIssue({
-        companyId, title: `${wf.label} — ${params.project ?? ""}`.trim(),
+        companyId, title,
         workflowKey, params, assigneeAgentId: agent?.id ?? null, status: "todo",
       });
     },
 
     advance,
 
-    async decideGate(gateId, status, note, by) {
+    /**
+     * Resume an issue that has stopped. `advance()` deliberately returns
+     * immediately for a `blocked` issue — otherwise a failing step would spin —
+     * so a human-initiated retry has to clear the block first. `step_index` is
+     * left exactly where it was: the blocked step is the one worth re-running,
+     * and rewinding further would duplicate an agent run that already
+     * succeeded.
+     */
+    async retry(issueId) {
+      const issue = await repo.getIssue(issueId);
+      if (!issue) throw new Error(`unknown issue ${issueId}`);
+      if (issue.status === "done") {
+        throw new Error(`issue ${issue.identifier} is already done — nothing to retry`);
+      }
+      if (issue.status === "blocked") await repo.updateIssue(issueId, { status: "todo" });
+      await advance(issueId);
+    },
+
+    async decideGate(gateId, status, note, by, opts) {
+      const shouldAdvance = opts?.advance !== false;
       const gate = await repo.getGate(gateId);
       if (!gate) throw new Error(`unknown gate ${gateId}`);
       await repo.decideGate(gateId, status, note ?? null, by ?? "orchestrator");
@@ -332,13 +416,19 @@ export function createEngine(deps: {
         let i = issue.step_index;
         while (i > 0 && wf.steps[i]?.type !== "agent") i--;
         await repo.updateIssue(gate.issue_id, { stepIndex: i, status: "todo" });
-        return;
+        // Rewinding without advancing left the issue parked at `todo` forever:
+        // nothing else in the system watches for one. The approve branch below
+        // has always advanced; a rejection is no different in that respect, and
+        // the chatbot's Reject and Request-changes buttons both depend on it.
+        if (shouldAdvance) await advance(gate.issue_id);
+        return { issueId: gate.issue_id };
       }
 
       const issue = await repo.getIssue(gate.issue_id);
       if (!issue) throw new Error(`unknown issue ${gate.issue_id}`);
       await repo.updateIssue(gate.issue_id, { stepIndex: issue.step_index + 1, status: "in_progress" });
-      await advance(gate.issue_id);
+      if (shouldAdvance) await advance(gate.issue_id);
+      return { issueId: gate.issue_id };
     },
 
     /**

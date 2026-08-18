@@ -54,8 +54,6 @@ uses them as the house-style reference (per artefact) and falls back to
 `./examples/` for anything not covered — let the skill read them; you don't
 need to handle this specially.
 
-Default if unspecified: `project=SADA`, `feature=interim-benefit`.
-
 ## Doing the work
 
 Read every file already staged under

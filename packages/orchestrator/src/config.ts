@@ -5,7 +5,15 @@ import type { Runner } from "./core/runner.js";
 export type Step =
   | { type: "exec";   cmd: string; cwd?: string; timeoutMs?: number }
   | { type: "agent";  agent?: string; phase: string; skill?: string; prompt?: string;
-                      adapter?: string; model?: string; effort?: Effort }
+                      adapter?: string; model?: string; effort?: Effort;
+                      /**
+                       * Variable name → workspace-relative path template. Each
+                       * file is read at step time and made available to
+                       * `prompt` as `{name}`. Every entry is required: a
+                       * missing file blocks the issue rather than silently
+                       * handing the agent an empty revision base.
+                       */
+                      reads?: Record<string, string> }
   | { type: "attach"; files: string[] }
   | { type: "gate";   title: string; summary?: string }
   | { type: "flow";   workflow: string; params?: Record<string, unknown> };
@@ -17,6 +25,15 @@ export interface WorkflowDef {
   key: string;
   label: string;
   assignee: string;          // agent key
+  /**
+   * Issue-title template, interpolated with the issue's params. Optional: the
+   * default is `<label> — <project>`, which is wrong for any workflow scoped
+   * more finely than a project — a feature workflow needs the feature in its
+   * title or every issue for one client looks identical in the console.
+   * Consumer-supplied rather than inferred, because the library has no concept
+   * of a "feature".
+   */
+  title?: string;
   steps: Step[];
 }
 
@@ -118,6 +135,14 @@ export function validateConfig(c: OrchestratorConfig): string[] {
         }
         if (s.effort && !EFFORTS.includes(s.effort)) {
           problems.push(`workflow '${w.key}' step ${i}: effort '${s.effort}' — must be one of ${EFFORTS.join(", ")}`);
+        }
+        for (const [name, tpl] of Object.entries(s.reads ?? {})) {
+          if (!tpl) problems.push(`workflow '${w.key}' step ${i}: reads['${name}'] has an empty path`);
+          // `workspace` and `issueId` are injected by the engine on every step;
+          // a reads entry by either name would shadow them silently.
+          if (name === "workspace" || name === "issueId") {
+            problems.push(`workflow '${w.key}' step ${i}: reads['${name}'] shadows a reserved variable`);
+          }
         }
       }
       if (s.type === "flow" && !wfKeys.has(s.workflow)) {

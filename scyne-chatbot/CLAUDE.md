@@ -213,7 +213,7 @@ GEMINI_MODEL=gemini-2.5-flash
 GEMINI_TRANSCRIBE_MODEL=gemini-2.5-flash       # optional
 GEMINI_LIVE_MODEL=models/gemini-2.5-flash-native-audio-latest  # optional
 
-PAPERCLIP_API_URL=http://127.0.0.1:3100/api
+ORCHESTRATOR_API_URL=http://127.0.0.1:3100
 # Company + agent IDs are NOT in .env — the server reads them from
 # <workspace>/.bootstrap/ids.json, written by `npm run bootstrap`.
 

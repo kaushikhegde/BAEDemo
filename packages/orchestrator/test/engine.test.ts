@@ -105,7 +105,7 @@ describe("engine", () => {
     expect((await repo.listGates(issue.id)).length).toBe(0);
   });
 
-  it("rewinds to the generating step when a gate is rejected", async () => {
+  it("rewinds to the generating step when a gate is rejected, and regenerates without a second call", async () => {
     mkdirSync(join(dir, "outputs"), { recursive: true });
     writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
     const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
@@ -115,12 +115,42 @@ describe("engine", () => {
     const gate = (await repo.listGates(issue.id))[0];
     await engine.decideGate(gate.id, "rejected", "wrong personas", "tagari");
 
+    // Rewinding alone left the issue parked at `todo` forever: nothing else in
+    // the system watches for it, so both the chatbot's Reject and its
+    // Request-changes buttons were dead ends. decideGate advances after a
+    // rejection exactly as it always has after an approval.
+    expect(calls.filter(c => c === "run").length).toBe(2);   // generate ran again
     const i = await repo.getIssue(issue.id);
-    expect(i?.status).toBe("todo");
-    expect(i?.step_index).toBe(1);                   // back to the agent step
+    expect(i?.status).toBe("in_review");                     // back at a fresh gate
+    const gates = await repo.listGates(issue.id);
+    expect(gates.filter(g => g.status === "pending").length).toBe(1);
+    expect(gates.filter(g => g.status === "rejected").length).toBe(1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((await repo.listComments(issue.id)).map((c: any) => c.body).join("\n"))
       .toContain("wrong personas");
+  });
+
+  it("retry() restarts a blocked issue from the step that blocked it", async () => {
+    // No outputs/ written, so the attach step blocks on a missing file.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+    expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
+
+    // Fix the cause, then retry.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    await engine.retry(issue.id);
+
+    expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
+    expect((await repo.listWorkProducts(issue.id)).length).toBe(1);
+  });
+
+  it("retry() refuses an issue that is already done", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await repo.updateIssue(issue.id, { status: "done" });
+    await expect(engine.retry(issue.id)).rejects.toThrow(/done/);
   });
 
   it("records the run with its usage", async () => {
@@ -183,6 +213,84 @@ describe("engine", () => {
 
     expect(seen[0].model).toBe("claude-sonnet-4-6");  // from the agent
     expect(seen[0].effort).toBe("xhigh");             // from the step
+  });
+
+  it("uses the workflow's title template when it has one", async () => {
+    const c = config(dir);
+    c.workflows[0].title = "{project} / {feature} — Requirements";
+    const engine = createEngine({ repo, config: c, exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    expect(issue.title).toBe("P / F — Requirements");
+  });
+
+  it("reads files into the agent's prompt", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    writeFileSync(join(dir, "outputs/previous.md"), "the previous version {not-a-placeholder}");
+
+    const prompts: string[] = [];
+    const capturing = { run: async (req: { prompt: string }) => { prompts.push(req.prompt); return {
+      exitCode: 0, status: "succeeded" as const, stderrTail: "",
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0,
+               costUsd: 0, durationMs: 1, numTurns: 1, sessionId: "s" } }; } };
+
+    const c = config(dir, capturing);
+    c.workflows[0].steps[1] = {
+      type: "agent", phase: "revise",
+      reads: { previous: "outputs/previous.md" },
+      prompt: "Change: {instruction}\n---\n{previous}\n---",
+    };
+
+    const engine = createEngine({ repo, config: c, exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F", instruction: "add SLA field" });
+    await engine.advance(issue.id);
+
+    expect(prompts[0]).toContain("Change: add SLA field");
+    // Substituted content is inserted literally and never re-scanned, which is
+    // what makes injecting a JSON artefact full of braces safe.
+    expect(prompts[0]).toContain("the previous version {not-a-placeholder}");
+  });
+
+  it("blocks, naming the file, when a reads target is missing", async () => {
+    const c = config(dir);
+    c.workflows[0].steps[1] = {
+      type: "agent", phase: "revise",
+      reads: { previous: "outputs/{feature}/nope.md" },
+      prompt: "{previous}",
+    };
+    const engine = createEngine({ repo, config: c, exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const after = await repo.getIssue(issue.id);
+    expect(after?.status).toBe("blocked");
+    const comments = await repo.listComments(issue.id);
+    expect(comments[comments.length - 1].body).toContain("previous");
+    expect(comments[comments.length - 1].body).toContain("outputs/F/nope.md");
+    expect(calls.filter(c2 => c2 === "run").length).toBe(0);   // never spawned the agent
+    expect(await repo.listRuns(issue.id)).toHaveLength(0);     // and left no mystery run row
+  });
+
+  it("appends the issue params to an explicit prompt", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const prompts: string[] = [];
+    const capturing = { run: async (req: { prompt: string }) => { prompts.push(req.prompt); return {
+      exitCode: 0, status: "succeeded" as const, stderrTail: "",
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0,
+               costUsd: 0, durationMs: 1, numTurns: 1, sessionId: "s" } }; } };
+    const c = config(dir, capturing);
+    c.workflows[0].steps[1] = { type: "agent", phase: "generate", prompt: "Do the thing for {project}." };
+
+    const engine = createEngine({ repo, config: c, exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F", confluenceSpace: "SADA" });
+    await engine.advance(issue.id);
+
+    expect(prompts[0]).toContain("Do the thing for P.");
+    // An explicit prompt still reaches optional params — a publish step needs
+    // the space key, and a {placeholder} for it would throw on every run that
+    // omits it.
+    expect(prompts[0]).toContain("confluenceSpace: SADA");
   });
 
   it("blocks with a clear message when an agent's adapter is not registered", async () => {

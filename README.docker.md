@@ -1,3 +1,11 @@
+> **Out of date — this stack still builds Paperclip.**
+>
+> The local workflow no longer uses Paperclip: `npm run dev` runs
+> `@scyne/orchestrator` on :3100 with its console at `/orch` (see `CLAUDE.md`).
+> Everything below still describes the old architecture, and `make up` will bring
+> that up rather than what runs locally. Porting the compose stack to
+> `orch serve` is not done.
+
 # Running the whole Scyne system in Docker
 
 One `docker compose` stack brings up everything: Postgres, Paperclip (with the

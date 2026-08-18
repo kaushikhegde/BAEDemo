@@ -148,6 +148,9 @@ async function main(): Promise<void> {
     const orch = await createOrchestrator(await loadConfig());
     const app = express();
     app.use(express.json());
+    // Standalone: the console is the product's face, so `/` goes there. When the
+    // router is embedded in a consumer's app, `/` stays the consumer's.
+    app.get("/", (_req, res) => { res.redirect("/orch"); });
     app.use(createRouter(orch));
 
     const port = Number(flag("port") ?? 3100);
@@ -157,6 +160,7 @@ async function main(): Promise<void> {
     console.log(`  GET  /health        liveness + db check`);
     console.log(`  GET  /openapi.json  this contract, as JSON`);
     console.log(`  GET  /docs          self-contained API reference`);
+    console.log(`  GET  /orch          the operator console`);
 
     const shutdown = (): void => {
       void orch.close().finally(() => process.exit(0));
@@ -166,7 +170,24 @@ async function main(): Promise<void> {
     return;   // the listening server keeps the process alive from here
   }
 
-  const orch = await createOrchestrator(await loadConfig());
+  // PGlite allows exactly one writer. When `npm run dev` (or `orch serve`) holds
+  // `.orchestrator/pgdata`, every CLI verb fails on the lock — a raw lock error
+  // reads like corruption, so name the cause and the way round it.
+  let orch: Orchestrator;
+  try {
+    orch = await createOrchestrator(await loadConfig());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/lock|LOCK|EAGAIN|already in use|resource busy/i.test(msg)) {
+      throw new Error(
+        `the database is held by another process — PGlite allows one writer.\n` +
+        `  If \`npm run dev\` or \`orch serve\` is running, use the HTTP API instead:\n` +
+        `    curl -s http://127.0.0.1:3100/issues | head\n` +
+        `  Otherwise stop that process and retry.\n\n  (${msg})`);
+    }
+    throw err;
+  }
+
   try {
     switch (verb) {
       case "seed": {

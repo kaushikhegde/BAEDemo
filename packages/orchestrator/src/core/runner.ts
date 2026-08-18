@@ -250,6 +250,22 @@ export function createClaudeRunner(opts: { bin?: string } = {}): Runner {
               });
             });
 
+            // CRITICAL 3. A child that exits BEFORE reading its stdin turns
+            // this write into EPIPE — and `claude` does exactly that whenever
+            // it fail-fasts: a missing --system-prompt-file, an unknown flag, a
+            // bad model id. Without a handler, EPIPE is an unhandled 'error'
+            // event on a Socket, which by Node's default terminates the ENTIRE
+            // orchestrator process — killing every other in-flight run, and the
+            // HTTP server with them, to report one bad spawn. Observed live: a
+            // revision step against an agent whose bundle file did not exist
+            // took down the whole CLI with a bare `write EPIPE` and no issue
+            // comment, no run row and no clue.
+            //
+            // Swallowed rather than surfaced because it carries no information
+            // the caller does not already get: the child's exit code and its
+            // stderr ("System prompt file not found: …") arrive on 'close'
+            // below, which resolves the run as `failed` with the real reason.
+            child.stdin.on("error", () => { /* reported via 'close' */ });
             child.stdin.write(req.prompt);
             child.stdin.end();
 

@@ -24,11 +24,10 @@ import path from "node:path";
 
 export const LEVEL = { PROJECT: "project", FEATURE: "feature" };
 
-// `agentKey` on each stage is the bootstrap spec key, which is also how
-// .bootstrap/ids.json keys its `org` map. That lets the chatbot assign a
-// single-worker flow STRAIGHT to its worker instead of routing it through the
-// Delivery Lead — which cost 2-3 extra agent wakes per flow, each re-reading
-// the Delivery Lead's 10k-token instructions to do nothing but create one child.
+// `agentKey` on each stage is the agent key in `orchestrator.config.ts`'s org
+// chart — the same string the compiled workflow names as its assignee, and the
+// same one the orchestrator addresses the agent by. There is no id indirection
+// any more: the key IS the address.
 
 // Folders under a feature (or project) that are OUTPUT, not source material.
 // Never staged as discovery documents, never converted to markdown.

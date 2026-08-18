@@ -8,7 +8,10 @@ import path from "node:path";
 import http from "node:http";
 import { WebSocketServer, WebSocket as WSWebSocket } from "ws";
 import { chat } from "./llm.js";
-import { paperclip } from "./paperclip.js";
+// The local binding stays `paperclip` on purpose: 33 call sites below, none
+// of which needed to change when the backend did. Renaming it and swapping
+// the backend in one pass would be two bugs wearing one coat.
+import { orchestrator as paperclip } from "./orchestrator.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
@@ -288,16 +291,18 @@ async function countProjectDocs(project: string): Promise<{ md: number; other: n
  * input validation duplicated the 409 gate these endpoints already apply
  * before the issue is created at all.
  *
- * Falls back to the Delivery Lead when the worker cannot be resolved — an
- * unhired agent is missing from ids.json entirely, and degrading to the old
- * routing beats failing the request.
+ * Under the orchestrator the assignee is decided by the workflow itself, so
+ * this is now only about the human-readable `worker` label the chat replies
+ * with. `agentId()` returns the key it is given, so the fallback branch below
+ * is unreachable for any stage that declares an `agentKey` — it stays for a
+ * stage that declares none.
  */
 function ownerFor(stageKey: string): { assignee: string | undefined; worker: string; direct: boolean } {
   const def = (pipeline.STAGES as Record<string, any>)[stageKey];
   const id = def?.agentKey ? paperclip.agentId(def.agentKey) : null;
   if (!id) {
     if (def?.agentKey) {
-      console.warn(`[dispatch] no hired id for '${def.agentKey}' — routing ${stageKey} via the Delivery Lead. Run: npm run bootstrap`);
+      console.warn(`[dispatch] stage '${stageKey}' has no agentKey in pipeline.mjs — the workflow's own assignee still applies.`);
     }
     return { assignee: undefined, worker: def?.agent ?? "the owning specialist", direct: false };
   }
@@ -629,6 +634,15 @@ app.get("/api/status/:issueId", async (req, res) => {
   try {
     const id = req.params.issueId;
     const tree = await paperclip.getIssueTree(id);
+    if (!tree) {
+      // A session id from a previous database — every Paperclip-era id is one.
+      // 404 with a stable code so the frontend can clear it and start over,
+      // instead of retrying a dead id every three seconds forever.
+      return res.status(404).json({
+        error: "unknown_issue",
+        message: "That workflow no longer exists. Starting a new session.",
+      });
+    }
 
     // Flatten all comments + approvals + work-products from parent + descendants
     const flatIssues: any[] = [];
@@ -1381,7 +1395,8 @@ app.post("/api/project/bootstrap", async (req, res) => {
     // Straight to the worker. The Delivery Lead's whole contribution to this
     // flow was sequencing two children, which the single run now does itself.
     const owner = paperclip.agentId("capArchitect") ?? undefined;
-    if (!owner) console.warn("[project/bootstrap] capArchitect not in ids.json — falling back to the Delivery Lead");
+    // The orchestrator's `baseline` workflow names its own assignee; this is
+    // passed for the chat's reply text only.
     const issue = await paperclip.createIssue(`Generate project baseline — ${project}`, description, owner);
     res.json(issue);
   } catch (e: any) {

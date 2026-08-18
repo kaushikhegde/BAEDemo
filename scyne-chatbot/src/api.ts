@@ -30,7 +30,15 @@ export async function postTrigger(overrides: Record<string, string> = {}) {
 
 export async function getStatus(issueId: string) {
   const r = await fetch(`/api/status/${issueId}`);
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body?.message || (await r.text().catch(() => r.statusText)));
+    // Carried so the caller can tell "this workflow is gone, forget it" from
+    // "the backend is down, keep retrying" — they need opposite handling.
+    (err as any).status = r.status;
+    (err as any).code = body?.error;
+    throw err;
+  }
   return r.json();
 }
 

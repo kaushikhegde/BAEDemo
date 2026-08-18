@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Single source of truth for the workspace root (the requirement-generator repo
-// that holds projects/, outputs/, generated-apps/, .bootstrap/ids.json).
+// that holds projects/, outputs/, generated-apps/, .orchestrator/).
 //
 // NEVER hardcode an absolute path here. This code runs on client machines whose
 // home directory is not the developer's — a baked-in /Users/<dev>/... fallback

@@ -319,3 +319,34 @@ describe.skipIf(!process.env.ORCH_E2E)("createClaudeRunner (real claude, costs m
     rmSync(dir, { recursive: true, force: true });
   }, 120_000);
 });
+
+describe("runner: a child that dies before reading stdin", () => {
+  it("resolves as failed instead of crashing the process with EPIPE", async () => {
+    // The real failure this pins: `claude` fail-fasts on a missing
+    // --system-prompt-file, exits before reading stdin, and the runner's
+    // `child.stdin.write(prompt)` then raises EPIPE on a Socket with no error
+    // handler — which, being an unhandled 'error' event, took down the WHOLE
+    // orchestrator process rather than failing one run. Reproduced live
+    // against a real missing bundle before this test was written.
+    const dir = mkdtempSync(join(tmpdir(), "orch-epipe-"));
+    try {
+      const runner = createClaudeRunner({ bin: fakeClaudeBin });
+      const res = await runner.run({
+        ...base,
+        // A large prompt makes the write far more likely to still be in flight
+        // when the child goes away, which is what triggers EPIPE rather than a
+        // silently-discarded write.
+        prompt: "x".repeat(200_000),
+        cwd: dir,
+        logPath: join(dir, "run.jsonl"),
+        agent: { key: "ba", extraArgs: ["--die-immediately"] },
+      });
+
+      expect(res.status).toBe("failed");
+      expect(res.exitCode).toBe(1);
+      expect(res.stderrTail).toContain("System prompt file not found");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

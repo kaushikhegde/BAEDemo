@@ -14,6 +14,12 @@
 //                        confirm only stdout feeds extractUsage().
 //   "fail"            — exit 1 with no result event, to exercise the
 //                        "failed" (not over_budget) status path.
+//   (exit-first)      — the binary exits immediately, WITHOUT reading stdin,
+//                        when argv contains --die-immediately. This is what
+//                        the real `claude` does when --system-prompt-file
+//                        points at a missing file: it fails fast, before any
+//                        network call, and the runner's write to its stdin
+//                        then raises EPIPE.
 //   "fail-with-usage" — emit the same valid result as "ok" on stdout, but
 //                        exit 1 — a completed run that ALSO breaches a
 //                        caller-supplied budget, for the over_budget-vs-failed
@@ -65,6 +71,11 @@ const tick = () => new Promise((r) => setImmediate(r));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let input = "";
+if (process.argv.includes("--die-immediately")) {
+  process.stderr.write("System prompt file not found: /nope/missing.md\n");
+  process.exit(1);
+}
+
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => { input += d; });
 process.stdin.on("end", async () => {

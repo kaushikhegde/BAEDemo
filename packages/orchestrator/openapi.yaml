@@ -147,6 +147,36 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /agents/{key}/bundle:
+    get:
+      operationId: getAgentBundle
+      summary: The agent's system-prompt bundle, read from disk
+      description: >-
+        Returns the file named by the agent's `bundlePath`, read fresh on every
+        request. An agent that declares no bundle returns `path: null` and empty
+        content; an agent whose declared file cannot be read returns the path,
+        empty content and an `error` — that state is a finding, not a 404, since
+        it is what makes the runtime fail on the next run.
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      responses:
+        "200":
+          description: The bundle path and its contents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, content]
+                properties:
+                  path:    { type: [string, "null"] }
+                  content: { type: string }
+                  error:   { type: string }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /runners:
     get:
       operationId: listRunners
@@ -281,6 +311,40 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /issues/{id}/advance:
+    post:
+      operationId: advanceIssue
+      summary: Resume a parked or blocked issue from its current step
+      description: >-
+        Clears a `blocked` status and advances the workflow from wherever it
+        stopped. Returns immediately — the run continues in the background, so
+        poll `GET /issues/{id}` for progress. This is also what a rejected gate
+        does automatically; the endpoint exists for the cases a human drives:
+        retrying a step that blocked on a missing file, or nudging an issue
+        after fixing the thing that stopped it.
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      responses:
+        "202":
+          description: Accepted — the engine is advancing the issue in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  issueId: { type: string }
+        "400":
+          description: The issue is already done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No issue has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /issues/{id}/comments:
     get:
       operationId: listIssueComments
@@ -361,9 +425,11 @@ paths:
       operationId: approveGate
       summary: Approve a pending gate and resume the workflow
       description: >-
-        Advances the issue's step index past the gate and calls
-        `engine.advance()` — the next step (typically a `publish` phase)
-        runs before this responds if it completes quickly.
+        Records the decision and advances the issue's step index past the gate,
+        then resumes the workflow IN THE BACKGROUND and responds immediately.
+        The next step is typically a `publish` phase, which runs an agent for
+        minutes — a response that waited for it would time out on a click that
+        actually worked. Poll `GET /issues/{id}` for what happens next.
       parameters:
         - $ref: "#/components/parameters/GateId"
       requestBody:
@@ -373,14 +439,16 @@ paths:
             schema: { $ref: "#/components/schemas/GateDecisionInput" }
             example: { note: "Ship it.", by: "tagari" }
       responses:
-        "200":
-          description: Approved
+        "202":
+          description: Accepted — decision recorded, the workflow resumes in the background
           content:
             application/json:
               schema:
                 type: object
-                required: [ok]
-                properties: { ok: { type: boolean } }
+                required: [ok, issueId]
+                properties:
+                  ok:      { type: boolean }
+                  issueId: { type: string }
         "404":
           description: No gate has this id
           content:
@@ -390,12 +458,14 @@ paths:
   /gates/{id}/reject:
     post:
       operationId: rejectGate
-      summary: Reject a pending gate and rewind to the generating step
+      summary: Reject a pending gate and regenerate from the generating step
       description: >-
         Rewinds the issue to the last `agent` step at or before the gate —
-        rejection means "the generated output was wrong", so the natural
-        resume point is the step that generated it, and the issue is set
-        back to `todo` there rather than re-raising the same gate.
+        rejection means "the generated output was wrong", so the natural resume
+        point is the step that generated it rather than the gate. The
+        regeneration then runs IN THE BACKGROUND and this responds immediately;
+        a rejected artefact comes back to a fresh gate on its own. Poll
+        `GET /issues/{id}`.
       parameters:
         - $ref: "#/components/parameters/GateId"
       requestBody:
@@ -405,14 +475,16 @@ paths:
             schema: { $ref: "#/components/schemas/GateDecisionInput" }
             example: { note: "Wrong personas — regenerate.", by: "tagari" }
       responses:
-        "200":
-          description: Rejected
+        "202":
+          description: Accepted — decision recorded, the regeneration runs in the background
           content:
             application/json:
               schema:
                 type: object
-                required: [ok]
-                properties: { ok: { type: boolean } }
+                required: [ok, issueId]
+                properties:
+                  ok:      { type: boolean }
+                  issueId: { type: string }
         "404":
           description: No gate has this id
           content:
@@ -572,6 +644,21 @@ paths:
                         label:    { type: string }
                         assignee: { type: string }
                         steps:    { type: integer }
+
+  /orch:
+    get:
+      operationId: getConsole
+      summary: The operator console — one self-contained HTML page
+      description: >-
+        Inline CSS and JS, zero network requests, themed from the consumer's
+        `config.theme`. Tabs for runs (with live transcripts), issues, pending
+        gates with approve/reject, the org chart, spend and config.
+      responses:
+        "200":
+          description: The console
+          content:
+            text/html:
+              schema: { type: string }
 
   /openapi.json:
     get:

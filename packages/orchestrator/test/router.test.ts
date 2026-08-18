@@ -260,15 +260,20 @@ describe("router", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ note: "Ship it.", by: "tagari" }),
     });
-    expect(approveRes.status).toBe(200);
-    expect(await approveRes.json()).toEqual({ ok: true });
+    // 202, not 200: the decision is durable before the response goes out, but
+    // the resume runs in the background — awaiting it would hold the connection
+    // open for a whole publish step.
+    expect(approveRes.status).toBe(202);
+    expect((await approveRes.json()).ok).toBe(true);
 
     // The 2-step workflow (agent, gate) has nothing left after the gate.
-    const after = await fetch(`${baseUrl}/issues/${issue.id}`).then(r => r.json());
-    expect(after.status).toBe("done");
+    await vi.waitFor(async () => {
+      const after = await fetch(`${baseUrl}/issues/${issue.id}`).then(r => r.json());
+      expect(after.status).toBe("done");
+    });
   });
 
-  it("a rejected gate rewinds the issue to todo at the generating step", async () => {
+  it("a rejected gate rewinds to the generating step and regenerates", async () => {
     const { issue } = await createAndSettle();
     const gates = await fetch(`${baseUrl}/issues/${issue.id}/gates`).then(r => r.json());
 
@@ -276,11 +281,31 @@ describe("router", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ note: "Wrong personas." }),
     });
-    expect(rejectRes.status).toBe(200);
+    expect(rejectRes.status).toBe(202);
 
-    const after = await fetch(`${baseUrl}/issues/${issue.id}`).then(r => r.json());
-    expect(after.status).toBe("todo");
-    expect(after.step_index).toBe(0);
+    // A rejection used to leave the issue at `todo` with nothing watching for
+    // it — a dead end for both Reject and Request-changes. It now regenerates
+    // (in the background) and comes back to a fresh gate.
+    await vi.waitFor(async () => {
+      const after = await fetch(`${baseUrl}/issues/${issue.id}`).then(r => r.json());
+      expect(after.status).toBe("in_review");
+      expect(after.step_index).toBe(1);
+    });
+    const now = await fetch(`${baseUrl}/issues/${issue.id}/gates`).then(r => r.json());
+    expect(now.filter((g: { status: string }) => g.status === "pending")).toHaveLength(1);
+    expect(now.filter((g: { status: string }) => g.status === "rejected")).toHaveLength(1);
+  });
+
+  it("POST /issues/:id/advance resumes an issue, and 404s for an unknown one", async () => {
+    const { issue } = await createAndSettle();
+
+    const res = await fetch(`${baseUrl}/issues/${issue.id}/advance`, { method: "POST" });
+    expect(res.status).toBe(202);
+    expect((await res.json()).ok).toBe(true);
+
+    const missing = await fetch(
+      `${baseUrl}/issues/11111111-1111-4111-8111-111111111111/advance`, { method: "POST" });
+    expect(missing.status).toBe(404);
   });
 
   it("lists runs for an issue and for its agent, and serves the log and transcript", async () => {
@@ -370,3 +395,23 @@ describe("router", () => {
     expect(html).not.toMatch(/@import|https?:\/\/|url\(/);
   });
 });
+
+describe("router: console and bundles", () => {
+  it("serves the console at /orch", async () => {
+    const res = await fetch(`${baseUrl}/orch`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("Orchestrator");
+    expect(body).not.toMatch(/<script[^>]+src=/);
+  });
+
+  it("serves an agent's bundle, and 404s for an unknown agent", async () => {
+    const declaredNone = await (await fetch(`${baseUrl}/agents/ba/bundle`)).json();
+    expect(declaredNone.path).toBe(null);     // the test org declares no bundlePath
+    expect(declaredNone.content).toBe("");
+
+    expect((await fetch(`${baseUrl}/agents/nope/bundle`)).status).toBe(404);
+  });
+});
+

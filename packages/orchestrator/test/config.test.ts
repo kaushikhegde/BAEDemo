@@ -34,6 +34,15 @@ describe("config", () => {
     expect(validateConfig(bad as any)[0]).toMatch(/reportsTo 'nobody'/);
   });
 
+  it("rejects a reads entry that shadows a reserved variable or has no path", () => {
+    const bad = { ...base, workflows: [{ ...base.workflows[0], steps: [
+      { type: "agent" as const, phase: "revise", reads: { workspace: "a.md", previous: "" } },
+    ] }] };
+    const problems = validateConfig(bad as any);
+    expect(problems.some(p => p.includes("shadows a reserved variable"))).toBe(true);
+    expect(problems.some(p => p.includes("empty path"))).toBe(true);
+  });
+
   it("rejects a duplicate agent key", () => {
     const bad = { ...base, org: [{ key: "ba", name: "BA" }, { key: "ba", name: "BA2" }] };
     expect(validateConfig(bad as any)[0]).toMatch(/duplicate agent key 'ba'/);

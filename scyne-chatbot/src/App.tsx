@@ -365,6 +365,16 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         getRuns(parentIssueId).then((r) => { if (!cancelled) setRuns(r); }).catch(() => {});
       } catch (e: any) {
         if (cancelled) return;
+        if (e?.status === 404 || e?.code === "unknown_issue") {
+          // The stored workflow is gone — a saved session from a previous
+          // database. Forget it rather than retrying a dead id every three
+          // seconds; the panel resets to its empty state.
+          setParentIssueId(null);
+          setStatus(null);
+          setStatusError(null);
+          setRuns([]);
+          return;
+        }
         // Keep the last good status on screen if we had one; otherwise this lets
         // the panel show an error instead of skeletons forever. Polling retries.
         setStatusError(e?.message ? String(e.message).slice(0, 200) : "Couldn't reach the workflow service.");

@@ -8,6 +8,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { filterRunLog } from "../core/transcript.js";
@@ -17,6 +18,7 @@ import type {
 } from "../core/repo.js";
 import { resolveTheme } from "./theme.js";
 import { createDocsHandlers } from "./docs.js";
+import { renderConsole } from "./console.js";
 import type { createOrchestrator } from "../index.js";
 
 /**
@@ -35,11 +37,13 @@ export const ROUTES = [
   { method: "GET",   path: "/agents/{key}" },
   { method: "PATCH", path: "/agents/{key}" },   // adapter · model · effort · fallbackModel · budget
   { method: "GET",   path: "/agents/{key}/runs" },
+  { method: "GET",   path: "/agents/{key}/bundle" },
   { method: "GET",   path: "/runners" },        // registered adapters
   { method: "POST",  path: "/issues" },
   { method: "GET",   path: "/issues" },
   { method: "GET",   path: "/issues/{id}" },
   { method: "PATCH", path: "/issues/{id}" },
+  { method: "POST",  path: "/issues/{id}/advance" },
   { method: "GET",   path: "/issues/{id}/comments" },
   { method: "POST",  path: "/issues/{id}/comments" },
   { method: "GET",   path: "/issues/{id}/work-products" },
@@ -52,6 +56,7 @@ export const ROUTES = [
   { method: "GET",   path: "/runs/{id}/transcript" },
   { method: "GET",   path: "/usage" },
   { method: "GET",   path: "/config" },
+  { method: "GET",   path: "/orch" },
   { method: "GET",   path: "/openapi.json" },
   { method: "GET",   path: "/docs" },
 ] as const;
@@ -183,6 +188,27 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, rows);
   }));
 
+  /**
+   * The agent's system prompt as it will actually be handed to the runtime.
+   * Read from disk on every request rather than cached: editing a bundle and
+   * re-reading it is the loop this endpoint exists to serve.
+   */
+  r.get("/agents/:key/bundle", wrap(async (req, res) => {
+    const key = pathParam(req.params.key);
+    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    if (!agent) { notFound(res, `agent '${key}'`); return; }
+    if (!agent.bundle_path) { ok(res, { path: null, content: "" }); return; }
+    try {
+      ok(res, { path: agent.bundle_path, content: readFileSync(resolve(orch.config.workspace, agent.bundle_path), "utf8") });
+    } catch (err) {
+      // Not a 404: the agent exists and declares a bundle. The missing file IS
+      // the finding — it is the exact state that makes Claude Code fail with
+      // "System prompt file not found" on the next run, and (before the runner
+      // learned to handle EPIPE) took the whole process down with it.
+      ok(res, { path: agent.bundle_path, content: "", error: err instanceof Error ? err.message : String(err) });
+    }
+  }));
+
   r.get("/runners", wrap(async (_req, res) => {
     ok(res, Object.keys(orch.config.adapters));
   }));
@@ -243,6 +269,23 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, updated);
   }));
 
+  /**
+   * Resume a parked or blocked issue. Fire-and-forget with a 202 for the same
+   * reason POST /issues is: a resumed workflow re-runs an agent step, which
+   * takes tens of minutes — holding the request open would time out every
+   * proxy between here and the browser. Poll GET /issues/{id} for progress.
+   */
+  r.post("/issues/:id/advance", wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    const issue = await orch.repo.getIssue(id);
+    if (!issue) { notFound(res, `issue '${id}'`); return; }
+    if (issue.status === "done") { badRequest(res, `issue ${issue.identifier} is already done`); return; }
+    orch.engine.retry(id).catch((err: unknown) => {
+      console.error(`[orchestrator] retry(${id}) failed:`, err);
+    });
+    res.status(202).json({ ok: true, issueId: id });
+  }));
+
   r.get("/issues/:id/comments", wrap(async (req, res) => {
     ok(res, await orch.repo.listComments(pathParam(req.params.id)));
   }));
@@ -271,23 +314,28 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
 
   // ---- gates ------------------------------------------------------------
 
-  r.post("/gates/:id/approve", wrap(async (req, res) => {
+  /**
+   * Both decisions record synchronously and resume in the BACKGROUND. Awaiting
+   * the resume would hold the connection open for the whole of the next agent
+   * step — a publish on approve, a full regeneration on reject, tens of minutes
+   * either way — so the browser would see a timeout on a click that actually
+   * worked. The decision itself is durable before the response goes out; poll
+   * GET /issues/{id} for what happens next.
+   */
+  const decide = (status: "approved" | "rejected") => wrap(async (req: Request, res: Response) => {
     const id = pathParam(req.params.id);
     const gate = await orch.repo.getGate(id);
     if (!gate) { notFound(res, `gate '${id}'`); return; }
     const { note, by } = (req.body ?? {}) as { note?: string; by?: string };
-    await orch.engine.decideGate(id, "approved", note, by);
-    ok(res, { ok: true });
-  }));
+    const { issueId } = await orch.engine.decideGate(id, status, note, by, { advance: false });
+    orch.engine.advance(issueId).catch((err: unknown) => {
+      console.error(`[orchestrator] advance(${issueId}) after ${status} failed:`, err);
+    });
+    res.status(202).json({ ok: true, issueId });
+  });
 
-  r.post("/gates/:id/reject", wrap(async (req, res) => {
-    const id = pathParam(req.params.id);
-    const gate = await orch.repo.getGate(id);
-    if (!gate) { notFound(res, `gate '${id}'`); return; }
-    const { note, by } = (req.body ?? {}) as { note?: string; by?: string };
-    await orch.engine.decideGate(id, "rejected", note, by);
-    ok(res, { ok: true });
-  }));
+  r.post("/gates/:id/approve", decide("approved"));
+  r.post("/gates/:id/reject", decide("rejected"));
 
   // ---- runs ---------------------------------------------------------------
 
@@ -373,6 +421,9 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   // ---- docs -----------------------------------------------------------------
 
   const { openapiHandler, docsHandler } = createDocsHandlers(() => resolveTheme(orch.config.theme));
+  r.get("/orch", (_req: Request, res: Response) => {
+    res.type("html").send(renderConsole(resolveTheme(orch.config.theme)));
+  });
   r.get("/openapi.json", openapiHandler);
   r.get("/docs", docsHandler);
 

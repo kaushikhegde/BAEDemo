@@ -82,7 +82,7 @@ round-trip to the specialist that owns the artefact, which revises rather than
 regenerates, raises its own approval gate, and on approval updates the existing
 Confluence page rather than creating a second one.
 
-The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't do the work itself — it orchestrates through **Paperclip**, which runs the Scyne agent org on the local machine via Claude Code. The **Delivery Lead** is the single orchestrator: it routes each request by title prefix to the owning worker — **BA** (requirements), **Data Modeler** (data model), **Architecture Lead** (solution design), and **Developer** → **UX Auditor** (UI build). Every worker raises its own human approval gate; the data-model/solution-design/requirements stages then publish to Atlassian themselves. The Data Modeler reports to the Architecture Lead on the org chart; the Architecture Lead, BA, Developer and UX Auditor all sit under the Delivery Lead's dispatch.
+The user drives everything from a Scyne-branded chatbot UI. The chatbot does not do the work itself — it posts a workflow to the orchestrator, which runs the agent org on the local machine via Claude Code. Every stage raises its own human approval gate, and the stages that publish do so after it. See **How it runs** below.
 
 > **Mermaid → PNG for Confluence:** all Mermaid diagrams (Product Summary flow, data model ER, solution-design flow) are rendered to **PNG** locally via `npx -y @mermaid-js/mermaid-cli` and embedded with `<ac:image>` before publishing. PNG (not SVG) is used deliberately — Confluence renders PNG inline reliably, whereas SVG attachments often show only as a download link.
 >
@@ -99,93 +99,147 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't 
 > Symptom when this is skipped: the page publishes with its diagrams **silently
 > missing** — not broken images, simply absent.
 
-## The agent flow
+## How it runs
 
-The user drives everything from a Scyne-branded chatbot UI. The chatbot doesn't
-do the work itself — it orchestrates through **Paperclip**, which runs the Scyne
-agent org on the local machine via Claude Code. The **Delivery Lead** is the
-single orchestrator: it routes each request by title prefix to the owning worker.
+The user drives everything from a Scyne-branded chatbot UI. The chatbot does not
+do the work itself — it posts a **workflow** to **`@scyne/orchestrator`**
+(`packages/orchestrator/`), which runs the Scyne agent org on the local machine
+via Claude Code.
 
-```
-chatbot UI
-   │
-   │  ── PROJECT level ────────────────────────────────────────────────────
-   │  POST /api/projects                  create the folder tree + definition + branding
-   │  POST /api/upload/project            client-wide documents → markdown on arrival
-   │  POST /api/project/bootstrap         → "Set up project — <project>"
-   │  POST /api/capability-map/trigger    → "Generate capability map — <project>"
-   │  POST /api/personas/trigger          → "Generate personas — <project>"
-   │  POST /api/ui-agent/trigger          → "Build UI — <project>"
-   │
-   │  ── FEATURE level ────────────────────────────────────────────────────
-   │  POST /api/features                  scaffold one feature
-   │  POST /api/trigger                   → "Generate requirements — …"
-   │  POST /api/ui-mockups/trigger        → "Generate UI mockups — …"
-   │  POST /api/data-model/trigger        → "Generate data model — …"
-   │  POST /api/solution-architecture/trigger → "Generate solution architecture — …"
-   │  POST /api/test-cases/trigger        → "Generate test cases — …"
-   │  POST /api/solution-design/trigger   → "Generate solution design — …"   (optional)
-   │
-   │  ── EITHER level ─────────────────────────────────────────────────────
-   │  POST /api/revise                    → "Revise <artefact> — …"
-   │
-   │  (each creates a top-level Paperclip issue, status=todo, assigned to the Delivery Lead)
-   ▼
-Delivery Lead — routes by title prefix
-   │
-   ├─ "Set up project — <project>"           → RETIRED. The chatbot now assigns
-   │     "Generate project baseline — <project>" straight to the Capabilities
-   │     Process Architect, which runs BOTH skills in ONE pass. A legacy issue
-   │     with the old title is forwarded as a single child.
-   │
-   ├─ "Generate project baseline — <project>" → Capabilities Process Architect  [PROJECT]
-   │     Runs capability-process-map, THEN persona-journey-map, in ONE wake.
-   │     Still sequential (journey stages align to the L1 lifecycle phases) —
-   │     but sequencing INSIDE one session, so the discovery documents are read
-   │     once rather than twice (~45k input tokens), there is ONE approval gate,
-   │     and the companion app renders once. On approval it publishes BOTH
-   │     Confluence pages itself.
-   ├─ "Generate capability map — <project>"  → Capabilities Process Architect   [PROJECT]
-   ├─ "Generate personas — <project>"        → Service Designer                 [PROJECT]
-   ├─ "Generate requirements — …"            → BA                               [feature]
-   ├─ "Generate UI mockups — …"              → UX Designer                      [feature]
-   ├─ "Generate data model — …"              → Data Modeler                     [feature]
-   ├─ "Generate solution architecture — …"   → Solution Architect               [feature]
-   ├─ "Generate test cases — …"              → QA Architect                     [feature]
-   ├─ "Generate solution design — …"         → Architecture Lead                [feature]
-   ├─ "Revise <artefact> — …"                → the artefact's owner             [either]
-   └─ "Build UI — <project>"                 → Developer, then UX Auditor       [PROJECT]
+There is no Delivery Lead routing layer any more, and no Paperclip. A workflow
+names its own assignee, so the chatbot's title is mapped straight to a workflow
+key and the engine takes it from there.
+
+```bash
+npm run dev          # orchestrator on :3100 (console at /orch), chatbot on :5173
 ```
 
-Every worker runs **two phases**: Phase 1 stages its inputs, runs its skill,
-attaches work-products and raises a human approval gate; Phase 2 (after the human
-approves) publishes to Confluence/Jira if that artefact publishes at all, then
-closes. One pass per wake — agents EXIT after their phase's work is done.
+| | |
+|---|---|
+| **Console** | `http://127.0.0.1:3100/orch` — runs with live transcripts, issues, pending gates with approve/reject, org chart, spend, config, health |
+| **API docs** | `http://127.0.0.1:3100/docs` — generated from `openapi.yaml`, which is diffed against the router in both directions by a test |
+| **Chatbot** | `http://127.0.0.1:5173` |
 
-**Staging is shared with the CLI.** Every worker's Phase 1 step 2 is now
-`node scripts/stage.mjs <project> ["<feature>"] <stage>` rather than hand-rolled
-`find`/`cp`. That is the same code path `npm run stage` uses, so the agent and the
-CLI cannot drift on what an input is.
+### The workflow engine
+
+Everything is a **workflow**: an ordered list of steps against one issue. Five
+step types, and they are the whole vocabulary:
+
+| Step | Does |
+|---|---|
+| `exec` | runs a shell command (staging, validators, the companion-app render). Non-zero exit blocks the issue with the stderr tail as a comment |
+| `agent` | runs one Claude Code process with a system-prompt bundle and a prompt. `reads` pulls named files into the prompt as `{variables}` |
+| `attach` | records the stage's outputs as work-products. A missing file blocks **before** any gate is raised — a human is never asked to approve output that was not produced |
+| `gate` | raises the human approval gate and parks |
+| `flow` | spawns a child workflow. Present but unused: parent-resume-on-child-completion is not implemented |
+
+The engine owns every status transition (`todo → in_progress → in_review →
+done/blocked`) and parks at anything waiting on a human. One issue, one workflow,
+one gate per artefact.
+
+**Workflows are compiled, not hand-written.** `orchestrator.workflows.ts` turns
+each stage in `scripts/pipeline.mjs` into:
+
+```
+exec  stage.mjs   →  agent  generate  →  exec  validator  →  attach  →  gate
+                                                    →  agent  publish  →  exec  render app
+```
+
+so adding a stage to the pipeline graph adds its workflow for free. Eighteen
+exist: nine `<stage>`, eight `revise-<stage>`, and `baseline`.
+
+> **Paths are level-relative.** `produces[]` in `pipeline.mjs` is relative to the
+> stage's OWN level root — `projects/<p>/` for a project stage,
+> `projects/<p>/<feature>/` for a feature stage. Resolving a feature stage's
+> outputs against the workspace root is what blocked a completed run during the
+> prototype: the agent had written every file correctly and the attach step was
+> looking one directory tree too high.
+
+### Agents
+
+Twelve, addressed **by key** (`ba`, `dataModeler`, `capArchitect`, …) — there are
+no hired UUIDs and no `ids.json`. The org chart in `orchestrator.config.ts` is the
+source of truth and is reconciled into the database on every boot.
+
+Each worker's system prompt is `agent-instructions/<agent>.thin.md` — domain only.
+No API calls, no status transitions, no phase detection, no idempotency markers:
+the engine does all of it. `mcpEnabled` is granted only to the agents that
+publish.
+
+### Publishing
+
+Publishing is an `agent` step **after** the gate, not a second phase the agent
+detects it is in. It runs exactly once because `step_index` moves past it — which
+is what deleted the marker-comment protocol the old bundles carried.
+
+The publish prompt is generated per stage and always says: check the space
+exists (never create it), render Mermaid to PNG locally, upload with
+`scripts/confluence-attach.mjs`, then record the page id in
+`projects/<project>/.published.json` so a later revision updates that page
+instead of creating a second one.
+
+### What the chatbot posts
+
+Same endpoints as before; the mapping to workflows happens in
+`scyne-chatbot/server/orchestrator.ts`.
+
+```
+POST /api/project/bootstrap            → baseline
+POST /api/capability-map/trigger       → capabilities
+POST /api/personas/trigger             → personas
+POST /api/trigger                      → requirements
+POST /api/ui-mockups/trigger           → ui
+POST /api/data-model/trigger           → datamodel
+POST /api/solution-architecture/trigger→ architecture
+POST /api/test-cases/trigger           → qa
+POST /api/solution-design/trigger      → design
+POST /api/ui-agent/trigger             → app
+POST /api/revise                       → revise-<stage>
+```
+
+That mapping parses a generated markdown description, which nothing type-checks.
+`npm run check:routing` asserts every title and description shape routes to the
+right workflow with the right params — run it after touching either file.
+
+**Staging is shared with the CLI.** Every workflow's first step is
+`node scripts/stage.mjs <project> ["<feature>"] <stage>` — the same code path
+`npm run stage` uses, so the agent and the CLI cannot drift on what an input is.
 
 ### The revision flow
 
-A `Revise <artefact> — …` issue carries an `instruction:` block — the reviewer's
-change, **verbatim**. The Delivery Lead routes on the artefact name to the same
-owner as the matching Generate flow, copying the instruction through unaltered.
-The worker then:
+A revision hands the owning agent its own previous output plus the reviewer's
+instruction, verbatim, and asks for a small diff.
 
-1. stages its inputs as for a fresh run;
-2. reads its **own previous output** and passes it to the skill as the previous
-   version, so the skill enters its **Revision mode** — preserve everything the
-   instruction does not touch, apply the change and its genuine consequences,
-   append a `## Revision History` entry;
-3. raises a fresh approval gate;
-4. on approval, **updates the existing Confluence page** using
-   `projects/<project>/.published.json` for page identity, rather than creating a
-   second page.
+`revise-<stage>` is a workflow like any other, with one difference: its `agent`
+step declares
+
+```ts
+reads: { previous: "projects/{project}/{feature}/solutions/DataModel/outputs/salesforce-data-model.md" }
+```
+
+so the file's contents arrive in the prompt as `{previous}`. The skill enters its
+**Revision mode**: preserve everything the instruction does not touch, apply the
+change and its genuine consequences, append a `## Revision History` entry. On
+approval the publish step **updates** the existing Confluence page, using
+`projects/<project>/.published.json` for page identity.
+
+A missing `previous` file blocks the issue **before** the agent is spawned,
+naming the variable and the resolved path — a revision with nothing to revise is
+a caller error, not a model task, and it leaves no zero-token mystery run behind.
 
 The discipline is a small diff. A regenerate-from-scratch produces a diff too
 large for a reviewer to check, which defeats the gate.
+
+### Rejecting and retrying
+
+Rejecting a gate rewinds to the step that generated the artefact and
+**regenerates on its own** — the decision is recorded synchronously and the
+resume runs in the background, so the click returns immediately (202) rather
+than holding the connection open for the length of a run.
+
+A blocked issue is restarted with `POST /issues/:id/advance`, from the console's
+Resume button or the chatbot's Request-changes path. It resumes at the step that
+blocked; steps that already succeeded are not re-run.
 
 ### Staleness
 
@@ -260,8 +314,8 @@ requirement-generator/                         workspace root (cwd for all agent
 
 ├── datamodel-reference/    STATIC global Salesforce PSS / Social-Insurance object
 │                           catalogue — seeds each feature's datamodel-reference/
-├── skills/                 registered company skills — source of truth, registered with
-│   │                       Paperclip by the bootstrap
+├── skills/                 the company's skills — source of truth. Symlinked into
+│   │                       .claude/skills/ by `npm run link-skills`
 │   ├── capability-process-map/SKILL.md          (project)
 │   ├── persona-journey-map/SKILL.md             (project)
 │   ├── requirement-generator/SKILL.md           (feature)
@@ -275,12 +329,14 @@ requirement-generator/                         workspace root (cwd for all agent
 │   └── mockups/<feature>/          one page per screen + index.html
 ├── examples/               gold-standard reference docs — house style for the BA; the
 │                           FALLBACK when a project has no requirements/templates/
-├── agent-instructions/     per-agent AGENTS.md JSON payloads ({path, content}), pushed
-│                           to Paperclip via API. Round-trip them as markdown with
-│                           `node scripts/sync-bundles.mjs export|import <dir>`.
+├── agent-instructions/     one <agent>.thin.md per worker — domain-only system prompts,
+│                           read from disk at spawn time. legacy/ holds the retired
+│                           Paperclip-era JSON bundles.
+├── orchestrator.config.ts  org chart · adapters · budgets · workflows
+├── orchestrator.workflows.ts  compiles scripts/pipeline.mjs into workflows
 ├── docs/superpowers/specs/ design specs
 ├── scyne-chatbot/          the React + Vite + Express chatbot — see its own CLAUDE.md
-└── (Paperclip is installed separately on the host, outside this repo)
+└── packages/orchestrator/  @scyne/orchestrator — the engine, HTTP API and console
 ```
 
 ### Read-down: what a feature sees of its project
@@ -319,73 +375,116 @@ it means a project whose documents all live under features keeps working with no
 manual migration. Deduplicate by what the organisation does, not by feature: a
 capability exercised in three features is ONE capability citing all three.
 
-## IDs and configuration
+## Configuration
 
-**The live agent IDs are written to `.bootstrap/ids.json` by `npm run bootstrap`** (the chatbot reads `companyId` + `deliveryLeadAgentId` from there; the full `org` map exposes every role by spec key). The values below are the *placeholder* IDs baked into `agent-instructions/pm.json` — the bootstrap string-replaces them with the freshly-hired IDs before pushing the Delivery Lead's bundle, so they never need to be the real IDs by hand:
+`orchestrator.config.ts` is the whole of it — the org chart, the adapter
+registry, the defaults, and the workflows compiled from `scripts/pipeline.mjs`.
+It is reconciled into the database on **every** boot, so the file is the source
+of truth and cannot drift from what is running.
 
-| Field                 | Placeholder in pm.json (swapped at bootstrap)                  |
-| --------------------- | -------------------------------------------------------------- |
-| Company               | resolved at bootstrap (`companyId` in `.bootstrap/ids.json`) — **never hard-code it**, a re-bootstrapped Paperclip hires a new `Scyne` company with a fresh UUID |
-| Delivery Lead  | resolved at bootstrap (`org.pm` in `.bootstrap/ids.json`)             |
-| BA | `7561c779-5c3f-4e3a-9dc2-0f13eb1851ec`                          |
-| Data Modeler | `ddddddd1-dddd-4ddd-8ddd-dddddddddddd` (reports to the Architecture Lead) |
-| Capabilities Process Architect | `ccccccc1-cccc-4ccc-8ccc-cccccccccccc` (reports to the Architecture Lead) |
-| Solution Architect | `bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb` (reports to the Architecture Lead) |
-| QA Architect | `eeeeeee1-eeee-4eee-8eee-eeeeeeeeeeee` (reports to the Business Lead) |
-| Service Designer | `fffffff1-ffff-4fff-8fff-ffffffffffff` (reports to the Architecture Lead) |
-| UX Designer | `9999999a-9999-4999-8999-999999999999` (reports to the Architecture Lead) |
-| Architecture Lead | `aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa` (reports to the Delivery Lead) |
-| Developer           | `f19feb64-3ccd-42b2-b0b7-f9dfe7273a94` (dispatched by the Delivery Lead)          |
-| UX Auditor            | `43a9e518-99c5-4916-8b91-3ff89e0c00ba` (dispatched by the Delivery Lead)          |
+There are no agent UUIDs to keep in sync, no placeholder swap, and no
+`.bootstrap/ids.json` — all of that belonged to Paperclip's hire flow and is
+gone. Agents are addressed by key:
 
-The Delivery Lead dispatches every worker (one child issue each, routed by title prefix). Org-chart reporting: BA → Business Lead; QA Architect → Business Lead; Data Modeler, Capabilities Process Architect, Solution Architect, Service Designer, UX Designer, Developer, UX Auditor → Architecture Lead per `scripts/bootstrap.mjs`. The human approval gate between stages is what QAs each output — not the leads. The placeholder IDs (`ddddddd1-…`, `aaaaaaa1-…`, `ccccccc1-…`, `9999999a-…`) are added to `OLD_IDS` in `scripts/bootstrap.mjs` and swapped exactly like the BA/Developer/UX placeholders — the bootstrap throws if a placeholder survives the swap, so `OLD_IDS` and `pm.json` must stay in sync.
+| Key | Agent | Bundle | MCP |
+|---|---|---|---|
+| `ceo` / `pm` / `businessLead` | CEO, Delivery Lead, Business Lead | — | — |
+| `archLead` | Architecture Lead | `architect-lead.thin.md` | yes |
+| `ba` | BA | `ba.thin.md` | yes |
+| `qaArchitect` | QA Architect | `qa-architect.thin.md` | yes |
+| `capArchitect` | Capabilities Process Architect | `capabilities-process-architect.thin.md` | yes |
+| `serviceDesigner` | Service Designer | `service-designer.thin.md` | yes |
+| `dataModeler` | Data Modeler | `data-modeler.thin.md` | yes |
+| `solutionArchitect` | Solution Architect | `solution-architect.thin.md` | yes |
+| `uxDesigner` | UX Designer | `ux-designer.thin.md` | no |
+| `ui` | Developer | `ui.thin.md` | no |
 
-In normal operation you don't hand-edit IDs — `npm run bootstrap` hires everything, swaps the placeholder IDs in `pm.json`, and writes `.bootstrap/ids.json`. If you change the placeholder UUIDs themselves (the values in `OLD_IDS` in `scripts/bootstrap.mjs` must match the ones written in `agent-instructions/pm.json`), keep both in sync. The Delivery Lead dispatches the BA, Data Modeler, Architecture Lead, Capabilities Process Architect, Developer, and UX Auditor — all six placeholder IDs are baked into `pm.json` and swapped at bootstrap.
+The Delivery Lead, CEO and Business Lead exist for the org chart only — no
+workflow assigns to them, because a routing layer that reads a title to create
+one child issue is what the workflow key replaced.
 
-## Paperclip (the orchestrator)
+**Budgets** are a ceiling, not a target: 2M tokens / $15 / 45 minutes per agent
+run. The one measured requirements run took 25 minutes and $3.19. A run that
+breaches the duration limit is killed (SIGTERM, then SIGKILL); token and cost
+limits are checked once the final `result` event lands and flag the run
+`over_budget`.
 
-- Paperclip is cloned/installed separately on the host (location varies per machine — e.g. a sibling directory). It is **not** part of this repo; don't assume any absolute path to it.
-- Runs locally at `http://127.0.0.1:3100` in `local_trusted (private)` deployment mode.
-- API base: `http://127.0.0.1:3100/api`.
-- **No authentication is required for any local API call.** Every request from localhost is automatically treated as the `local-board` user with admin rights. Do NOT add `Authorization` headers. Do NOT look for `PAPERCLIP_API_KEY`. This is the most common source of confusion — agent instructions all start with a reminder about this.
-- The `requirement-generator` skill is a **registered company skill** — reference it by name (`requirement-generator`), never by filesystem path. Its source ships in this repo at `./skills/requirement-generator/SKILL.md` (project-relative); the bootstrap registers it with Paperclip, which materialises it into each agent's skills home automatically. Do NOT go looking for it under any Paperclip clone path.
-- Start Paperclip per its own README (commonly `pnpm dev` in the Paperclip clone). Embedded PostgreSQL boots automatically.
+**Storage** is PGlite at `.orchestrator/pgdata`, with raw run logs as JSONL at
+`.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
 
-### Key Paperclip endpoints used by the chatbot
+## The orchestrator (`packages/orchestrator/`)
 
-| Method | Path                                              | Purpose                                           |
-| ------ | ------------------------------------------------- | ------------------------------------------------- |
-| POST   | `/api/companies/:companyId/issues`                | Create the parent issue, assigned to the Delivery Lead           |
-| GET    | `/api/issues/:id`                                 | Read parent issue state                           |
-| GET    | `/api/companies/:companyId/issues?parentId=…`     | List child issues (no `/issues/:id/children` GET) |
-| GET    | `/api/issues/:id/approvals`                       | Read approval gates                                |
-| GET    | `/api/issues/:id/comments`                        | Read comments (the activity feed)                  |
-| GET    | `/api/issues/:id/work-products`                   | Read attached artefacts                            |
-| POST   | `/api/approvals/:id/approve`                      | Resolve an approval gate                           |
-| POST   | `/api/approvals/:id/reject`                       | Reject an approval gate                            |
-| POST   | `/api/agents/:id/wakeup`                          | Force-wake an agent (rarely needed; `status=todo` auto-wakes) |
-| PUT    | `/api/agents/:id/instructions-bundle/file`        | Upload AGENTS.md for an agent                      |
+A standalone library — this repo is its first consumer, which is the discipline
+that keeps it generic: nothing under `packages/orchestrator/` may import
+`scripts/pipeline.mjs`, `orchestrator.config.ts`, or anything under `projects/`.
+
+```
+src/core/    db · repo · engine · runner · usage · transcript · interpolate
+src/http/    router · console · docs · theme
+src/cli.ts   seed · run · status · gate · runs · log · serve
+```
+
+### CLI
+
+```bash
+npm run orch -- seed                                     # reconcile the org chart
+npm run orch -- run <workflow> --project P [--feature F] # start and advance
+npm run orch -- status <SCY-7|uuid>                      # comments, work products, gates
+npm run orch -- gate list | approve <id> | reject <id> --note "…"
+npm run orch -- runs <SCY-7>                             # agent, phase, duration, tokens, cost
+npm run orch -- log <runId> [--raw]                      # the transcript
+npm run serve                                            # HTTP + console on :3100
+```
+
+Any `--key value` after the workflow name becomes a workflow param, so
+`--confluenceSpace SADA` reaches the publish prompt without a code change.
+
+### HTTP API
+
+`GET /health` · `/agents` · `/agents/{key}` (PATCH) · `/agents/{key}/runs` ·
+`/agents/{key}/bundle` · `/runners` · `POST /issues` · `GET /issues` ·
+`/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · `/issues/{id}/comments`
+(POST) · `/issues/{id}/work-products` · `/issues/{id}/gates` ·
+`POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
+`/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · `/config` · `/orch` ·
+`/openapi.json` · `/docs`.
+
+`openapi.yaml` is diffed against the router's `ROUTES` table **in both
+directions** by `test/openapi.test.ts`: every route must be documented and every
+documented route must exist. Adding a route means editing both.
 
 ### Gotchas
 
-- **Issue status must be `todo` to auto-fire** the assignee agent. `backlog` (the default if you don't pass `status`) is invisible to agent inboxes. Always set `status: "todo"` when creating issues for agents.
-- **Children listing** has no dedicated endpoint; query `?parentId=…` on the company-level issue list.
-- **Approval titles + descriptions live in `payload.title` / `payload.summary`**, not on the approval object. The Paperclip approval entity is `{id, type, status, payload, decisionNote, decidedByUserId, decidedAt, ...}` — `payload` is the human-facing content.
-- **Heartbeats stay disabled per agent** (`runtimeConfig.heartbeat.enabled = false`). We wake agents via status transitions and `POST /agents/:id/wakeup` — not via a background polling loop. The server-side heartbeat service picks up queued runs within ~30s.
-- **Force a fresh Claude session** with `{"forceFreshSession": true}` in the wakeup body if an agent is stuck on a stale conclusion from a previous run.
+- **PGlite is single-writer.** One process owns `.orchestrator/pgdata`. While
+  `npm run dev` or `orch serve` is up, CLI verbs fail on the lock — the CLI says
+  so and points at the HTTP API. This is by design, not a bug to work around.
+- **Gate decisions and `POST /issues` return 202 and resume in the background.**
+  A resumed workflow runs an agent step for tens of minutes; a response that
+  waited for it would time out on a click that actually worked. Poll
+  `GET /issues/{id}`.
+- **A declared-but-missing agent bundle** makes Claude Code fail fast with
+  `System prompt file not found`, before any network call. The run is recorded
+  `failed` with that stderr — but check `GET /agents/{key}/bundle`, which reports
+  the missing path rather than 404ing.
+- **`.claude/skills/` must be symlinked** or every agent run dies with
+  `Unknown skill: <slug>`. `npm run link-skills`. `.claude/` is gitignored, so a
+  fresh clone always needs it.
+- **Orphan recovery runs once, at startup.** A run with no `finished_at` is
+  marked `orphaned` and its issue returned to `todo`. It must never be wired to a
+  timer — `listUnfinishedRuns()` has no age filter, so running it mid-flight
+  would kill a live run.
 
 ## The Skills
 
 Eight registered company skills live under `./skills/<slug>/SKILL.md`. Each worker
-invokes its skill **by name** (never by path); the bootstrap's `ensureCompanySkills`
-registers them with Paperclip from these files. To edit a skill, change its
-`SKILL.md` here and re-run the bootstrap so Paperclip re-registers the updated
-content. **`npm run bootstrap` symlinks them into `.claude/skills/` automatically** —
-the agents run Claude Code with `cwd` at the workspace root and it discovers skills
-from there, so a clone that skipped this used to hire a correct org whose agents then
-failed with `Unknown skill: <slug>`. `npm run link-skills` does the same thing on its
-own, so they can be
-run in a plain Claude Code session too.
+invokes its skill **by name** (never by path). Claude Code discovers them from
+`.claude/skills/`, so each one is symlinked there by **`npm run link-skills`** —
+symlinks, not copies, because a copy silently drifts from the source (this had
+already happened once: a stale 157-line copy of a 199-line skill). `.claude/` is
+gitignored, so every fresh clone needs that command, and a clone that skips it
+fails every run with `Unknown skill: <slug>`.
+
+Editing a skill is editing its `SKILL.md` — there is nothing to re-register.
 
 **Every skill has a `## Revision mode` section.** When the invocation supplies a
 previous version plus a change instruction, the skill preserves everything the
@@ -614,33 +713,35 @@ Project-scope, configured in `.mcp.json` at the workspace root:
 }
 ```
 
-The BA's adapter is configured with `extraArgs: ["--mcp-config", "<AGENT_CWD>/.mcp.json"]` where `<AGENT_CWD>` is the agent's working directory (this repo's root on the host). The bootstrap sets this automatically from `AGENT_CWD`, so it's never a fixed absolute path. This lets Claude Code in the BA's headless subprocess load this MCP. (Without `--mcp-config`, project-scope MCPs require interactive trust approval which can't happen in `--print` mode.)
+The runner passes `--mcp-config <workspace>/.mcp.json --strict-mcp-config` for any agent with `mcpEnabled: true`, and omits both for everyone else. Without `--mcp-config`, a project-scope MCP needs interactive trust approval, which cannot happen in `--print` mode. `--strict-mcp-config` keeps an agent from inheriting whatever MCPs the developer happens to have configured at user scope.
 
 OAuth tokens for `mcp-remote` are cached in `~/.mcp-auth/` at user scope. The same user runs Claude Code interactively and inside the BA's subprocess, so tokens are shared.
 
 ## Common operations
 
-### Re-apply agent instructions after editing them
+### Edit an agent's instructions
 
-The simplest path is to **re-run `npm run bootstrap`** — it re-pushes every bundle (and swaps the pm.json placeholder IDs). For a single agent, PUT its bundle directly using the **live** id from `.bootstrap/ids.json` (`org.<key>`):
+Edit `agent-instructions/<agent>.thin.md`. That is the whole procedure — the file
+is read from disk when the agent is spawned, so the next run picks it up. Nothing
+to push, no bundle to re-upload, no ids to look up.
+
+Check what an agent will actually be handed:
 
 ```bash
-# Look up live ids first
-cat .bootstrap/ids.json | jq '.org'
-
-# Then push one bundle (substitute the live id for the agent's org key)
-curl -sS -X PUT \
-  http://127.0.0.1:3100/api/agents/<live-id>/instructions-bundle/file \
-  -H "Content-Type: application/json" \
-  -d @agent-instructions/pm.json
+curl -s http://127.0.0.1:3100/agents/dataModeler/bundle | python3 -m json.tool
 ```
 
-Bundles: `pm.json` (org.pm / Delivery Lead), `ba.json` (org.ba), `data-modeler.json` (org.dataModeler), `architect-lead.json` (org.archLead), `capabilities-process-architect.json` (org.capArchitect), `solution-architect.json` (org.solutionArchitect), `qa-architect.json` (org.qaArchitect), `service-designer.json` (org.serviceDesigner), `ui.json` (org.ui), `ux-auditor.json` (org.ux). Note `pm.json` must have its placeholder IDs swapped for the real report IDs before pushing — the bootstrap does this automatically, so prefer re-running it when pm.json changes.
+or open the console's Org tab and click **instructions**.
 
-### Run a skill locally, without Paperclip
+The retired Paperclip-era JSON bundles are archived at
+`agent-instructions/legacy/`. They are the only remaining record of the old Phase
+2 publishing protocol, which the generated publish prompts were derived from —
+which is why they were archived rather than deleted.
+
+### Run a skill locally, without the orchestrator
 
 The skills are ordinary Claude Code skills — you can invoke one directly in a
-session at the workspace root, with no Paperclip, no chatbot and no agent. Two
+session at the workspace root, with no orchestrator, no chatbot and no agent. Two
 things have to be true first:
 
 **1. Discovery.** Claude Code reads `.claude/skills/<slug>/SKILL.md`, not
@@ -649,8 +750,6 @@ not survive a fresh clone):
 
 ```bash
 npm run link-skills        # symlinks every ./skills/<slug> into .claude/skills/
-                           # (npm run bootstrap already does this — only needed if
-                           #  you add a skill and don't want to re-bootstrap)
 ```
 
 Symlinks, not copies — a copy silently drifts from the registered source. (This
@@ -886,32 +985,40 @@ project's own folder names (`solutions`, `documents`, `design`, `original-files`
 `outputs`). A feature by one of those names would be unreachable from the CLI and
 would appear as a feature in the target picker.
 
-### Create a fresh test run from CLI
-
-Read both IDs from `.bootstrap/ids.json` rather than pasting a UUID — they change
-every time Paperclip is re-bootstrapped, and a stale company id silently returns
-an empty list instead of erroring. Single-worker flows assign straight to their
-worker (`org.<agentKey>`); only `Set up project` and `Build UI` go to the
-Delivery Lead.
+### Start a run from the CLI
 
 ```bash
-COMPANY=$(jq -r .companyId .bootstrap/ids.json)
-ASSIGNEE=$(jq -r .org.ba .bootstrap/ids.json)     # the BA owns the requirements flow
-
-curl -sS -X POST http://127.0.0.1:3100/api/companies/$COMPANY/issues \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"title\": \"Generate requirements — Review & Verify Evidence\",
-    \"description\": \"project: SADA\nfeature: interim-benefit\n…(parameters as plain text block)…\",
-    \"assigneeAgentId\": \"$ASSIGNEE\",
-    \"status\": \"todo\",
-    \"priority\": \"medium\"
-  }"
+npm run orch -- run requirements --project SADA --feature interim-benefit \
+  --confluenceSpace SADA --jiraProjectKey SADA
 ```
 
-### Tail what an agent is doing
+Every `--key value` after the workflow name becomes a workflow param and reaches
+the agent's prompt, so a stage needing extra context needs no code change. The
+command starts the issue and advances it as far as it will go — which is to the
+first gate — and prints the gate id and the command to approve it.
 
-Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-manager/runs`) in the browser — Paperclip's UI shows live transcripts of every run, with each tool call and result.
+While `npm run dev` is running, use the HTTP API instead (PGlite is
+single-writer):
+
+```bash
+curl -sS -X POST http://127.0.0.1:3100/issues -H 'Content-Type: application/json' \
+  -d '{"workflow":"requirements","params":{"project":"SADA","feature":"interim-benefit","confluenceSpace":"SADA"}}'
+```
+
+### Watch what an agent is doing
+
+Open `http://127.0.0.1:3100/orch#runs` and click any run — the transcript
+streams tool calls, skill invocations and assistant text, filtered and with
+secrets scrubbed, polling every 3 seconds until the run finishes. The chatbot's
+Live Transcript pane shows the same thing from the same endpoint.
+
+From the terminal:
+
+```bash
+npm run orch -- runs SCY-7          # one line per run: agent, phase, duration, tokens, cost
+npm run orch -- log <runId>         # filtered transcript
+npm run orch -- log <runId> --raw   # the raw JSONL, byte for byte
+```
 
 ## Helper scripts (`scripts/`)
 
@@ -923,7 +1030,7 @@ Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-m
   once is what stops them diverging. Paths carry an explicit `scope`
   (`project`/`feature`), because a feature stage routinely depends on a project
   artefact.
-- `scripts/stage.mjs <project> [<feature>] <stage>` — the local, Paperclip-free
+- `scripts/stage.mjs <project> [<feature>] <stage>` — the local, agent-free
   path, and the one the agents now call in Phase 1. Converts source documents to
   markdown first, stages the project's material down (or every feature's up, for a
   project stage), refuses a stage whose hard prerequisite is missing while naming
@@ -953,10 +1060,11 @@ Open `http://127.0.0.1:3100/SCY/agents/business-analyst/runs` (or `…/project-m
   > both files.
 - `scripts/migrate-to-project-level.mjs [<project>] [--apply] [--force]` — one-shot
   migration for a project created before the restructure. See above.
-- `scripts/sync-bundles.mjs export|import <dir>` — round-trips the agent
-  instruction bundles between their `{path, content}` JSON and one `.md` per
-  agent. The JSON stays the source of truth in git; this exists because editing a
-  whole AGENTS.md crammed into one JSON string is how they get corrupted.
+- `scripts/sync-bundles.mjs export|import <dir>` — **retired with Paperclip.** It
+  round-tripped the agent bundles between their `{path, content}` JSON and one
+  `.md` per agent, because editing a whole AGENTS.md crammed into a JSON string
+  is how they got corrupted. The bundles are now plain `.thin.md` files, so there
+  is nothing to round-trip. Kept only for reading `agent-instructions/legacy/`.
 - `scripts/validate-experience.mjs <project>` — the contract guard for
   `personas.json` + `journey-map.json`: required fields, unique IDs, `avatarColor`
   in the app's palette, satisfaction scores as integers 1–5, no semicolons in
@@ -1066,20 +1174,29 @@ with the registry, the registry wins.
 
 ## When something feels off
 
-| Symptom                                                  | Likely cause                                                                    | Fix                                                                                                                            |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Agent says "PAPERCLIP_API_KEY not set"                   | Claude misread Paperclip auth — local_trusted needs no key                      | Re-emphasise in the agent's AGENTS.md that no auth is required; force fresh session via `{"forceFreshSession": true}` on wake. |
-| Agent loops searching for an MCP / tool                  | Stale session, or `--mcp-config` not set on adapter                             | Add `extraArgs: ["--mcp-config", "<abs path to .mcp.json>"]` on the agent's `adapterConfig`. Force fresh session.                |
-| Agent doesn't pick up a new issue                        | Issue created with `status=backlog` (the default)                               | Always pass `status: "todo"` when creating issues assigned to agents.                                                          |
-| `<tool_use_error>Unknown skill: <slug></tool_use_error>` mid-run | **Most often: `.claude/skills/` was never populated on this clone.** Claude Code discovers skills there, not from `./skills/`, and `.claude/` is gitignored. `npm run bootstrap` now creates the symlinks itself. | Re-run `npm run bootstrap` (or `npm run link-skills`), then confirm `ls -l .claude/skills` shows one symlink per skill. |
-| `Unknown skill` persisting after the links exist | The skill is a registered **company** skill but was never **granted** to that agent. `desiredSkills` used to be sent only at hire, so an agent hired before its spec gained a skill never got it — and re-bootstrapping renamed/re-parented it while silently leaving the grant behind. | Re-run `npm run bootstrap`: skill grants now converge on the PATCH as well as at hire. Verify with `GET /api/companies/<id>/skills` (is the slug registered?) and the agent's own skills. If the build rejects grants on PATCH, bootstrap warns and you must re-hire that agent. |
-| Delivery Lead does the work itself instead of delegating to the BA  | Stale Delivery Lead Claude session carrying a prior "do it myself" conclusion, or agents never (re)bootstrapped after a code/instructions change. Verified May 2026: on a clean `npm run bootstrap` the Delivery Lead correctly creates a BA child and the BA raises the approval gate — the delegation path is sound. | Re-run `npm run bootstrap` (re-pushes instructions, sets `cwd`), then force a fresh Delivery Lead session on the next wake with `{"forceFreshSession": true}`. Confirm the Delivery Lead's `adapterConfig.cwd` points at this repo and `instructionsFilePath` is set (`GET /api/agents/<delivery-lead-id>`). |
-| Chatbot shows "undefined" for a parameter                | Frontend reading old field name                                                 | Search for the renamed field across `src/`; rebuild the tool schema response handler if needed.                                |
-| `/api/features` returns `{}`                             | `projects/` folder missing, or `WORKSPACE_PATH` env var pointing elsewhere      | `mkdir projects/<project>/<feature>/...`, restart dev server.                                                                  |
-| Atlassian MCP OAuth fails with "Supported sites required" | Logged-in Atlassian account has no Jira/Confluence site                         | Switch accounts, or create a free Atlassian Cloud trial site, then re-run `claude mcp add atlassian -- npx -y mcp-remote …`.    |
-| Published Confluence page has no diagrams (or `403 Current user not permitted to use Confluence` / `401 scope does not match` on upload) | The agent tried to attach the PNGs with the MCP OAuth token, which has **no attachment scope** — and/or aimed a 3LO token at the site domain instead of `api.atlassian.com` | The agent must upload with `node scripts/confluence-attach.mjs <pageId> <files…>`, which uses `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env`. Confirm that token is set and its user can edit the space. Re-authorising the MCP will NOT add the scope. |
-| Refresh loses the workflow                                | `localStorage.scyne_parent_issue_id` cleared                                    | Click the workflow status panel's "New session" button to start over; otherwise it should restore automatically.               |
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `<tool_use_error>Unknown skill: <slug></tool_use_error>` mid-run | `.claude/skills/` was never populated on this clone. Claude Code discovers skills there, not from `./skills/`, and `.claude/` is gitignored. | `npm run link-skills`, then confirm `ls -l .claude/skills` shows one symlink per skill. |
+| Agent run fails instantly with `System prompt file not found` | The agent's `bundlePath` in `orchestrator.config.ts` names a file that is not there. | `curl -s localhost:3100/agents/<key>/bundle` — it reports the missing path rather than 404ing. Create the bundle or clear the path. |
+| A CLI verb fails on a database lock | PGlite is single-writer and `npm run dev` / `orch serve` holds it. | Use the HTTP API (`curl -s localhost:3100/issues`), or stop the server. The CLI says which. |
+| An issue sits at `blocked` | A step failed. The blocking comment names it — a non-zero `exec`, a missing `produces` file, an unreadable `reads` file, or an agent that exited non-zero. | Fix the cause, then Resume from the console's Issues tab (or `POST /issues/:id/advance`). It restarts at the step that blocked, not from the beginning. |
+| An issue sits at `todo` and nothing happens | The process died mid-run and orphan recovery returned it to `todo` at boot. | Resume it, as above. |
+| Approving does nothing visible for a minute | Correct: the decision returns 202 and the publish step runs in the background. | Watch `#runs` in the console, or poll `GET /issues/{id}`. |
+| Published Confluence page has no diagrams (or `401 scope does not match` on upload) | Something tried to attach PNGs through the Atlassian MCP, which has **no attachment scope** and never will. | Attachments go through `node scripts/confluence-attach.mjs <pageId> <files…>`, which uses `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env`. Re-authorising the MCP does not add the scope. |
+| Atlassian MCP OAuth fails with "Supported sites required" | The logged-in Atlassian account has no Jira/Confluence site. | Switch accounts, or create a free Atlassian Cloud trial site, then re-run `npm run oauth`. |
+| A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |
+| Chatbot shows "undefined" for a parameter | Frontend reading an old field name. | Search for the renamed field across `src/`. |
+| `/api/features` returns `{}` | `projects/` missing, or `WORKSPACE_PATH` pointing elsewhere. | `mkdir projects/<project>/<feature>/...`, restart the dev server. |
+| Refresh loses the workflow | `localStorage.scyne_parent_issue_id` cleared. | The workflow status panel's "New session" button starts over; otherwise it restores automatically. |
 
 ---
 
-If you're about to make a significant change, sketch the touched files first — most changes need to ripple through: `agent-instructions/<agent>.json` (re-pushed via curl), `paperclip/skills/requirement-generator/SKILL.md` (loaded from disk by BA), `scyne-chatbot/server/llm.ts` (system prompt + tool schema), `scyne-chatbot/src/App.tsx` (state + rendering), and `scyne-chatbot/.env` (defaults).
+If you're about to make a significant change, sketch the touched files first — most changes ripple through several:
+
+- `scripts/pipeline.mjs` — the stage graph. Four consumers read it; a change here changes what every one of them believes a stage requires.
+- `orchestrator.workflows.ts` — how a stage becomes steps, and the generate / revise / publish prompts.
+- `orchestrator.config.ts` — the org chart, budgets, adapters.
+- `agent-instructions/<agent>.thin.md` — that agent's domain instructions. No re-push needed; the file is read at spawn time.
+- `skills/<slug>/SKILL.md` — the actual method. Symlinked into `.claude/skills/`, so an edit is live immediately.
+- `scyne-chatbot/server/orchestrator.ts` — title → workflow mapping. Run `npm run check:routing` after touching it.
+- `scyne-chatbot/server/llm.ts` (system prompt + tool schema), `scyne-chatbot/src/App.tsx` (state + rendering), `scyne-chatbot/.env` (defaults).
