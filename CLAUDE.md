@@ -148,6 +148,20 @@ exec  stage.mjs   →  agent  generate  →  exec  validator  →  attach  →  
 so adding a stage to the pipeline graph adds its workflow for free. Eighteen
 exist: nine `<stage>`, eight `revise-<stage>`, and `baseline`.
 
+A `revise-<stage>` is not a tenth stage — it is the SAME stage in another mode,
+and says so: `reviseWorkflow` sets **`variantOf: <stage>`** and `variant:
+"revise"` on the `WorkflowDef`. The engine ignores both (it runs a variant
+exactly like any other workflow); the console reads them to list ten rows
+instead of eighteen, and to group the New-run dropdown. Declared rather than
+inferred, because the `revise-` prefix is a convention THIS consumer invented —
+a library console that grepped for it would have learned one consumer's habits.
+
+**A variant's budget is still its own.** The engine looks a limit up by the
+literal workflow key, so `datamodel` and `revise-datamodel` are separate
+ceilings; the Budgets tab indents one under the other but never merges them. A
+revision is a small diff and should be allowed less than a generation from
+scratch.
+
 > **Paths are level-relative.** `produces[]` in `pipeline.mjs` is relative to the
 > stage's OWN level root — `projects/<p>/` for a project stage,
 > `projects/<p>/<feature>/` for a feature stage. Resolving a feature stage's
@@ -460,6 +474,7 @@ src/cli.ts   seed · run · status · gate · runs · log · serve
 
 ```bash
 npm run orch -- seed                                     # reconcile the org chart
+npm run orch -- reset [--hard] [--yes]                   # clear history, keep the org
 npm run orch -- run <workflow> --project P [--feature F] # start and advance
 npm run orch -- status <SCY-7|uuid>                      # comments, work products, gates
 npm run orch -- gate list | approve <id> | reject <id> --note "…"
@@ -505,9 +520,16 @@ documented route must exist. Adding a route means editing both.
 
 ### Gotchas
 
-- **PGlite is single-writer.** One process owns `.orchestrator/pgdata`. While
-  `npm run dev` or `orch serve` is up, CLI verbs fail on the lock — the CLI says
-  so and points at the HTTP API. This is by design, not a bug to work around.
+- **PGlite is single-writer — but it does not enforce that itself.** Measured:
+  a second process opens the same `.orchestrator/pgdata` happily, gets its own
+  view of the data, and the two diverge **silently** — one can delete every row
+  while the other goes on reporting them, and whichever flushes last wins. No
+  error, no warning, nothing in the data afterwards recording it. `openDb`
+  therefore takes its own lock, a `pgdata.lock` sidecar holding the owning pid,
+  so the second opener is refused with a message naming the process that holds
+  it. A lock whose pid is dead is stale and gets taken over — a SIGKILL must not
+  leave a database nobody can reopen. While `npm run dev` or `orch serve` is up,
+  CLI verbs are refused and point at the HTTP API.
 - **Gate decisions and `POST /issues` return 202 and resume in the background.**
   A resumed workflow runs an agent step for tens of minutes; a response that
   waited for it would time out on a click that actually worked. Poll
@@ -940,6 +962,35 @@ node scripts/validate-experience.mjs   <project>                   # after `pers
 `validate-experience.mjs` is the only guard between the Service Designer and a
 companion-app build that may happen weeks later — `personas.json` and
 `journey-map.json` are a build contract, not just a document.
+
+### Clear the database and start again
+
+```bash
+npm run orch -- reset            # a PLAN — prints what would go, deletes nothing
+npm run orch -- reset --yes      # do it: issues, comments, work products, gates,
+                                 #   runs, budgets and the raw .jsonl logs
+npm run orch -- reset --hard --yes   # also drop the agents and .orchestrator/overrides.json,
+                                     #   then rebuild the org from orchestrator.config.ts
+```
+
+The bare verb is a **dry run** — a half-remembered command cannot cost anyone
+their history. Stop `npm run dev` first: the database is single-writer and the
+CLI is refused while a server holds it.
+
+**Skills need no reseeding — they are not in the database.** They are files
+under `skillsDir`, and the agent-to-skill mapping is derived from the workflows
+at read time, so a reset cannot lose them. (The schema does carry `skills` and
+`agent_skills` tables from an earlier design; nothing in `src/` reads or writes
+either one.)
+
+Agents need no reseeding either: the org is reconciled from
+`orchestrator.config.ts` on **every** boot, which is what makes `--hard` safe —
+dropping the rows is how a hand-edited row or a stale overrides entry gets
+discarded, not how an agent is permanently removed.
+
+`rm -rf .orchestrator/pgdata` still works and additionally discards the
+migration state, but it cannot run while a server holds the directory and it is
+one mistyped path away from taking something else with it.
 
 ### Migrating a project created before the restructure
 

@@ -930,6 +930,19 @@ paths:
                         label:    { type: string }
                         assignee: { type: string }
                         steps:    { type: integer }
+                        variantOf:
+                          type: string
+                          description: >-
+                            Another workflow's key, when this one is a MODE of that
+                            workflow rather than a peer of it — a revision of the
+                            artefact it produces, say. Purely presentational: the
+                            engine runs a variant exactly like any other workflow,
+                            and budgets are still keyed by this workflow's own key.
+                            Declared by the consumer, never inferred from a naming
+                            convention.
+                        variant:
+                          type: string
+                          description: Short label for the mode, e.g. "revise".
                         params:
                           type: array
                           items: { type: string }

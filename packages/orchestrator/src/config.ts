@@ -35,6 +35,21 @@ export interface WorkflowDef {
    * of a "feature".
    */
   title?: string;
+  /**
+   * Another workflow's key, when this one is a MODE of that workflow rather
+   * than a peer of it — a revision of an artefact the other produces, a dry
+   * run, a re-publish. Purely presentational: the engine treats every workflow
+   * identically, and a variant is started, budgeted and advanced exactly like
+   * any other.
+   *
+   * Declared rather than inferred from the key, because a naming convention
+   * like a `revise-` prefix belongs to the consumer that invented it. A console
+   * that pattern-matched on it would be a library that had learned one
+   * consumer's habits.
+   */
+  variantOf?: string;
+  /** Short label for the mode — "revise", "dry run". Shown beside the parent. */
+  variant?: string;
   steps: Step[];
 }
 
@@ -207,13 +222,25 @@ const RESERVED_VARS = new Set(["workspace", "issueId"]);
 export function workflowParams(wf: WorkflowDef): string[] {
   const found = new Set<string>();
 
+  /**
+   * Names an agent step's `reads` supplies. These appear in prompts as
+   * `{previous}` and look exactly like caller parameters, but the engine reads
+   * them off disk and spreads them over `vars` — so asking a caller for one
+   * would be asking for a value that is overwritten before it is used. Every
+   * `revise-*` workflow has one.
+   */
+  const supplied = new Set<string>();
+  for (const step of wf.steps ?? []) {
+    if (step.type === "agent") for (const name of Object.keys(step.reads ?? {})) supplied.add(name);
+  }
+
   // Same grammar as the engine, via the same module: a `{{literal}}` is not a
   // parameter, because `interpolate` will not substitute one. Re-implementing
   // the regex here is how the two silently disagree.
   const scan = (s: string | undefined): void => {
     if (!s) return;
     for (const name of placeholdersIn(s)) {
-      if (!RESERVED_VARS.has(name)) found.add(name);
+      if (!RESERVED_VARS.has(name) && !supplied.has(name)) found.add(name);
     }
   };
 

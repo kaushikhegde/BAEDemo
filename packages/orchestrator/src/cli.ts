@@ -2,8 +2,8 @@
 // The operator's command line for @scyne/orchestrator. A plain process.argv
 // parser — no dependency pulled in just to read flags.
 
-import { resolve } from "node:path";
-import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import express from "express";
 import { createOrchestrator, createRouter, type OrchestratorConfig, type Orchestrator } from "./index.js";
@@ -59,6 +59,9 @@ const usage = `
 scyne-orchestrator <verb>
 
   seed                                 reconcile the database to orchestrator.config.ts
+  reset [--hard] [--yes]               clear issues/runs/gates/budgets, keep the org. Prints a plan
+                                        unless --yes. --hard also drops agents and the overrides
+                                        overlay, so the next boot rebuilds the org from the config file
   run <workflow> --project P [--feature F]
                                         start a workflow and advance it as far as it will go
   status <issueId>                     issue, step index, comments, work products, gates
@@ -193,6 +196,69 @@ async function main(): Promise<void> {
       case "seed": {
         const agents = await orch.repo.listAgents(orch.companyId);
         console.log(`✓ ${agents.length} agent(s) reconciled for company ${orch.companyId}`);
+        break;
+      }
+
+      /**
+       * Clear the operational history and leave a freshly reconciled org.
+       *
+       * Deleting `.orchestrator/pgdata` by hand does the same job, but it also
+       * discards the migration state and cannot be done while a server holds
+       * the directory — and if the path is ever mistyped it takes something
+       * else with it. This does it in SQL, reports what it removed, and
+       * refuses to run without `--yes`.
+       *
+       * SKILLS ARE NOT TOUCHED, because they are not in the database: they are
+       * files under `skillsDir`, and the agent-to-skill mapping is derived from
+       * the workflows at read time. Nothing to reseed.
+       */
+      case "reset": {
+        const hard = rest.includes("--hard");
+        const confirmed = rest.includes("--yes");
+
+        const agents = await orch.repo.listAgents(orch.companyId);
+        const issues = await orch.repo.listIssues(orch.companyId);
+        const logDir = join(orch.config.workspace, ".orchestrator", "runs");
+        let logs: string[] = [];
+        try { logs = (await readdir(logDir)).filter(f => f.endsWith(".jsonl")); } catch { logs = []; }
+
+        if (!confirmed) {
+          // Destructive by request only: the bare verb is a dry run, so a
+          // half-remembered command cannot cost anyone their history.
+          console.log(`Would delete, for company ${orch.companyId}:`);
+          console.log(`  ${issues.length} issue(s) and every comment, work product, gate and run under them`);
+          console.log(`  every budget`);
+          console.log(`  ${logs.length} raw run log(s) in .orchestrator/runs/`);
+          console.log(hard
+            ? `  ${agents.length} agent(s) AND .orchestrator/overrides.json — the next boot rebuilds\n` +
+              `    the org from orchestrator.config.ts, discarding console edits`
+            : `  keeping ${agents.length} agent(s) and .orchestrator/overrides.json`);
+          console.log(`\nNothing has been deleted. Re-run with --yes to do it.`);
+          console.log(`Skills are files, not rows — ${"reset"} never touches them.`);
+          break;
+        }
+
+        const summary = await orch.repo.resetCompany(orch.companyId, { agents: hard });
+
+        // The logs are referenced by run rows that no longer exist; leaving
+        // them behind is orphaned disk that no console view can reach.
+        for (const f of logs) await rm(join(logDir, f), { force: true });
+
+        if (hard) {
+          await rm(join(orch.config.workspace, ".orchestrator", "overrides.json"), { force: true });
+          // Put the org back immediately rather than waiting for the next boot,
+          // so `reset --hard` leaves a usable orchestrator rather than an empty
+          // one that only works after a restart.
+          for (const spec of orch.config.org) await orch.repo.upsertAgent(orch.companyId, spec);
+        }
+
+        const now = await orch.repo.listAgents(orch.companyId);
+        console.log(`✓ deleted ${summary.issues} issue(s), ${summary.runs} run(s), ` +
+                    `${summary.budgets} budget(s), ${logs.length} log file(s)`);
+        if (hard) console.log(`✓ dropped the overrides overlay and rebuilt the org from the config file`);
+        console.log(`✓ ${now.length} agent(s) present`);
+        console.log(`  Skills are untouched — they are files under ` +
+                    `${orch.config.skillsDir ?? "(no skillsDir configured)"}, not rows.`);
         break;
       }
 

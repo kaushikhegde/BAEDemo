@@ -673,9 +673,18 @@ async function newRunModal(preset) {
     '<h3>Start a run</h3>' +
     '<p class="hint" style="margin:.2rem 0 0">One workflow, one issue. It runs until it needs you.</p>' +
     '<label for="w-key">Workflow</label>' +
-    '<select id="w-key">' + c.workflows.map(w =>
-      '<option value="' + esc(w.key) + '"' + (w.key === chosen ? " selected" : "") + '>' +
-      esc(w.key) + ' — ' + esc(w.label) + '</option>').join("") + '</select>' +
+    '<select id="w-key">' +
+      // Two groups, so the ten stages anyone actually starts are not buried
+      // among the modes of those same stages.
+      '<optgroup label="Stages">' + c.workflows.filter(w => !w.variantOf).map(w =>
+        '<option value="' + esc(w.key) + '"' + (w.key === chosen ? " selected" : "") + '>' +
+        esc(w.key) + ' — ' + esc(w.label) + '</option>').join("") + '</optgroup>' +
+      (c.workflows.some(w => w.variantOf)
+        ? '<optgroup label="Revisions and other modes">' + c.workflows.filter(w => w.variantOf).map(w =>
+            '<option value="' + esc(w.key) + '"' + (w.key === chosen ? " selected" : "") + '>' +
+            esc(w.key) + ' — ' + esc(w.label) + '</option>').join("") + '</optgroup>'
+        : "") +
+    '</select>' +
     '<div id="w-params"></div>' +
     '<div id="w-extra"></div>' +
     '<div class="actions">' +
@@ -701,7 +710,12 @@ async function newRunModal(preset) {
     if (w) {
       paramBox.insertAdjacentHTML("beforeend",
         '<p class="hint" style="margin-top:.6rem">' + esc(w.steps) + ' step(s), assigned to ' +
-        '<span class="mono">' + esc(w.assignee) + '</span>.</p>');
+        '<span class="mono">' + esc(w.assignee) + '</span>.' +
+        (w.variantOf
+          ? ' A <b>' + esc(w.variant || "variant") + '</b> of <span class="mono">' + esc(w.variantOf) +
+            '</span> — it reads that stage&rsquo;s existing output and changes it, so the artefact must ' +
+            'already exist or the run blocks before the agent is spawned.'
+          : "") + '</p>');
     }
   };
   paint();
@@ -1101,6 +1115,23 @@ const skills = async () => {
 const skillsFor = (all, agentKey) =>
   (all.skills || []).filter(sk => sk.agents.indexOf(agentKey) !== -1);
 
+/* A skill invoked from a stage AND from that stage's own revision is invoked
+   from one place, twice. Printing both keys doubles the column and says nothing
+   the parent key did not. */
+const wfSummary = (keys) => {
+  if (!CFG) return keys.join(", ");
+  const by = {};
+  keys.forEach(k => {
+    const w = CFG.workflows.find(x => x.key === k);
+    const base = (w && w.variantOf) ? w.variantOf : k;
+    (by[base] = by[base] || []).push(w && w.variantOf ? (w.variant || k) : null);
+  });
+  return Object.keys(by).map(base => {
+    const modes = by[base].filter(Boolean);
+    return base + (modes.length ? " (+" + modes.join(", ") + ")" : "");
+  }).join(", ");
+};
+
 /** A skill name as a link to its own page. Used inside clickable rows, so the
     click must not also trigger the row underneath it. */
 const skillLink = (name, extra) =>
@@ -1302,7 +1333,7 @@ async function renderAgent(key, target) {
                 ? ' ' + st("blocked") + '<span class="muted" style="font-size:.74rem">no SKILL.md — every run ' +
                   'of this stage will die with Unknown skill</span>'
                 : '<span class="muted mono" style="font-size:.72rem">via ' +
-                  esc(sk.workflows.join(", ")) + '</span>') +
+                  esc(wfSummary(sk.workflows)) + '</span>') +
             '</div>' +
             (sk.summary ? '<div class="muted" style="font-size:.76rem;max-width:70ch">' +
               esc(sk.summary.slice(0, 160)) + (sk.summary.length > 160 ? "…" : "") + '</div>' : "")
@@ -1498,6 +1529,7 @@ async function renderBundle(key) {
    run. */
 async function renderSkills() {
   setHead("Skills", "What each agent invokes, and whether the file is there.");
+  await config();          // wfSummary needs the variant relationships
   const out = await api("/skills");
   const rows = out.skills;
 
@@ -1537,7 +1569,7 @@ async function renderSkills() {
       '<td>' + (r.agents.length
         ? '<span class="tags">' + r.agents.map(agentLink).join("") + '</span>'
         : '<span class="muted">—</span>') + '</td>' +
-      '<td class="mono" style="font-size:.72rem">' + (esc(r.workflows.join(", ")) || '<span class="muted">—</span>') + '</td>' +
+      '<td class="mono" style="font-size:.72rem">' + (esc(wfSummary(r.workflows)) || '<span class="muted">—</span>') + '</td>' +
       '<td>' + st(r.status === "missing" ? "blocked" : (r.status === "unused" ? "todo" : "done")) +
         ' <span class="muted mono" style="font-size:.68rem">' + esc(r.status) + '</span></td>' +
       '<td class="num">' + (r.lines == null ? "—" : num(r.lines)) + '</td>' +
@@ -1554,6 +1586,7 @@ async function renderSkills() {
 /** One skill: who invokes it, and its full text, editable. */
 async function renderSkill(name) {
   setHead("Skill", name);
+  await config();
   const sk = await api("/skills/" + encodeURIComponent(name));
   const missing = !!sk.error;
 
@@ -1572,7 +1605,7 @@ async function renderSkill(name) {
             : '<span class="muted">nobody</span>') +
           '</div><div class="s">' + (sk.agents.length > 1 ? "agents" : "agent") + '</div></div>' +
         '<div class="metric"><div class="l">workflows</div><div class="v" style="font-size:.95rem">' +
-          (esc(sk.workflows.join(", ")) || "none") + '</div></div>' +
+          (esc(wfSummary(sk.workflows)) || "none") + '</div></div>' +
         '<div class="metric"><div class="l">size</div><div class="v" style="font-size:1.1rem">' +
           (sk.lines == null ? "—" : num(sk.lines) + " lines") + '</div></div>' +
       '</div>' +
@@ -1652,6 +1685,16 @@ async function renderBudgets() {
     return { key: a.key, runs: runs.length, cost: runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0) };
   }));
 
+  // Each parent immediately followed by its own variants, so a ceiling and the
+  // ceilings related to it are read together.
+  const orderedWf = [];
+  cfg.workflows.filter(w => !w.variantOf).forEach(w => {
+    orderedWf.push(w);
+    cfg.workflows.filter(v => v.variantOf === w.key).forEach(v => orderedWf.push(v));
+  });
+  cfg.workflows.filter(w => w.variantOf && !cfg.workflows.some(b => b.key === w.variantOf))
+    .forEach(w => orderedWf.push(w));   // an orphaned variant must still be reachable
+
   const mins = (ms) => ms ? Math.round(Number(ms) / 60000) : "";
   const limitRow = (scope, key, label, spendCell) => {
     const l = limit(scope, key);
@@ -1688,9 +1731,17 @@ async function renderBudgets() {
     '<h2>Per workflow</h2><div class="tablewrap"><div class="scroll-x"><table>' +
     '<thead><tr><th>Workflow</th><th>Assignee</th><th class="num">Max tokens</th><th class="num">Max $</th>' +
     '<th class="num">Max min</th><th></th></tr></thead><tbody>' +
-    cfg.workflows.map(w => limitRow("workflow", w.key, w.key,
+    // Variants are INDENTED under their parent but never merged into it: the
+    // engine looks a budget up by the literal workflow key, so these are
+    // genuinely separate ceilings — and a revision is a small diff that should
+    // be allowed less than a fresh generation, not the same.
+    orderedWf.map(w => limitRow("workflow", w.key,
+      (w.variantOf ? "↳ " : "") + w.key,
       '<td class="mono muted">' + esc(w.assignee) + '</td>')).join("") +
-    '</tbody></table></div></div>';
+    '</tbody></table></div></div>' +
+    '<p class="hint">A variant carries its own ceiling. The engine reads the budget by workflow key, so setting ' +
+    'one here does not set the other — deliberately: a revision is a small diff and should be allowed less than ' +
+    'a generation from scratch.</p>';
 
   on("tr[data-scope] input", "input", (e) => {
     const b = e.currentTarget.closest("tr").querySelector(".b-save");
@@ -1716,6 +1767,11 @@ async function renderBudgets() {
 async function renderConfig() {
   setHead("Config", "The loaded orchestrator config, reconciled from disk on every boot.");
   const c = await config();
+  const bases = c.workflows.filter(w => !w.variantOf);
+  const variantsOf = {};
+  c.workflows.filter(w => w.variantOf).forEach(w => {
+    (variantsOf[w.variantOf] = variantsOf[w.variantOf] || []).push(w);
+  });
   view.innerHTML =
     '<div class="grid">' +
       '<div class="metric"><div class="l">company</div><div class="v" style="font-size:1rem">' + esc(c.company) + '</div></div>' +
@@ -1727,13 +1783,26 @@ async function renderConfig() {
     '<div class="card" style="margin-top:.8rem"><h3>Workspace</h3>' +
       '<span class="mono" style="font-size:.8rem;word-break:break-all">' + esc(c.workspace) + '</span></div>' +
     '<h2>Workflows</h2><div class="tablewrap"><div class="scroll-x"><table>' +
-    '<thead><tr><th>Key</th><th>Label</th><th>Assignee</th><th class="num">Steps</th><th>Parameters</th></tr></thead><tbody>' +
-    c.workflows.map(w => '<tr><td class="mono">' + esc(w.key) + '</td><td>' + esc(w.label) +
-      '</td><td class="mono">' + esc(w.assignee) + '</td><td class="num">' + esc(w.steps) + '</td>' +
-      '<td class="mono" style="font-size:.76rem">' + esc((w.params || []).join(", ") || "—") + '</td>' +
-      '</tr>').join("") + '</tbody></table></div></div>' +
-    '<p class="hint">Parameters are derived by scanning each workflow&rsquo;s own step templates, so they cannot ' +
-    'drift from what the steps actually interpolate. <b>+ New run</b> builds its form from this list.</p>';
+    '<thead><tr><th>Workflow</th><th>Assignee</th><th class="num">Steps</th><th>Parameters</th></tr></thead><tbody>' +
+    bases.map(w => {
+      const vs = variantsOf[w.key] || [];
+      return '<tr><td><div class="mono" style="font-weight:600">' + esc(w.key) + '</div>' +
+        '<div class="muted" style="font-size:.76rem">' + esc(w.label) + '</div>' +
+        (vs.length ? '<div class="tags" style="margin-top:.3rem">' + vs.map(v =>
+          '<span class="tagl" title="' + esc(v.key) + '">' + esc(v.variant || v.key) +
+          '<span class="x">' + esc(v.steps) + ' steps</span></span>').join("") + '</div>' : "") +
+        '</td>' +
+        '<td class="mono">' + esc(w.assignee) + '</td><td class="num">' + esc(w.steps) + '</td>' +
+        '<td class="mono" style="font-size:.76rem">' + esc((w.params || []).join(", ") || "—") +
+        (vs.length ? vs.map(v => '<div class="muted" style="font-size:.72rem">' + esc(v.variant || v.key) +
+          ': ' + esc((v.params || []).join(", ") || "—") + '</div>').join("") : "") +
+        '</td></tr>';
+    }).join("") + '</tbody></table></div></div>' +
+    '<p class="hint">' + bases.length + ' workflow(s), ' + (c.workflows.length - bases.length) + ' of them with ' +
+    'variants — a variant is the same stage in another mode (a revision of what it produced), declared by the ' +
+    'consumer as <span class="mono">variantOf</span> rather than guessed from its name. The engine runs one ' +
+    'exactly like the other. Parameters are derived by scanning each workflow&rsquo;s own step templates, so ' +
+    'they cannot drift from what the steps interpolate.</p>';
 }
 
 /* ---- health -------------------------------------------------------------- */

@@ -212,4 +212,23 @@ describe("console", () => {
     const save = html.slice(html.indexOf('send("/skills/'), html.indexOf('send("/skills/') + 400);
     expect(save).toContain("SKILLS = null");
   });
+
+  it("groups workflow variants instead of listing them as peers", () => {
+    // Eighteen rows for ten stages buries the ones anyone starts. The grouping
+    // reads `variantOf` — declared by the consumer — and never greps the key
+    // for a `revise-` prefix, which is one consumer's naming convention.
+    expect(html).toContain("w.variantOf");
+    expect(html).toContain("<optgroup");
+    expect(html).not.toMatch(/["'`]revise-/);
+    expect(html).not.toContain('startsWith("revise');
+  });
+
+  it("keeps a variant's budget as its own row, never merged into its parent", () => {
+    // The engine looks a budget up by the literal workflow key, so merging them
+    // in the UI would imply setting one sets both. A revision is a small diff
+    // and should be allowed less than a generation from scratch.
+    expect(html).toContain("orderedWf");
+    expect(html).toContain("setting ");
+    expect(html).toContain("does not set the other");
+  });
 });

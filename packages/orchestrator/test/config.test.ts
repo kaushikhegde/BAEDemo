@@ -182,6 +182,18 @@ describe("workflowParams", () => {
       .toEqual(["project"]);
   });
 
+  it("excludes names an agent step's `reads` supplies", () => {
+    // Every `revise-*` workflow interpolates `{previous}`, but the engine reads
+    // that file off disk and spreads it over the caller's params. Listing it as
+    // a parameter puts a field on the New-run form for a value that is
+    // overwritten before it is used.
+    expect(workflowParams(wf([
+      { type: "exec", cmd: "node stage.mjs {project} {feature} datamodel" },
+      { type: "agent", phase: "revise", prompt: "Apply {instruction} to:\n{previous}",
+        reads: { previous: "projects/{project}/{feature}/outputs/x.md" } },
+    ]))).toEqual(["project", "feature", "instruction"]);
+  });
+
   it("excludes a doubled brace, which interpolate treats as a literal", () => {
     expect(workflowParams(wf([
       { type: "agent", phase: "publish", prompt: "replace {{PRODUCT_SUMMARY_URL}} for {project}" },
@@ -190,5 +202,31 @@ describe("workflowParams", () => {
 
   it("returns an empty list for a workflow that interpolates nothing", () => {
     expect(workflowParams(wf([{ type: "exec", cmd: "npm run app" }]))).toEqual([]);
+  });
+
+});
+
+describe("workflow variants", () => {
+  it("are ordinary workflows — the relationship is presentational only", () => {
+    // Nothing in the engine reads `variantOf`. It exists so a console can group
+    // ten stages and their modes instead of listing eighteen peers, WITHOUT
+    // pattern-matching a `revise-` prefix that belongs to one consumer.
+    const c = defineOrchestrator({
+      workspace: "/w",
+      db: { driver: "pglite", dir: "/w/pg" },
+      adapters: { claude_local: { run: async () => ({ exitCode: 0, status: "succeeded" as const, usage: null, stderrTail: "" }) } },
+      org: [{ key: "ba", name: "BA" }],
+      workflows: [
+        { key: "requirements", label: "Requirements", assignee: "ba",
+          steps: [{ type: "agent", phase: "generate" }] },
+        { key: "revise-requirements", label: "Revise Requirements", assignee: "ba",
+          variantOf: "requirements", variant: "revise",
+          steps: [{ type: "agent", phase: "revise", reads: { previous: "outputs/x.md" },
+                    prompt: "Apply {instruction} to {previous}" }] },
+      ],
+    });
+    expect(validateConfig(c)).toEqual([]);
+    // And a variant still declares its own parameters, independently.
+    expect(workflowParams(c.workflows[1])).toEqual(["instruction"]);
   });
 });

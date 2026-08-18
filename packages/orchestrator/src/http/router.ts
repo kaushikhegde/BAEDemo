@@ -732,6 +732,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       // starts reading a new variable.
       workflows: orch.config.workflows.map(w => ({
         key: w.key, label: w.label, assignee: w.assignee, steps: w.steps.length,
+        variantOf: w.variantOf, variant: w.variant,
         params: workflowParams(w),
         // Type and phase ONLY. A step also carries its prompt, its shell
         // command and its `reads` paths; none of that belongs on a sanitised

@@ -249,8 +249,12 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
   }
   steps.push({ type: "exec", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 
+  // A mode of the stage it revises, not a tenth stage. The engine does not care
+  // — it runs every workflow the same way — but a console listing eighteen peers
+  // buries the ten anyone actually starts.
   return { key: `revise-${key}`, label: `Revise ${s.label}`, assignee: s.agentKey,
-           title: `Revise ${s.label} — ${scope(s)}`, steps };
+           title: `Revise ${s.label} — ${scope(s)}`,
+           variantOf: key, variant: "revise", steps };
 }
 
 // Reporting lines mirror `scripts/bootstrap.mjs`'s org chart. `mcpEnabled` is

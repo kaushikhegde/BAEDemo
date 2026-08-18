@@ -387,6 +387,51 @@ export function createRepo(db: Db) {
       return rows.length > 0;
     },
 
+    /**
+     * Wipe a company's operational history: every issue, and with it (by
+     * `on delete cascade`) its comments, work products, gates and runs, plus
+     * every budget.
+     *
+     * `opts.agents` also drops the org chart. That is only useful because the
+     * org is RECONCILED from the config file on every boot — so dropping it is
+     * how a hand-edited row or an `.orchestrator/overrides.json` entry gets
+     * discarded, not how an agent is permanently removed.
+     *
+     * Order matters and is not incidental: `issues.assignee_agent_id` and
+     * `runs.agent_id` reference `agents` WITHOUT a cascade, so agents cannot be
+     * deleted until the issues that point at them are gone. Deleting in the
+     * other order fails on a foreign key, which reads like corruption.
+     */
+    async resetCompany(
+      companyId: string, opts: { agents?: boolean } = {},
+    ): Promise<{ issues: number; runs: number; budgets: number; agents: number }> {
+      const count = async (table: string, col: string): Promise<number> => {
+        const { rows } = await db.query<{ n: string }>(
+          `select count(*) as n from ${table} where ${col}=$1`, [companyId]);
+        return Number(rows[0]?.n ?? 0);
+      };
+      // Runs hang off issues, not off the company, so they are counted through
+      // the join rather than assumed to equal anything.
+      const { rows: runRows } = await db.query<{ n: string }>(
+        `select count(*) as n from runs r join issues i on i.id = r.issue_id where i.company_id=$1`,
+        [companyId]);
+
+      const summary = {
+        issues: await count("issues", "company_id"),
+        runs: Number(runRows[0]?.n ?? 0),
+        budgets: await count("budgets", "company_id"),
+        agents: 0,
+      };
+
+      await db.query(`delete from issues where company_id=$1`, [companyId]);
+      await db.query(`delete from budgets where company_id=$1`, [companyId]);
+      if (opts.agents) {
+        summary.agents = await count("agents", "company_id");
+        await db.query(`delete from agents where company_id=$1`, [companyId]);
+      }
+      return summary;
+    },
+
     /** Every budget for a company — agent, workflow and project scopes together. */
     async listBudgets(companyId: string): Promise<BudgetRow[]> {
       const { rows } = await db.query<BudgetRow>(
