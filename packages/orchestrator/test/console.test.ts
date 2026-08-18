@@ -25,7 +25,7 @@ describe("console", () => {
 
   it("carries the theme's brand colour and every tab", () => {
     expect(html).toContain(resolveTheme().brand);
-    for (const tab of ["Runs", "Issues", "Gates", "Org", "Budgets", "Config", "Health"]) {
+    for (const tab of ["Runs", "Issues", "Gates", "Org", "Skills", "Budgets", "Config", "Health"]) {
       expect(html, `missing tab ${tab}`).toContain(`>${tab}</a>`);
     }
   });
@@ -148,5 +148,68 @@ describe("console", () => {
     // never be given instructions at all.
     expect(html).toContain('id="a-bundlepath"');
     expect(html).toContain("body.bundlePath =");
+  });
+
+  it("lists skills, names who invokes each, and edits them", () => {
+    expect(html).toContain("async function renderSkills(");
+    expect(html).toContain("async function renderSkill(");
+    expect(html).toContain('send("/skills/" + encodeURIComponent(name), "PUT"');
+    expect(html).toContain("Invoked by");
+  });
+
+  it("carries the theme's wordmark, with logoText as its accessible name", () => {
+    // The mark is inline SVG painted with currentColor: the page makes no
+    // network requests, so an <img src> would simply not load, and a second
+    // copy for dark mode would be the same paths twice.
+    expect(html).toContain('class="wordmark"');
+    expect(html).toContain('aria-label="Scyne Orchestrator"');
+    expect(html).toContain('fill="currentColor"');
+    // An inline SVG's <style> is NOT scoped to it — the source file's
+    // `.cls-1{fill:#363C63}` would leak into the page's global cascade.
+    const mark = html.slice(html.indexOf('class="wordmark"'), html.indexOf("</aside>"));
+    expect(mark).not.toContain("<style");
+    expect(mark).not.toContain("cls-1");
+  });
+
+  it("drops the wordmark when a consumer renames the product", () => {
+    // Their name under our mark is worse than no mark, and not something they
+    // would notice until a client did.
+    const acme = renderConsole(resolveTheme({ logoText: "Acme Delivery" }));
+    expect(acme).toContain("Acme Delivery");
+    expect(acme).not.toContain('class="wordmark"');
+    // Supplying their own opts back in.
+    const own = renderConsole(resolveTheme({ logoText: "Acme", logoSvg: "<svg id=\"acme\"></svg>" }));
+    expect(own).toContain('id="acme"');
+  });
+
+  it("never emits logoSvg as a CSS custom property", () => {
+    // It is markup, not a colour; themeCss iterates the whole theme object.
+    expect(html).not.toContain("--logo-svg");
+  });
+
+  it("cross-links agents and skills in both directions", () => {
+    // Skill page -> its agents, agent page -> its skills, org node -> the skill
+    // it invokes. One /skills fetch feeds all three, so the inverse mapping
+    // cannot disagree with the forward one.
+    expect(html).toContain("const skillLink =");
+    expect(html).toContain("const agentLink =");
+    expect(html).toContain('href="#skill/');
+    expect(html).toContain('href="#agent/');
+    expect(html).toContain("Skills it invokes");          // on the agent page
+    expect(html).toContain("const skillsFor =");
+  });
+
+  it("stops a cross-link from also firing the clickable row under it", () => {
+    // The Skills table rows navigate to the skill; an agent chip inside one
+    // would otherwise navigate twice, landing wherever the race left it.
+    expect(html).toContain('a[data-stop]');
+    expect(html).toContain("e.stopPropagation()");
+  });
+
+  it("invalidates the cached skill inventory after a save", () => {
+    // Size, summary and status all change on save — a `missing` skill becomes
+    // `ok` — and the inventory is cached for the session.
+    const save = html.slice(html.indexOf('send("/skills/'), html.indexOf('send("/skills/') + 400);
+    expect(save).toContain("SKILLS = null");
   });
 });

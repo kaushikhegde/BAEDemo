@@ -11,6 +11,11 @@ export default defineOrchestrator({
   company: "Scyne",
   db: { driver: "pglite", dir: ".orchestrator/pgdata" },
 
+  // The SOURCE of truth, not `.claude/skills` — that is a directory of symlinks
+  // pointing here, so editing this is what the team maintains and what
+  // `npm run link-skills` publishes to Claude Code.
+  skillsDir: "skills",
+
   // The adapter registry. One entry today; another project registers its own here.
   adapters: { claude_local: createClaudeRunner() },
 

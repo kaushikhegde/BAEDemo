@@ -297,6 +297,106 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /skills:
+    get:
+      operationId: listSkills
+      summary: Every skill the workflows invoke, cross-referenced against disk
+      description: >-
+        The agent-to-skill mapping is DERIVED by walking `config.workflows` —
+        each `agent` step may name a `skill`, and the agent running it is
+        `step.agent` falling back to the workflow's `assignee`, the same
+        resolution the engine performs — so it cannot drift from what actually
+        runs. Merged with whatever is in `config.skillsDir`. `status` is the
+        point: `missing` means a workflow invokes a skill with no `SKILL.md`, so
+        every run of that stage will die with `Unknown skill` after spawning;
+        `unused` means a file nothing invokes. Problems sort first.
+      responses:
+        "200":
+          description: The skill inventory
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dir, skills]
+                properties:
+                  dir:
+                    type: [string, "null"]
+                    description: The configured `skillsDir`, or null when unset.
+                  skills:
+                    type: array
+                    items: { $ref: "#/components/schemas/Skill" }
+
+  /skills/{name}:
+    get:
+      operationId: getSkill
+      summary: One skill's SKILL.md, with its derived usage
+      description: >-
+        A referenced-but-absent file returns the row, empty content and an
+        `error` rather than a 404 — that state is the finding, and it is what
+        the editor offers to repair.
+      parameters:
+        - $ref: "#/components/parameters/SkillName"
+      responses:
+        "200":
+          description: The skill, its usage and its contents
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Skill"
+                  - type: object
+                    properties:
+                      content: { type: string }
+                      error:   { type: string }
+        "400":
+          description: The name resolves outside the skills directory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No workflow invokes this name and no such directory exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: putSkill
+      summary: Overwrite a skill
+      description: >-
+        Temp file plus rename, so an interrupted write leaves the previous skill
+        intact — but resolved through `realpath` first: a skills directory is
+        often a directory of SYMLINKS into the source tree, and renaming onto a
+        symlink replaces the link with a regular file, quietly severing it from
+        the file the team maintains. Skills are read by the runtime when the
+        agent invokes them, so a save applies to the next run.
+      parameters:
+        - $ref: "#/components/parameters/SkillName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: Written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, path, bytes]
+                properties:
+                  name:  { type: string }
+                  path:  { type: string }
+                  bytes: { type: integer }
+        "400":
+          description: No skillsDir configured, content is not a string, or the name escapes the directory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /runners:
     get:
       operationId: listRunners
@@ -902,6 +1002,12 @@ paths:
 
 components:
   parameters:
+    SkillName:
+      name: name
+      in: path
+      required: true
+      description: The skill's directory name — the string an agent step invokes it by.
+      schema: { type: string }
     AgentKey:
       name: key
       in: path
@@ -939,6 +1045,18 @@ components:
         maxTokens:     { type: number }
         maxCostUsd:    { type: number }
         maxDurationMs: { type: number }
+    Skill:
+      type: object
+      required: [name, path, agents, workflows, status]
+      properties:
+        name:      { type: string, description: "Directory name — what an agent step invokes." }
+        path:      { type: [string, "null"], description: "Workspace-relative SKILL.md, null when only referenced." }
+        bytes:     { type: [integer, "null"] }
+        lines:     { type: [integer, "null"] }
+        summary:   { type: [string, "null"], description: "Frontmatter description, else the first heading." }
+        agents:    { type: array, items: { type: string }, description: "Agent keys that invoke it." }
+        workflows: { type: array, items: { type: string } }
+        status:    { type: string, enum: [ok, missing, unused] }
     Error:
       type: object
       required: [error]

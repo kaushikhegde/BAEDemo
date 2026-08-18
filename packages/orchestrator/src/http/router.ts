@@ -7,7 +7,7 @@
 // never silently drift apart.
 
 import { Router, type Request, type Response } from "express";
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync } from "node:fs";
 import { resolve, dirname, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -18,6 +18,7 @@ import type {
 } from "../core/repo.js";
 import { resolveTheme } from "./theme.js";
 import { loadOverrides, saveOverrides, withAgentPatch } from "../core/overrides.js";
+import { listSkills, skillFilePath } from "../core/skills.js";
 import { createDocsHandlers } from "./docs.js";
 import { renderConsole } from "./console.js";
 import type { createOrchestrator } from "../index.js";
@@ -42,6 +43,9 @@ export const ROUTES = [
   { method: "GET",   path: "/agents/{key}/runs" },
   { method: "GET",   path: "/agents/{key}/bundle" },
   { method: "PUT",   path: "/agents/{key}/bundle" },   // edit the system prompt from the console
+  { method: "GET",   path: "/skills" },         // what exists, and which agent invokes it
+  { method: "GET",   path: "/skills/{name}" },
+  { method: "PUT",   path: "/skills/{name}" },
   { method: "GET",   path: "/runners" },        // registered adapters
   { method: "POST",  path: "/issues" },
   { method: "GET",   path: "/issues" },
@@ -401,6 +405,77 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       return;
     }
     ok(res, { path: agent.bundle_path, bytes: Buffer.byteLength(content, "utf8") });
+  }));
+
+  // ---- skills ---------------------------------------------------------------
+
+  /**
+   * Every skill the workflows invoke, cross-referenced against what is on disk.
+   *
+   * The agent→skill mapping is derived from the workflows themselves rather
+   * than declared anywhere, so it always matches what the engine will do. Two
+   * statuses are the reason this endpoint is worth having: `missing` (a stage
+   * that will die with `Unknown skill` on its next run, after spawning) and
+   * `unused` (a file that reads like part of the pipeline but is invoked by
+   * nothing).
+   */
+  r.get("/skills", wrap(async (_req, res) => {
+    ok(res, {
+      dir: orch.config.skillsDir ?? null,
+      skills: listSkills(orch.config.workspace, orch.config.skillsDir, orch.config.workflows),
+    });
+  }));
+
+  r.get("/skills/:name", wrap(async (req, res) => {
+    const name = pathParam(req.params.name);
+    const rows = listSkills(orch.config.workspace, orch.config.skillsDir, orch.config.workflows);
+    const row = rows.find(s2 => s2.name === name);
+    if (!row) { notFound(res, `skill '${name}'`); return; }
+    if (!orch.config.skillsDir) {
+      ok(res, { ...row, content: "", error: "no skillsDir is configured" });
+      return;
+    }
+    const abs = skillFilePath(orch.config.workspace, orch.config.skillsDir, name);
+    if (!abs) { badRequest(res, `skill name '${name}' resolves outside the skills directory`); return; }
+    try {
+      ok(res, { ...row, content: readFileSync(abs, "utf8") });
+    } catch (err) {
+      // Same contract as the agent bundle: a referenced-but-absent file is the
+      // FINDING, not a 404 — it is exactly the state that makes the next run of
+      // that stage fail, and the editor offers to create it.
+      ok(res, { ...row, content: "", error: err instanceof Error ? err.message : String(err) });
+    }
+  }));
+
+  /**
+   * Overwrite a skill. Same write discipline as an agent bundle — temp file
+   * plus rename — with one addition: the target is resolved through
+   * `realpathSync` first. A skills directory is very often a directory of
+   * SYMLINKS into the source tree, and renaming onto a symlink REPLACES the
+   * link with a regular file, quietly severing it from the file the team
+   * actually edits. The next `link-skills` would look like it did nothing.
+   */
+  r.put("/skills/:name", wrap(async (req, res) => {
+    if (!orch.config.skillsDir) { badRequest(res, "no skillsDir is configured"); return; }
+    const name = pathParam(req.params.name);
+    const { content } = (req.body ?? {}) as { content?: unknown };
+    if (typeof content !== "string") { badRequest(res, "content must be a string"); return; }
+
+    const abs = skillFilePath(orch.config.workspace, orch.config.skillsDir, name);
+    if (!abs) { badRequest(res, `skill name '${name}' resolves outside the skills directory`); return; }
+
+    try {
+      let target = abs;
+      try { target = realpathSync(abs); } catch { /* not there yet — create it */ }
+      mkdirSync(dirname(target), { recursive: true });
+      const tmp = `${target}.tmp-${process.pid}`;
+      writeFileSync(tmp, content, "utf8");
+      renameSync(tmp, target);
+      ok(res, { name, path: orch.config.skillsDir + "/" + name + "/SKILL.md",
+                bytes: Buffer.byteLength(content, "utf8") });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   }));
 
   r.get("/runners", wrap(async (_req, res) => {

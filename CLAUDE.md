@@ -116,7 +116,7 @@ npm run dev          # orchestrator on :3100 (console at /orch), chatbot on :517
 
 | | |
 |---|---|
-| **Console** | `http://127.0.0.1:3100/orch` — **start a run**, runs with live transcripts, issues that **drill in** to their activity, work products, gates and cost, pending gates with approve/reject, a top-down **org chart with live agent state**, spend, config, health |
+| **Console** | `http://127.0.0.1:3100/orch` — **start a run**, runs with live transcripts, issues that **drill in** to their activity, work products, gates and cost, pending gates with approve/reject, a top-down **org chart with live agent state**, an editable **Skills** inventory showing which agent invokes what, **editable agent instructions**, spend, config, health |
 | **API docs** | `http://127.0.0.1:3100/docs` — generated from `openapi.yaml`, which is diffed against the router in both directions by a test |
 | **Chatbot** | `http://127.0.0.1:5173` |
 
@@ -451,7 +451,7 @@ that keeps it generic: nothing under `packages/orchestrator/` may import
 `scripts/pipeline.mjs`, `orchestrator.config.ts`, or anything under `projects/`.
 
 ```
-src/core/    db · repo · engine · runner · usage · transcript · interpolate · retry · overrides
+src/core/    db · repo · engine · runner · usage · transcript · interpolate · retry · overrides · skills
 src/http/    router · console · docs · theme
 src/cli.ts   seed · run · status · gate · runs · log · serve
 ```
@@ -474,7 +474,8 @@ Any `--key value` after the workflow name becomes a workflow param, so
 ### HTTP API
 
 `GET /health` · `/agents` · `/agents/{key}` (PATCH) · `/agents/{key}/runs` ·
-`/agents/{key}/bundle` (**PUT**) · `/runners` · `POST /issues` · `GET /issues` ·
+`/agents/{key}/bundle` (**PUT**) · **`/skills`** · **`/skills/{name}`** (**PUT**) ·
+`/runners` · `POST /issues` · `GET /issues` ·
 `/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · `/issues/{id}/comments`
 (POST) · `/issues/{id}/work-products` · `/issues/{id}/gates` ·
 `POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
@@ -535,6 +536,41 @@ gitignored, so every fresh clone needs that command, and a clone that skips it
 fails every run with `Unknown skill: <slug>`.
 
 Editing a skill is editing its `SKILL.md` — there is nothing to re-register.
+Do it on disk, or in the console's **Skills** tab, which also answers *which
+agent invokes which skill*: that mapping is derived by walking every workflow's
+agent steps (`step.agent` falling back to the workflow's `assignee` — the
+engine's own resolution), so it can never disagree with what actually runs.
+
+It reads in **both directions**, from one `/skills` fetch, so the inverse cannot
+drift from the forward mapping:
+
+| Where | Shows |
+|---|---|
+| **Skills** tab | each skill → the agents that invoke it, each linking to that agent |
+| **agent page** | *Skills it invokes* → every skill, and the workflows it is invoked from, each linking to that skill |
+| **org chart node** | the skill that agent invokes, under its key (`+N` when it owns more than one) |
+
+An agent can own several skills and a skill can be invoked from several
+workflows — `capArchitect` reaches `capability-process-map` through
+`capabilities`, `revise-capabilities` **and** `baseline` — so both sides list
+everything rather than collapsing to one name. An agent with assigned work but
+no skill (the Developer, whose `app` workflow is a renderer) says so
+differently from one with no work at all (the CEO, Delivery Lead and Business
+Lead).
+
+The tab flags the two states worth catching early:
+
+- **`missing`** — a workflow invokes a skill with no `SKILL.md`. Every run of
+  that stage spawns, reaches the invocation and dies with `Unknown skill:
+  <slug>`, so it costs a run to discover. Saving in the editor creates the file.
+- **`unused`** — a `SKILL.md` no workflow names. Either a stage lost its `skill`
+  or the file is left over.
+
+`skillsDir` in `orchestrator.config.ts` points at **`skills/`**, the source of
+truth — not `.claude/skills/`, which is the directory of symlinks pointing here.
+Saves are written through `realpath` and then temp-file-plus-rename, because
+renaming *onto* a symlink replaces the link with a regular file and silently
+severs it from the file the team maintains.
 
 **Every skill has a `## Revision mode` section.** When the invocation supplies a
 previous version plus a change instruction, the skill preserves everything the
@@ -1239,7 +1275,7 @@ with the registry, the registry wins.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `<tool_use_error>Unknown skill: <slug></tool_use_error>` mid-run | `.claude/skills/` was never populated on this clone. Claude Code discovers skills there, not from `./skills/`, and `.claude/` is gitignored. | `npm run link-skills`, then confirm `ls -l .claude/skills` shows one symlink per skill. |
+| `<tool_use_error>Unknown skill: <slug></tool_use_error>` mid-run | `.claude/skills/` was never populated on this clone. Claude Code discovers skills there, not from `./skills/`, and `.claude/` is gitignored. | `npm run link-skills`, then confirm `ls -l .claude/skills` shows one symlink per skill. The console's **Skills** tab marks a skill `missing` before it costs you a run. |
 | Agent run fails instantly with `System prompt file not found` | The agent's `bundlePath` in `orchestrator.config.ts` names a file that is not there. | `curl -s localhost:3100/agents/<key>/bundle` — it reports the missing path rather than 404ing. Create the bundle or clear the path. |
 | A CLI verb fails on a database lock | PGlite is single-writer and `npm run dev` / `orch serve` holds it. | Use the HTTP API (`curl -s localhost:3100/issues`), or stop the server. The CLI says which. |
 | An issue sits at `blocked` | A step failed. The blocking comment names it — a non-zero `exec`, a missing `produces` file, an unreadable `reads` file, or an agent that exited non-zero. | Fix the cause, then Resume from the console's Issues tab (or `POST /issues/:id/advance`). It restarts at the step that blocked, not from the beginning. |

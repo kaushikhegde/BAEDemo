@@ -54,11 +54,34 @@ export interface Theme {
   ink50: string; ink100: string; ink200: string; ink500: string; glow: string;
   success: string; warning: string; danger: string; info: string;
   fontFamily: string; logoText: string;
+  /**
+   * A wordmark, as inline SVG markup, painted with `fill="currentColor"` so one
+   * copy serves both themes. Optional: a consumer that supplies none gets
+   * `logoText` set as type instead.
+   *
+   * Inline rather than a URL because the console makes zero network requests —
+   * a `<img src>` would simply not load. It must carry no `<style>` block: an
+   * inline SVG's styles are NOT scoped to it and would leak into the page.
+   *
+   * `logoText` is still required alongside it, as the accessible name.
+   */
+  logoSvg?: string;
 }
 
 export interface OrchestratorConfig {
   workspace: string;
   company?: string;          // default "Scyne"
+  /**
+   * Workspace-relative directory holding the skills agent steps invoke by name,
+   * one `<name>/SKILL.md` per skill. Enables `GET/PUT /skills`; omit it and the
+   * endpoints report the feature as unconfigured rather than guessing a path.
+   *
+   * Configured rather than assumed because WHERE a consumer keeps its skills is
+   * a consumer decision — the library only knows that an agent step names one.
+   * Point it at the source of truth, not at a `.claude/skills` link farm: the
+   * point of editing here is to change the file the team actually maintains.
+   */
+  skillsDir?: string;
   db: DbOptions;
   adapters: Record<string, Runner>;   // the adapter registry
   defaults?: OrchestratorDefaults;

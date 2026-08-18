@@ -36,6 +36,7 @@ const ICONS: Record<string, string> = {
   runs:    I(`<path d="M1.5 8.5h3l2-5 3 10 2-5h3"/>`),
   issues:  I(`<rect x="2" y="2.5" width="12" height="11" rx="2"/><path d="M5 6h6M5 9h6M5 12h3"/>`),
   gates:   I(`<path d="M8 1.5 3 3.5v4c0 3.2 2 5.8 5 7 3-1.2 5-3.8 5-7v-4z"/><path d="M5.8 7.8 7.3 9.4l3-3.3"/>`),
+  skills:  I(`<path d="M8 1.8 2 4.6l6 2.8 6-2.8-6-2.8Z"/><path d="M2 8l6 2.8L14 8"/><path d="M2 11.4l6 2.8 6-2.8"/>`),
   org:     I(`<rect x="6" y="1.5" width="4" height="3.2" rx="1"/><rect x="1.5" y="11.3" width="4" height="3.2" rx="1"/>` +
              `<rect x="10.5" y="11.3" width="4" height="3.2" rx="1"/><path d="M8 4.7v3.1M3.5 11.3V7.8h9v3.5"/>`),
   budgets: I(`<path d="M8 1.8v12.4M10.6 4.2H6.7a1.9 1.9 0 0 0 0 3.8h2.6a1.9 1.9 0 0 1 0 3.8H5"/>`),
@@ -46,7 +47,8 @@ const ICONS: Record<string, string> = {
 
 const TABS: ReadonlyArray<readonly [string, string]> = [
   ["runs", "Runs"], ["issues", "Issues"], ["gates", "Gates"],
-  ["org", "Org"], ["budgets", "Budgets"], ["config", "Config"], ["health", "Health"],
+  ["org", "Org"], ["skills", "Skills"], ["budgets", "Budgets"],
+  ["config", "Config"], ["health", "Health"],
 ];
 
 export function renderConsole(theme: Theme): string {
@@ -56,7 +58,13 @@ export function renderConsole(theme: Theme): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${theme.logoText}</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23363C63'/%3E%3Crect x='4.5' y='4.5' width='7' height='7' rx='2' fill='%23C8A878'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+  `<rect width="16" height="16" rx="4" fill="${theme.brandDeep}"/>` +
+  // The S of the wordmark, drawn as a favicon: at 16px the real paths are mud,
+  // and a letterform reads where a scaled logo does not.
+  `<text x="8" y="12.4" text-anchor="middle" font-family="Georgia,serif" font-size="12"` +
+  ` font-weight="400" fill="${theme.accent}">S</text></svg>`)}">
 <style>
 ${themeCss(theme)}
 /* ===========================================================================
@@ -150,13 +158,23 @@ body { font-family: var(--ui); font-size: 14px; line-height: 1.5;
         display: flex; flex-direction: column; position: sticky; top: 0;
         height: 100dvh; overflow-y: auto; }
 
-.brand { display: flex; align-items: center; gap: .6rem; padding: 1rem 1rem .9rem;
-         border-bottom: 1px solid var(--border); }
+.brand { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem;
+         padding: 1rem 1rem .85rem; border-bottom: 1px solid var(--border); }
+/* The wordmark paints from its inherited color, so one copy serves both
+   themes: Scyne ink
+   on light, near-white on dark. Sized by height — the viewBox is 769x265,
+   so a width would have to be recomputed by hand whenever the mark changed. */
+.brand .wordmark { display: block; color: var(--brand-deep); }
+.brand .wordmark svg { height: 21px; width: auto; display: block; }
+@media (prefers-color-scheme: dark) { .brand .wordmark { color: var(--ink-50); } }
+/* The fallback when a consumer supplies no logoSvg. */
 .brand .glyph { width: 26px; height: 26px; border-radius: 8px; flex: none;
                 background: linear-gradient(145deg, var(--brand), var(--brand-deep));
                 display: grid; place-items: center; }
 .brand .glyph::after { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); }
 .brand .name { font-weight: 650; font-size: .84rem; letter-spacing: -.01em; line-height: 1.2; }
+.brand .tag { font-size: .64rem; letter-spacing: .16em; text-transform: uppercase;
+              font-weight: 700; color: var(--muted); }
 
 nav { display: flex; flex-direction: column; gap: 2px; padding: .7rem .6rem; flex: 1; }
 nav a { display: flex; align-items: center; gap: .6rem; padding: .5rem .6rem;
@@ -189,6 +207,12 @@ nav a .badge.fault { background: var(--danger); color: #fff; }
 .top { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent);
        backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
        padding: .8rem var(--pad); display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+/* The chatbot's signature hairline (tailwind bg-brand-gradient), so the two
+   apps read as one product. Decorative only — nothing is encoded in it. */
+.top::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+              background: linear-gradient(135deg, var(--brand) 0%, var(--ink-500) 45%, #8B5CF6 100%);
+              opacity: .6; }
+.top { position: sticky; }
 .top h1 { margin: 0; font-size: 1.02rem; font-weight: 650; letter-spacing: -.015em; }
 .top .sub { font-size: .78rem; color: var(--muted); margin-top: .1rem; }
 .strip { margin-left: auto; display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
@@ -402,6 +426,10 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 .node .who { min-width: 0; }
 .node .n { display: block; font-weight: 620; font-size: .82rem; letter-spacing: -.01em; white-space: nowrap; }
 .node .k { display: block; font-family: var(--mono); font-size: .68rem; color: var(--muted); white-space: nowrap; }
+/* The skill this agent invokes. Brass because it is the thing the node exists
+   to explain — everything else on it is bookkeeping. */
+.node .sk { display: block; font-family: var(--mono); font-size: .64rem; color: var(--on-accent);
+            white-space: nowrap; max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
 .node.off { opacity: .45; }
 .node.off .av { background: var(--surface-3); color: var(--muted); }
 .legend { display: flex; gap: .9rem; flex-wrap: wrap; font-size: .74rem; color: var(--muted); }
@@ -414,6 +442,16 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 .split2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
           gap: var(--pad); align-items: start; margin-top: 1.2rem; }
 @media (max-width: 1100px) { .split2 { grid-template-columns: 1fr; } }
+
+/* ---- cross-reference chips ----
+   A skill on an agent, an agent on a skill. Underlined on hover rather than
+   always, so a row of six does not read as a wall of links. */
+.tagl { display: inline-flex; align-items: baseline; gap: .3rem; font-family: var(--mono);
+        font-size: .74rem; text-decoration: none; padding: .12rem .45rem; border-radius: 999px;
+        border: 1px solid var(--border); background: var(--surface-2); color: var(--fg); }
+.tagl:hover { border-color: var(--brand); text-decoration: underline; }
+.tagl .x { color: var(--muted); font-size: .68rem; }
+.tags { display: flex; flex-wrap: wrap; gap: .3rem; }
 
 /* ---- transcript ---- */
 #transcript { font-family: var(--mono); font-size: .76rem; line-height: 1.62;
@@ -467,8 +505,10 @@ a { color: var(--brand); }
 <div class="app">
   <aside class="rail">
     <div class="brand">
-      <span class="glyph"></span>
-      <span class="name">${theme.logoText}</span>
+      ${theme.logoSvg
+        ? `<span class="wordmark" role="img" aria-label="${theme.logoText}">${theme.logoSvg}</span>`
+        : `<span class="glyph"></span><span class="name">${theme.logoText}</span>`}
+      <span class="tag">Orchestrator</span>
     </div>
     <nav>${TABS.map(([id, label]) =>
       `<a href="#${id}" data-tab="${id}">${ICONS[id]}${label}</a>`).join("")}</nav>
@@ -1049,6 +1089,34 @@ async function renderGates() {
   wireGateButtons(document.getElementById("g-msg"));
 }
 
+/* ---- the agent <-> skill mapping, one fetch, used from both directions ----
+   /skills already carries an agents list per skill (derived by the engine's own
+   step-agent-else-workflow-assignee resolution), so the inverse needs no second
+   endpoint and cannot disagree with it. */
+let SKILLS = null;
+const skills = async () => {
+  if (!SKILLS) SKILLS = await api("/skills").catch(() => ({ dir: null, skills: [] }));
+  return SKILLS;
+};
+const skillsFor = (all, agentKey) =>
+  (all.skills || []).filter(sk => sk.agents.indexOf(agentKey) !== -1);
+
+/** A skill name as a link to its own page. Used inside clickable rows, so the
+    click must not also trigger the row underneath it. */
+const skillLink = (name, extra) =>
+  '<a href="#skill/' + encodeURIComponent(name) + '" class="tagl" data-stop="1">' +
+  esc(name) + (extra ? '<span class="x">' + esc(extra) + '</span>' : "") + '</a>';
+
+const agentLink = (key) =>
+  '<a href="#agent/' + encodeURIComponent(key) + '" class="tagl" data-stop="1">' + esc(key) + '</a>';
+
+/* A link inside a clickable table row would otherwise navigate twice — the
+   anchor, then the row handler. Delegated once, in the capture phase. */
+document.addEventListener("click", (e) => {
+  const a = e.target.closest ? e.target.closest("a[data-stop]") : null;
+  if (a) e.stopPropagation();
+}, true);
+
 /* ---- org chart -----------------------------------------------------------
    A real top-down chart, and every node carries live state: what that agent is
    doing right now, what it has cost, how many runs it has. An org chart that
@@ -1059,6 +1127,7 @@ async function renderOrg(selected) {
   const both = await Promise.all([api("/agents"), api("/issues").catch(() => [])]);
   const agents = both[0], issues = both[1];
 
+  const allSkills = await skills();
   const runLists = await Promise.all(agents.map(a => api("/agents/" + a.key + "/runs").catch(() => [])));
   const stats = {};
   agents.forEach((a, ix) => {
@@ -1093,12 +1162,21 @@ async function renderOrg(selected) {
     const s = stats[a.key] || { runs: 0, cost: 0, running: false };
     const isBlocked = !!blockedFor[a.key];
     const cls = (a.status === "disabled" ? "off" : (s.running ? "running" : (isBlocked ? "blocked" : "")));
+    // What this agent actually invokes. The three management roles invoke
+    // nothing, and saying so on the node is the point: it explains at a glance
+    // why no workflow assigns to them.
+    const mine = skillsFor(allSkills, a.key);
+    const skillLine = mine.length
+      ? esc(mine[0].name) + (mine.length > 1 ? " +" + (mine.length - 1) : "")
+      : "";
     return '<li><button class="node ' + cls + (a.key === selected ? " on" : "") +
-      '" data-agent="' + esc(a.key) + '" title="' + esc(a.title || a.name) + '">' +
+      '" data-agent="' + esc(a.key) + '" title="' + esc(a.title || a.name) +
+      (mine.length ? " — invokes " + esc(mine.map(x => x.name).join(", ")) : "") + '">' +
       '<span class="av">' + esc(initials(a.name)) + '<span class="live"></span></span>' +
       '<span class="who"><span class="n">' + esc(a.name) + '</span>' +
       '<span class="k">' + esc(a.key) +
-        (s.cost > 0 ? ' · ' + esc(money(s.cost)) : "") + '</span></span>' +
+        (s.cost > 0 ? ' · ' + esc(money(s.cost)) : "") + '</span>' +
+      (skillLine ? '<span class="sk">' + skillLine + '</span>' : "") + '</span>' +
       '</button>' +
       (children[a.key] && children[a.key].length
         ? '<ul>' + children[a.key].map(node).join("") + '</ul>' : "") + '</li>';
@@ -1111,6 +1189,7 @@ async function renderOrg(selected) {
         '<span><i style="background:var(--info)"></i>running</span>' +
         '<span><i style="background:var(--danger)"></i>blocked</span>' +
         '<span><i style="background:var(--muted)"></i>idle</span>' +
+        '<span class="mono" style="color:var(--on-accent)">skill it invokes</span>' +
         '<span class="mono">' + active + ' active · ' + (agents.length - active) + ' disabled · defaults ' +
           esc(c.defaults.model || "—") + ' / ' + esc(c.defaults.adapter) + '</span>' +
       '</div>' +
@@ -1179,8 +1258,13 @@ async function renderAgent(key, target) {
     api("/agents/" + key), config(), api("/runners"),
     api("/agents/" + key + "/runs").catch(() => []),
     api("/budgets").catch(() => []),
+    skills(),
   ]);
   const agent = all[0], cfg = all[1], runners = all[2], runs = all[3], budgets = all[4];
+  const mySkills = skillsFor(all[5], key);
+  // Assigned work with no skill is a different thing from no assigned work:
+  // the Developer runs a renderer, the CEO runs nothing.
+  const myWorkflows = cfg.workflows.filter(w => w.assignee === key).map(w => w.key);
   const b = budgets.find(x => x.scope === "agent" && x.scope_key === key) || {};
   const spend = runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0);
   const sel = (opts, cur) => opts.map(o =>
@@ -1204,6 +1288,31 @@ async function renderAgent(key, target) {
         '<div class="metric"><div class="l">effective model</div><div class="v" style="font-size:.95rem">' +
           esc(agent.model || cfg.defaults.model || "CLI default") + '</div></div>' +
       '</div>' +
+    '</div>' +
+
+    // What this agent actually invokes, and where. An agent can own more than
+    // one skill, and a skill can be invoked from several workflows, so both are
+    // listed rather than collapsed to a single name.
+    '<div class="card" style="margin-top:.7rem"><h3>Skills it invokes</h3>' +
+      (mySkills.length
+        ? '<div class="stack" style="gap:.5rem">' + mySkills.map(sk =>
+            '<div class="wrap" style="gap:.5rem">' +
+              skillLink(sk.name) +
+              (sk.status === "missing"
+                ? ' ' + st("blocked") + '<span class="muted" style="font-size:.74rem">no SKILL.md — every run ' +
+                  'of this stage will die with Unknown skill</span>'
+                : '<span class="muted mono" style="font-size:.72rem">via ' +
+                  esc(sk.workflows.join(", ")) + '</span>') +
+            '</div>' +
+            (sk.summary ? '<div class="muted" style="font-size:.76rem;max-width:70ch">' +
+              esc(sk.summary.slice(0, 160)) + (sk.summary.length > 160 ? "…" : "") + '</div>' : "")
+          ).join("") + '</div>'
+        : '<p class="hint" style="margin:0">' + (myWorkflows.length
+            ? 'Invokes no skill. It is assigned <span class="mono">' + esc(myWorkflows.join(", ")) +
+              '</span>, whose steps are shell commands and attachments rather than a skill invocation — a ' +
+              'renderer, not a judgement call.'
+            : 'No workflow assigns to this agent, so it invokes nothing. It exists for the org chart.') +
+          '</p>') +
     '</div>' +
 
     '<div class="card"><h3>Runtime</h3>' +
@@ -1383,6 +1492,154 @@ async function renderBundle(key) {
   });
 }
 
+/* ---- skills --------------------------------------------------------------
+   What exists, who invokes it, and whether the two agree. The agent column is
+   derived from the workflows, not declared — so it is always what will actually
+   run. */
+async function renderSkills() {
+  setHead("Skills", "What each agent invokes, and whether the file is there.");
+  const out = await api("/skills");
+  const rows = out.skills;
+
+  if (!out.dir) {
+    view.innerHTML = '<div class="empty"><b>No skills directory configured</b>' +
+      'Set <span class="mono">skillsDir</span> in the orchestrator config to list and edit skills here.</div>';
+    return;
+  }
+  if (!rows.length) {
+    view.innerHTML = '<div class="empty"><b>No skills</b>' +
+      'Nothing in <span class="mono">' + esc(out.dir) + '</span>, and no workflow invokes one.</div>';
+    return;
+  }
+
+  const broken = rows.filter(r => r.status === "missing");
+  const orphan = rows.filter(r => r.status === "unused");
+
+  view.innerHTML =
+    (broken.length
+      ? '<div class="card fault"><h3>' + broken.length + ' skill(s) invoked but not on disk</h3>' +
+        '<p class="hint" style="margin:0">Every run of the stage that invokes one dies with ' +
+        '<span class="mono">Unknown skill</span> — after the process has spawned, so it costs a run to discover. ' +
+        'Open it below to create the file.</p></div>'
+      : "") +
+    (orphan.length
+      ? '<div class="card"><h3>' + orphan.length + ' skill(s) invoked by nothing</h3>' +
+        '<p class="hint" style="margin:0">On disk but named by no workflow step. Either a stage lost its ' +
+        '<span class="mono">skill</span>, or the file is left over.</p></div>'
+      : "") +
+    '<div class="tablewrap" style="margin-top:.8rem"><div class="scroll-x"><table>' +
+    '<thead><tr><th>Skill</th><th>Invoked by</th><th>Workflows</th><th>State</th>' +
+    '<th class="num">Lines</th></tr></thead><tbody>' +
+    rows.map(r => '<tr class="clickable" data-skill="' + esc(r.name) + '">' +
+      '<td><div class="mono" style="font-weight:600">' + esc(r.name) + '</div>' +
+        (r.summary ? '<div class="muted" style="font-size:.74rem;max-width:52ch">' +
+          esc(r.summary.slice(0, 110)) + (r.summary.length > 110 ? "…" : "") + '</div>' : "") + '</td>' +
+      '<td>' + (r.agents.length
+        ? '<span class="tags">' + r.agents.map(agentLink).join("") + '</span>'
+        : '<span class="muted">—</span>') + '</td>' +
+      '<td class="mono" style="font-size:.72rem">' + (esc(r.workflows.join(", ")) || '<span class="muted">—</span>') + '</td>' +
+      '<td>' + st(r.status === "missing" ? "blocked" : (r.status === "unused" ? "todo" : "done")) +
+        ' <span class="muted mono" style="font-size:.68rem">' + esc(r.status) + '</span></td>' +
+      '<td class="num">' + (r.lines == null ? "—" : num(r.lines)) + '</td>' +
+      '</tr>').join("") +
+    '</tbody></table></div></div>' +
+    '<p class="hint">The <b>Invoked by</b> column is derived from each workflow&rsquo;s own agent steps ' +
+    '(the step&rsquo;s agent, falling back to the workflow&rsquo;s assignee) — the same resolution the engine ' +
+    'performs, so it cannot disagree with what runs. Every agent links to its own page, which lists the ' +
+    'skills it invokes from the other direction.</p>';
+
+  on("tr[data-skill]", "click", (e) => { location.hash = "#skill/" + e.currentTarget.dataset.skill; });
+}
+
+/** One skill: who invokes it, and its full text, editable. */
+async function renderSkill(name) {
+  setHead("Skill", name);
+  const sk = await api("/skills/" + encodeURIComponent(name));
+  const missing = !!sk.error;
+
+  view.innerHTML =
+    '<div class="card' + (missing ? " fault" : "") + '">' +
+      '<div class="wrap" style="justify-content:space-between;align-items:flex-start">' +
+        '<div><h3 style="margin:0" class="mono">' + esc(sk.name) + '</h3>' +
+        '<span class="muted mono" style="font-size:.74rem">' + esc(sk.path || "not on disk") + '</span></div>' +
+        '<button class="ghost sm" id="s-back">All skills</button>' +
+      '</div>' +
+      (sk.summary ? '<p class="hint" style="margin:.6rem 0 0">' + esc(sk.summary) + '</p>' : "") +
+      '<div class="grid" style="margin-top:.9rem">' +
+        '<div class="metric"><div class="l">invoked by</div><div class="v" style="font-size:.95rem">' +
+          (sk.agents.length
+            ? '<span class="tags" style="margin-top:.2rem">' + sk.agents.map(agentLink).join("") + '</span>'
+            : '<span class="muted">nobody</span>') +
+          '</div><div class="s">' + (sk.agents.length > 1 ? "agents" : "agent") + '</div></div>' +
+        '<div class="metric"><div class="l">workflows</div><div class="v" style="font-size:.95rem">' +
+          (esc(sk.workflows.join(", ")) || "none") + '</div></div>' +
+        '<div class="metric"><div class="l">size</div><div class="v" style="font-size:1.1rem">' +
+          (sk.lines == null ? "—" : num(sk.lines) + " lines") + '</div></div>' +
+      '</div>' +
+      (missing
+        ? '<p class="err" style="margin:.8rem 0 .2rem">' + esc(sk.error) + '</p>' +
+          '<p class="hint" style="margin:0">A workflow invokes this name but there is no SKILL.md. The run ' +
+          'spawns, the agent reaches the invocation and dies with <span class="mono">Unknown skill: ' +
+          esc(sk.name) + '</span>. <b>Saving below creates it.</b></p>'
+        : "") +
+    '</div>' +
+
+    '<div class="card" style="margin-top:.8rem">' +
+      '<div class="wrap" style="justify-content:space-between">' +
+        '<h3 style="margin:0">Edit</h3>' +
+        '<span class="muted mono" style="font-size:.72rem" id="s-stat"></span></div>' +
+      '<textarea id="s-text" spellcheck="false" aria-label="Skill definition" ' +
+        'style="min-height:60vh;font-family:var(--mono);font-size:.78rem;line-height:1.6;margin-top:.6rem">' +
+        esc(sk.content || "") + '</textarea>' +
+      '<div class="actions"><button id="s-save" disabled>Save</button>' +
+      '<button class="ghost" id="s-revert" disabled>Revert</button><span id="s-msg"></span></div>' +
+      '<p class="hint" style="margin:.5rem 0 0">Written through the symlink to the real file, via a temp file and ' +
+      'a rename — so a skills directory made of links stays a directory of links, and an interrupted save leaves ' +
+      'the previous version intact. The runtime reads a skill when the agent invokes it, so a save applies to the ' +
+      'next run.</p>' +
+    '</div>';
+
+  document.getElementById("s-back").addEventListener("click", () => { location.hash = "#skills"; });
+
+  const box = document.getElementById("s-text");
+  const save = document.getElementById("s-save");
+  const revert = document.getElementById("s-revert");
+  const msg = document.getElementById("s-msg");
+  const stat = document.getElementById("s-stat");
+  const original = sk.content || "";
+
+  const measure = () => {
+    const v = box.value;
+    stat.textContent = v.split("\\n").length + " lines · " + num(v.length) + " chars";
+    const dirty = v !== original;
+    save.disabled = !dirty;
+    revert.disabled = !dirty;
+    if (dirty) msg.innerHTML = '<span class="muted" style="font-size:.78rem">Unsaved</span>';
+  };
+  measure();
+  box.addEventListener("input", measure);
+  revert.addEventListener("click", () => { box.value = original; measure(); msg.innerHTML = ""; });
+
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const res = await send("/skills/" + encodeURIComponent(name), "PUT", { content: box.value });
+      // The inventory is cached for the session; a save changes its size,
+      // summary and possibly its status (a missing skill just became ok).
+      SKILLS = null;
+      msg.innerHTML = '<span class="saved">Saved ' + num(res.bytes) + ' bytes — applies to the next run.</span>';
+      setTimeout(() => { renderSkill(name); }, 900);
+    } catch (e) {
+      msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+      save.disabled = false;
+    }
+  });
+
+  box.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); if (!save.disabled) save.click(); }
+  });
+}
+
 /* ---- budgets ------------------------------------------------------------- */
 async function renderBudgets() {
   setHead("Budgets", "A ceiling, not a target. Blank means no limit.");
@@ -1528,12 +1785,14 @@ async function renderHealth() {
 
 /* ---- routing ------------------------------------------------------------- */
 const ROUTES = { runs: renderRuns, issues: renderIssues, gates: renderGates,
-                 org: renderOrg, budgets: renderBudgets, config: renderConfig, health: renderHealth };
+                 org: renderOrg, skills: renderSkills, budgets: renderBudgets,
+                 config: renderConfig, health: renderHealth };
 
 // Which nav item lights up for a detail route. A run belongs to Runs, an
 // agent and its bundle to Org, an issue to Issues — otherwise drilling in
 // leaves the rail with nothing selected and you lose your place.
-const OWNER = { run: "runs", issue: "issues", agent: "org", bundle: "org", "new": "runs" };
+const OWNER = { run: "runs", issue: "issues", agent: "org", bundle: "org",
+                skill: "skills", "new": "runs" };
 
 async function route() {
   stopPolling();
@@ -1546,6 +1805,7 @@ async function route() {
     if (hash.indexOf("run/") === 0) { await renderRun(hash.slice(4)); return; }
     if (hash.indexOf("issue/") === 0) { await renderIssue(hash.slice(6)); return; }
     if (hash.indexOf("bundle/") === 0) { await renderBundle(hash.slice(7)); return; }
+    if (hash.indexOf("skill/") === 0) { await renderSkill(decodeURIComponent(hash.slice(6))); return; }
     if (hash.indexOf("agent/") === 0) { await renderOrg(hash.slice(6)); return; }
     const fn = ROUTES[hash];
     if (!fn) {
