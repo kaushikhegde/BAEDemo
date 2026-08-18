@@ -1,6 +1,7 @@
 import type { DbOptions } from "./core/db.js";
 import type { AgentSpec, Effort } from "./core/repo.js";
 import type { Runner } from "./core/runner.js";
+import { placeholdersIn } from "./core/interpolate.js";
 
 export type Step =
   | { type: "exec";   cmd: string; cwd?: string; timeoutMs?: number }
@@ -154,4 +155,54 @@ export function validateConfig(c: OrchestratorConfig): string[] {
     }
   }
   return problems;
+}
+
+/**
+ * Variables the engine injects on EVERY step regardless of the issue's params.
+ * `validateConfig` already refuses a `reads` entry that shadows either of
+ * them; `workflowParams` excludes them for the same reason — they are supplied
+ * by the runtime, so asking a caller for them would be asking for something
+ * their answer could not affect.
+ */
+const RESERVED_VARS = new Set(["workspace", "issueId"]);
+
+/**
+ * The parameter names a workflow's steps interpolate, derived by scanning the
+ * workflow itself rather than declared alongside it.
+ *
+ * Derived, not configured, deliberately. A hand-maintained `params: []` on
+ * `WorkflowDef` is a second source of truth that drifts the first time someone
+ * adds `{confluenceSpace}` to a publish prompt — and `orchestrator.workflows.ts`
+ * COMPILES its eighteen workflows out of `scripts/pipeline.mjs`, so there is no
+ * hand-written declaration site to put it on anyway. Scanning is always
+ * correct by construction.
+ *
+ * The library still knows nothing about what a "project" or a "feature" is: it
+ * returns whatever names the consumer's own templates use, in first-appearance
+ * order, so a form built from this asks for exactly what this workflow reads.
+ */
+export function workflowParams(wf: WorkflowDef): string[] {
+  const found = new Set<string>();
+
+  // Same grammar as the engine, via the same module: a `{{literal}}` is not a
+  // parameter, because `interpolate` will not substitute one. Re-implementing
+  // the regex here is how the two silently disagree.
+  const scan = (s: string | undefined): void => {
+    if (!s) return;
+    for (const name of placeholdersIn(s)) {
+      if (!RESERVED_VARS.has(name)) found.add(name);
+    }
+  };
+
+  scan(wf.title);
+  for (const step of wf.steps ?? []) {
+    switch (step.type) {
+      case "exec":   scan(step.cmd); scan(step.cwd); break;
+      case "agent":  scan(step.prompt); Object.values(step.reads ?? {}).forEach(scan); break;
+      case "attach": step.files.forEach(scan); break;
+      case "gate":   scan(step.title); scan(step.summary); break;
+      case "flow":   scan(step.workflow); Object.values(step.params ?? {}).forEach(v => scan(String(v))); break;
+    }
+  }
+  return [...found];
 }

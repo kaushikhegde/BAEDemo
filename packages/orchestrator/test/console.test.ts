@@ -61,4 +61,79 @@ describe("console", () => {
     expect(custom).toContain("#1F4C71");
     expect(custom).toContain("Acme Delivery");
   });
+
+  it("routes to a detail view for every drillable entity", () => {
+    // The Issues tab used to be able to tell you an issue was blocked but never
+    // why: #issue/<id> was never routed and renderBundle was called but never
+    // defined, so the agent Instructions link threw.
+    for (const route of ["run/", "issue/", "bundle/", "agent/"]) {
+      expect(html, `no route for #${route}`).toContain(`hash.indexOf("${route}") === 0`);
+    }
+    for (const fn of ["renderIssue", "renderBundle", "renderRun", "renderAgent"]) {
+      expect(html, `${fn} is routed to but not defined`).toContain(`async function ${fn}(`);
+    }
+  });
+
+  it("can start a run, and builds the form from the workflow's declared params", () => {
+    expect(html).toContain('id="newrun"');
+    expect(html).toContain("async function newRunModal(");
+    expect(html).toContain('send("/issues", "POST"');
+    expect(html).toContain("w.params");
+  });
+
+  it("uses inline SVG for nav icons, never emoji", () => {
+    // Emoji are font-dependent, render differently per platform and cannot be
+    // themed. Every nav item carries a real vector glyph.
+    expect(html).toContain('<svg class="ic"');
+    expect(html).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+  });
+
+  it("pairs every status colour with its word, so colour is never the only carrier", () => {
+    // st() prints the state name next to the dot; the dot alone would fail
+    // WCAG 1.4.1 and would be unreadable to anyone who does not already know
+    // the palette.
+    expect(html).toContain('.replace(/_/g, " ")');
+  });
+
+  it("keeps a visible focus ring on everything focusable", () => {
+    expect(html).toContain("a:focus-visible, button:focus-visible");
+    expect(html).not.toMatch(/outline:\s*(none|0)\s*;?\s*}/);
+  });
+
+  it("respects prefers-reduced-motion for its only animation", () => {
+    expect(html).toContain("prefers-reduced-motion: no-preference");
+  });
+
+  it("scrolls wide content inside its own container, not the page", () => {
+    // A twelve-agent org chart is wider than any viewport; the page body must
+    // never scroll sideways to accommodate it.
+    expect(html).toContain(".chartwrap { overflow-x: auto");
+    expect(html).toContain(".scroll-x { overflow-x: auto; }");
+  });
+
+  it("has exactly one poll timer and clears it on every route change", () => {
+    // Leaving a live transcript and navigating away used to be the way to leak
+    // a second poller; route() clears first, unconditionally.
+    expect(html).toContain("async function route() {\n  stopPolling();");
+  });
+
+  it("never uses a raw semantic colour as text, so light mode stays readable", () => {
+    // The brand palette is tuned for a dark ground. Measured against white,
+    // --accent is 2.25:1, --success 2.54:1, --danger 3.67:1 and --info 3.68:1 —
+    // all below the 4.5:1 floor. Text usages therefore go through an --on-*
+    // token, darkened for light and restored to the raw colour under dark.
+    const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+    for (const token of ["accent", "success", "danger", "info"]) {
+      expect(css, `--on-${token} is not defined`).toContain(`--on-${token}`);
+      // `color: var(--danger)` as a bare declaration is the regression.
+      // Anchored so `border-color: var(--danger)` — a border, which is not
+      // text and needs only 3:1 — is not mistaken for a text declaration.
+      const bare = new RegExp(`(^|[;{\\s])color:\\s*var\\(--${token}\\)`, "m");
+      expect(bare.test(css), `a raw var(--${token}) is used as text colour`).toBe(false);
+    }
+    // Dark mode must put the undarkened values back, or the chips go muddy.
+    const dark = css.slice(css.indexOf("prefers-color-scheme: dark"));
+    expect(dark).toContain("--on-accent: var(--accent)");
+    expect(dark).toContain("--on-danger: var(--danger)");
+  });
 });

@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { filterRunLog } from "../core/transcript.js";
-import { EFFORTS } from "../config.js";
+import { EFFORTS, workflowParams } from "../config.js";
 import type {
   AgentBudget, AgentRow, AgentSpec, Effort, ListIssuesFilter, RunRow, UpdateIssuePatch,
 } from "../core/repo.js";
@@ -572,8 +572,21 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       adapters: Object.keys(orch.config.adapters),
       defaults: orch.config.defaults ?? {},
       theme: resolveTheme(orch.config.theme),
+      // `params` is derived from each workflow's own templates (see
+      // `workflowParams`) so the console's New-run form can ask for exactly
+      // what this workflow interpolates — and cannot go stale when a stage
+      // starts reading a new variable.
       workflows: orch.config.workflows.map(w => ({
         key: w.key, label: w.label, assignee: w.assignee, steps: w.steps.length,
+        params: workflowParams(w),
+        // Type and phase ONLY. A step also carries its prompt, its shell
+        // command and its `reads` paths; none of that belongs on a sanitised
+        // endpoint, and the console needs neither — it wants to name the step
+        // an issue is parked on ("step 4 of 6 — attach"), which "4/6" alone
+        // cannot do.
+        stepList: w.steps.map(s => ({
+          type: s.type, phase: s.type === "agent" ? s.phase : undefined,
+        })),
       })),
     });
   }));

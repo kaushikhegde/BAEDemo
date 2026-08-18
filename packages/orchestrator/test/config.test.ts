@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { defineOrchestrator, validateConfig, resolveRuntime } from "../src/config.js";
+import { defineOrchestrator, validateConfig, resolveRuntime, workflowParams } from "../src/config.js";
 
 const noopRunner = { run: async () => ({ exitCode: 0, status: "succeeded" as const, usage: null, stderrTail: "" }) };
 
@@ -154,5 +154,41 @@ describe("resolveRuntime", () => {
     const step = { type: "agent" as const, phase: "generate" };
     expect(resolveRuntime(step, { effort: "max" }, { model: "opus", adapter: "claude_local" }))
       .toEqual({ adapter: "claude_local", model: "opus", effort: "max" });
+  });
+});
+
+describe("workflowParams", () => {
+  const wf = (steps: any[], title?: string): any => ({ key: "k", label: "L", assignee: "a", title, steps });
+
+  it("scans every step type, in first-appearance order", () => {
+    expect(workflowParams(wf([
+      { type: "exec", cmd: "node stage.mjs {project} {feature} datamodel" },
+      { type: "agent", phase: "generate", prompt: "Design for {feature} in {confluenceSpace}",
+        reads: { previous: "projects/{project}/{feature}/outputs/x.md" } },
+      { type: "attach", files: ["projects/{project}/{feature}/outputs/x.md"] },
+      { type: "gate", title: "Approve {feature}", summary: "for {project}" },
+    ]))).toEqual(["project", "feature", "confluenceSpace"]);
+  });
+
+  it("includes the issue-title template", () => {
+    expect(workflowParams(wf([{ type: "exec", cmd: "true" }], "Data model — {project} / {feature}")))
+      .toEqual(["project", "feature"]);
+  });
+
+  it("excludes the variables the engine injects on every step", () => {
+    // Asking a caller for `workspace` would be asking for something their
+    // answer cannot affect — the engine overwrites it.
+    expect(workflowParams(wf([{ type: "exec", cmd: "cd {workspace} && run {issueId} for {project}" }])))
+      .toEqual(["project"]);
+  });
+
+  it("excludes a doubled brace, which interpolate treats as a literal", () => {
+    expect(workflowParams(wf([
+      { type: "agent", phase: "publish", prompt: "replace {{PRODUCT_SUMMARY_URL}} for {project}" },
+    ]))).toEqual(["project"]);
+  });
+
+  it("returns an empty list for a workflow that interpolates nothing", () => {
+    expect(workflowParams(wf([{ type: "exec", cmd: "npm run app" }]))).toEqual([]);
   });
 });

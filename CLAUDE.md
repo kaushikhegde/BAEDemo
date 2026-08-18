@@ -116,7 +116,7 @@ npm run dev          # orchestrator on :3100 (console at /orch), chatbot on :517
 
 | | |
 |---|---|
-| **Console** | `http://127.0.0.1:3100/orch` — runs with live transcripts, issues, pending gates with approve/reject, org chart, spend, config, health |
+| **Console** | `http://127.0.0.1:3100/orch` — **start a run**, runs with live transcripts, issues that **drill in** to their activity, work products, gates and cost, pending gates with approve/reject, a top-down **org chart with live agent state**, spend, config, health |
 | **API docs** | `http://127.0.0.1:3100/docs` — generated from `openapi.yaml`, which is diffed against the router in both directions by a test |
 | **Chatbot** | `http://127.0.0.1:5173` |
 
@@ -240,6 +240,31 @@ than holding the connection open for the length of a run.
 A blocked issue is restarted with `POST /issues/:id/advance`, from the console's
 Resume button or the chatbot's Request-changes path. It resumes at the step that
 blocked; steps that already succeeded are not re-run.
+
+### Self-healing
+
+A failed **agent** step is retried **once, automatically** — but only when the
+first attempt demonstrably **spent nothing**. `src/core/retry.ts` decides, and
+the test is deliberately about money rather than about how transient the error
+text looks:
+
+| First attempt | Retried? | Why |
+|---|---|---|
+| No `result` event AND under 60s wall clock | **yes** | nothing was billed, so the retry cannot cost more than the failed spawn did |
+| Reached its `result` event | no | it ran and failed on its own terms; a retry buys another full run |
+| Over 60s with usage unrecorded | no | killed mid-flight — its spend is unknown, not zero |
+| `over_budget` | no | the ceiling was reached once and would be billed again |
+| Configuration error (missing bundle, `Unknown skill`, bad key) | no | it fails identically, and a retry line that means nothing teaches you to ignore the ones that do |
+
+The retry gets its **own run row and its own log file** (`…-retry1.jsonl`), so
+the console shows two attempts rather than two mysterious runs a second apart,
+and one transcript never contains another attempt's events. The blocking
+comment always names which row above applied — `after 1 attempt. Not retrying:
+the agent ran to completion and failed on its own terms.`
+
+`exec`, `attach`, `gate` and `flow` steps are never retried: a validator that
+exits non-zero or a `produces` file that was not written will do exactly the
+same thing next time.
 
 ### Staleness
 
@@ -409,6 +434,13 @@ breaches the duration limit is killed (SIGTERM, then SIGKILL); token and cost
 limits are checked once the final `result` event lands and flag the run
 `over_budget`.
 
+**Cost is reported, not computed.** There is no price table anywhere in
+`packages/orchestrator/` — `core/usage.ts` reads `total_cost_usd` straight off
+Claude Code's own final `result` event and records it verbatim, alongside the
+four token counters from the same event. So a figure in the console is the
+CLI's arithmetic, not ours, and a model the CLI does not price shows as `—`
+rather than as a guess.
+
 **Storage** is PGlite at `.orchestrator/pgdata`, with raw run logs as JSONL at
 `.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
 
@@ -419,7 +451,7 @@ that keeps it generic: nothing under `packages/orchestrator/` may import
 `scripts/pipeline.mjs`, `orchestrator.config.ts`, or anything under `projects/`.
 
 ```
-src/core/    db · repo · engine · runner · usage · transcript · interpolate
+src/core/    db · repo · engine · runner · usage · transcript · interpolate · retry · overrides
 src/http/    router · console · docs · theme
 src/cli.ts   seed · run · status · gate · runs · log · serve
 ```
@@ -448,6 +480,23 @@ Any `--key value` after the workflow name becomes a workflow param, so
 `POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
 `/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · `/config` · `/orch` ·
 `/openapi.json` · `/docs`.
+
+`GET /config` reports, per workflow, a **`params`** list and a **`stepList`**.
+Both are *derived by scanning the workflow*, never declared beside it — the
+eighteen workflows are compiled from `scripts/pipeline.mjs`, so there is no
+hand-written site a declaration could live on, and a derived list cannot drift
+when a stage starts reading a new variable. `params` uses the engine's own
+placeholder grammar (`placeholdersIn`, exported from `core/interpolate.ts`) so
+the console's New-run form asks for exactly what the steps interpolate.
+`stepList` carries each step's type and phase and **nothing else** — never its
+prompt, command or `reads` paths.
+
+> **A doubled brace is a literal.** `interpolate` leaves `{{NAME}}` untouched
+> and substitutes only `{name}`. Without that escape the inner `{NAME}` matched,
+> missed and threw: the requirements workflow's publish prompt says «replace
+> `{{PRODUCT_SUMMARY_URL}}` in the description», so **every requirements run
+> blocked at publish with `unknown placeholder {PRODUCT_SUMMARY_URL}` — right
+> after a human had approved its gate.**
 
 `openapi.yaml` is diffed against the router's `ROUTES` table **in both
 directions** by `test/openapi.test.ts`: every route must be documented and every

@@ -440,4 +440,122 @@ describe("engine (fix round 1: idempotent wait steps, interpolate() throws don't
     const comments = await repo.listComments(issue.id);
     expect(comments.map(c => c.body).join("\n")).toContain("{missingvar}");
   });
+
+  // ---- self-healing ------------------------------------------------------
+
+  /**
+   * A runner whose first N attempts fail with `first` and whose later attempts
+   * return `then`. `calls` counts every spawn, which is the figure the retry
+   * policy is really about: each one is a real agent process.
+   */
+  const flakyRunner = (failures: number, first: any, then?: any) => {
+    let n = 0;
+    return { run: async () => {
+      calls.push("run");
+      n += 1;
+      if (n <= failures) return { exitCode: 1, status: "failed" as const, usage: null, stderrTail: "", ...first };
+      return then ?? {
+        exitCode: 0, status: "succeeded" as const, stderrTail: "",
+        usage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0,
+                 costUsd: 0.01, durationMs: 100, numTurns: 1, sessionId: "s" },
+      };
+    } };
+  };
+
+  it("retries a cheap transient failure once and carries on", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+
+    const engine = createEngine({
+      repo, exec: fakeExec,
+      config: config(dir, flakyRunner(1, { stderrTail: "Error: connect ETIMEDOUT 160.79.104.10:443" })),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    // Two spawns for one step, and the workflow still reached its gate — the
+    // human was never woken for something a retry cleared.
+    expect(calls.filter(c => c === "run").length).toBe(2);
+    expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
+
+    const runs = await repo.listRuns(issue.id);
+    expect(runs.filter(r => r.step_index === 1).length).toBe(2);
+    expect(runs.some(r => r.status === "failed")).toBe(true);
+    expect(runs.some(r => r.status === "succeeded")).toBe(true);
+
+    const said = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(said).toContain("retrying once");
+  });
+
+  it("retries at most once, then blocks saying it already had its retry", async () => {
+    const engine = createEngine({
+      repo, exec: fakeExec,
+      config: config(dir, flakyRunner(99, { stderrTail: "Error: socket hang up" })),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect(calls.filter(c => c === "run").length).toBe(2);
+    const after = await repo.getIssue(issue.id);
+    expect(after?.status).toBe("blocked");
+    expect(after?.step_index).toBe(1);   // parked ON the failing step, not past it
+
+    const last = (await repo.listComments(issue.id)).pop();
+    expect(last?.body).toContain("after 2 attempts");
+    expect(last?.body).toContain("already had its one retry");
+  });
+
+  it("does NOT retry a run that spent real tokens — it blocks on the first failure", async () => {
+    // The whole point of the policy: a fifteen-minute run that failed on its
+    // own terms must not be paid for twice.
+    const expensive = {
+      exitCode: 2, status: "failed" as const, stderrTail: "the agent gave up",
+      usage: { inputTokens: 148_231, outputTokens: 21_044, cacheReadTokens: 0, cacheCreationTokens: 0,
+               costUsd: 3.19, durationMs: 900_000, numTurns: 61, sessionId: "s" },
+    };
+    const engine = createEngine({
+      repo, exec: fakeExec,
+      config: config(dir, { run: async () => { calls.push("run"); return expensive; } }),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect(calls.filter(c => c === "run").length).toBe(1);
+    expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
+    const last = (await repo.listComments(issue.id)).pop();
+    expect(last?.body).toContain("after 1 attempt");
+    expect(last?.body).toContain("failed on its own terms");
+  });
+
+  it("does NOT retry a configuration error, however cheap it was", async () => {
+    const engine = createEngine({
+      repo, exec: fakeExec,
+      config: config(dir, flakyRunner(99, { stderrTail: "System prompt file not found: agent-instructions/ba.thin.md" })),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect(calls.filter(c => c === "run").length).toBe(1);
+    const last = (await repo.listComments(issue.id)).pop();
+    expect(last?.body).toContain("configuration error");
+  });
+
+  it("gives each attempt its own log file, so one transcript is not two runs", async () => {
+    // The runner appends to its log. Without a per-attempt filename the retry
+    // writes into the first attempt's log and the console renders the failed
+    // attempt's events inside the successful run's transcript.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+
+    const engine = createEngine({
+      repo, exec: fakeExec,
+      config: config(dir, flakyRunner(1, { stderrTail: "fetch failed" })),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const paths = (await repo.listRuns(issue.id)).filter(r => r.step_index === 1).map(r => r.log_path);
+    expect(new Set(paths).size).toBe(2);
+    expect(paths.some(p => p.includes("-retry1"))).toBe(true);
+  });
 });

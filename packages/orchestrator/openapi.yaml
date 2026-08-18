@@ -777,6 +777,31 @@ paths:
                         label:    { type: string }
                         assignee: { type: string }
                         steps:    { type: integer }
+                        params:
+                          type: array
+                          items: { type: string }
+                          description: >-
+                            The variable names this workflow's own step
+                            templates interpolate, in first-appearance order —
+                            derived by scanning the workflow, not declared
+                            beside it, so it cannot drift. `workspace` and
+                            `issueId` are excluded: the engine injects both on
+                            every step. This is what `POST /issues` expects
+                            under `params`.
+                        stepList:
+                          type: array
+                          description: >-
+                            Each step's type and (for agent steps) phase, in
+                            order — enough to name the step an issue is parked
+                            on. Prompts, shell commands and `reads` paths are
+                            deliberately not included.
+                          items:
+                            type: object
+                            properties:
+                              type:
+                                type: string
+                                enum: [exec, agent, attach, gate, flow]
+                              phase: { type: string }
 
   /orch:
     get:

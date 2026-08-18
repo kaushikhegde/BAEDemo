@@ -17,6 +17,8 @@ import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { interpolate } from "./interpolate.js";
+import { classifyFailure } from "./retry.js";
+import type { RunResult } from "./runner.js";
 import { resolveRuntime } from "../config.js";
 import type { OrchestratorConfig, Step, WorkflowDef } from "../config.js";
 import type { createRepo, AgentRow, IssueRow } from "./repo.js";
@@ -184,21 +186,6 @@ export function createEngine(deps: {
           return "blocked";
         }
 
-        // The attempt number is part of the filename because the runner opens
-        // the log in APPEND mode: without it a retried step appends to the
-        // previous attempt's log, two run rows point at one file, and the
-        // console renders the failed attempt's events inside the successful
-        // run's transcript. The first attempt keeps the plain name, so nothing
-        // already on disk is orphaned.
-        const attempt = (await repo.listRuns(issue.id))
-          .filter(r => r.step_index === issue.step_index).length;
-        const logPath = join(config.workspace, ".orchestrator", "runs",
-          `${issue.id}-${issue.step_index}${attempt ? `-retry${attempt}` : ""}.jsonl`);
-        const run = await repo.startRun({
-          issueId: issue.id, agentId: agentRow?.id ?? null,
-          stepIndex: issue.step_index, phase: step.phase, logPath,
-        });
-
         // Budget: the workflow's limit wins over the agent's when both exist.
         const agentBudget = await repo.getBudget(issue.company_id, "agent", agentKey);
         const wfBudget = await repo.getBudget(issue.company_id, "workflow", wf.key);
@@ -211,34 +198,92 @@ export function createEngine(deps: {
           maxDurationMs: b.max_duration_ms ? Number(b.max_duration_ms) : undefined,
         } : undefined;
 
-        const res = await runner.run({
-          agent: {
-            key: agentKey,
-            bundlePath: agentRow?.bundle_path ? resolve(config.workspace, agentRow.bundle_path) : undefined,
-            mcpEnabled: agentRow?.mcp_enabled ?? false,
-            extraArgs: agentRow?.extra_args ?? [],
-          },
-          model: rt.model,
-          effort: rt.effort,
-          fallbackModel: agentRow?.fallback_model ?? [],
-          prompt: buildPrompt(step, wf, { ...vars, ...read.vars }),
-          cwd: config.workspace,
-          logPath,
-          budget,
-          mcpConfigPath: join(config.workspace, ".mcp.json"),
-        });
+        const prompt = buildPrompt(step, wf, { ...vars, ...read.vars });
 
-        await repo.finishRun(run.id, {
-          status: res.status, exitCode: res.exitCode, sessionId: res.usage?.sessionId ?? null,
-          inputTokens: res.usage?.inputTokens ?? null, outputTokens: res.usage?.outputTokens ?? null,
-          cacheReadTokens: res.usage?.cacheReadTokens ?? null,
-          cacheCreationTokens: res.usage?.cacheCreationTokens ?? null,
-          costUsd: res.usage?.costUsd ?? null, durationMs: res.usage?.durationMs ?? null,
-          numTurns: res.usage?.numTurns ?? null,
-        });
+        /**
+         * One attempt: its own run row, its own log file, its own wall-clock
+         * measurement.
+         *
+         * The attempt number is part of the filename because the runner opens
+         * the log in APPEND mode: without it a retried step appends to the
+         * previous attempt's log, two run rows point at one file, and the
+         * console renders the failed attempt's events inside the successful
+         * run's transcript. The first attempt keeps the plain name, so nothing
+         * already on disk is orphaned.
+         *
+         * `elapsedMs` is measured HERE rather than taken from `usage.durationMs`
+         * because the failures worth retrying are exactly the ones that never
+         * emitted a usage record.
+         */
+        const attemptOnce = async (): Promise<{ res: RunResult; elapsedMs: number }> => {
+          const attempt = (await repo.listRuns(issue.id))
+            .filter(r => r.step_index === issue.step_index).length;
+          const logPath = join(config.workspace, ".orchestrator", "runs",
+            `${issue.id}-${issue.step_index}${attempt ? `-retry${attempt}` : ""}.jsonl`);
+          const run = await repo.startRun({
+            issueId: issue.id, agentId: agentRow?.id ?? null,
+            stepIndex: issue.step_index, phase: step.phase, logPath,
+          });
+
+          const startedAt = Date.now();
+          const res = await runner.run({
+            agent: {
+              key: agentKey,
+              bundlePath: agentRow?.bundle_path ? resolve(config.workspace, agentRow.bundle_path) : undefined,
+              mcpEnabled: agentRow?.mcp_enabled ?? false,
+              extraArgs: agentRow?.extra_args ?? [],
+            },
+            model: rt.model,
+            effort: rt.effort,
+            fallbackModel: agentRow?.fallback_model ?? [],
+            prompt,
+            cwd: config.workspace,
+            logPath,
+            budget,
+            mcpConfigPath: join(config.workspace, ".mcp.json"),
+          });
+          const elapsedMs = Date.now() - startedAt;
+
+          await repo.finishRun(run.id, {
+            status: res.status, exitCode: res.exitCode, sessionId: res.usage?.sessionId ?? null,
+            inputTokens: res.usage?.inputTokens ?? null, outputTokens: res.usage?.outputTokens ?? null,
+            cacheReadTokens: res.usage?.cacheReadTokens ?? null,
+            cacheCreationTokens: res.usage?.cacheCreationTokens ?? null,
+            costUsd: res.usage?.costUsd ?? null, durationMs: res.usage?.durationMs ?? null,
+            numTurns: res.usage?.numTurns ?? null,
+          });
+
+          return { res, elapsedMs };
+        };
+
+        let { res, elapsedMs } = await attemptOnce();
+
+        // Self-healing, once, and only when the first attempt demonstrably
+        // spent nothing — see `classifyFailure` for why the test is "did it
+        // cost anything" rather than "does the error text look transient".
+        if (res.status !== "succeeded") {
+          const verdict = classifyFailure(res, elapsedMs);
+          if (verdict.retry) {
+            await repo.addComment(issue.id,
+              `Agent \`${agentKey}\` failed (exit ${res.exitCode}) — retrying once, because ` +
+              `${verdict.reason}.\n\n\`\`\`\n${res.stderrTail}\n\`\`\``,
+              { user: "orchestrator" });
+            ({ res, elapsedMs } = await attemptOnce());
+          }
+        }
 
         if (res.status !== "succeeded") {
-          await block(issue.id, `Agent \`${agentKey}\` ${res.status} (exit ${res.exitCode}).\n\n\`\`\`\n${res.stderrTail}\n\`\`\``);
+          const verdict = classifyFailure(res, elapsedMs);
+          // Say whether this was the only attempt or the second, and why no
+          // further one is coming. An operator staring at a blocked issue
+          // should not have to infer the retry policy from the run list.
+          const attempts = (await repo.listRuns(issue.id))
+            .filter(r => r.step_index === issue.step_index).length;
+          await block(issue.id,
+            `Agent \`${agentKey}\` ${res.status} (exit ${res.exitCode}) after ` +
+            `${attempts} attempt${attempts === 1 ? "" : "s"}. ` +
+            `Not retrying: ${attempts > 1 ? "it already had its one retry" : verdict.reason}.` +
+            `\n\n\`\`\`\n${res.stderrTail}\n\`\`\``);
           return "blocked";
         }
         return "next";

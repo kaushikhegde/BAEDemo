@@ -360,7 +360,18 @@ describe("router", () => {
     expect(cfg.company).toBe("Scyne");
     expect(cfg.adapters).toEqual(["claude_local"]);
     expect(cfg.theme.brand).toBe("#464E7E");
-    expect(cfg.workflows.find((w: { key: string }) => w.key === "requirements").steps).toBe(2);
+    const wf = cfg.workflows.find((w: { key: string }) => w.key === "requirements");
+    expect(wf.steps).toBe(2);
+    // `params` is derived by scanning the workflow's own templates, so the
+    // console's New-run form asks for exactly what the steps interpolate and
+    // cannot go stale. `stepList` names each step without leaking its prompt.
+    // This fixture's steps interpolate nothing, so `params` is empty — the
+    // derivation itself is covered in config.test.ts. What matters here is the
+    // shape: both fields present, and `stepList` naming each step WITHOUT its
+    // prompt, command or reads paths.
+    expect(wf.params).toEqual([]);
+    expect(wf.stepList).toEqual([{ type: "agent", phase: "generate" }, { type: "gate" }]);
+    expect(JSON.stringify(cfg)).not.toContain("prompt");
     expect(cfg).not.toHaveProperty("db"); // no connection details leaked
   });
 
