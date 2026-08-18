@@ -136,4 +136,17 @@ describe("console", () => {
     expect(dark).toContain("--on-accent: var(--accent)");
     expect(dark).toContain("--on-danger: var(--danger)");
   });
+
+  it("edits an agent's instructions rather than only displaying them", () => {
+    expect(html).toContain('id="b-text"');                     // the editor
+    expect(html).toContain('send("/agents/" + key + "/bundle", "PUT"');
+    expect(html).toContain('id="b-revert"');                   // an undo that is not the back button
+    // Cmd/Ctrl-S in a full-screen textarea otherwise opens the browser's
+    // Save-page dialog over the top of the editor.
+    expect(html).toContain('(e.metaKey || e.ctrlKey) && e.key === "s"');
+    // And the path itself is settable, or an agent with no bundlePath could
+    // never be given instructions at all.
+    expect(html).toContain('id="a-bundlepath"');
+    expect(html).toContain("body.bundlePath =");
+  });
 });

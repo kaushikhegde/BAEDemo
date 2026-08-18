@@ -7,8 +7,8 @@
 // never silently drift apart.
 
 import { Router, type Request, type Response } from "express";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { resolve, dirname, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { filterRunLog } from "../core/transcript.js";
@@ -41,6 +41,7 @@ export const ROUTES = [
   { method: "PATCH", path: "/agents/{key}" },   // adapter · model · effort · fallbackModel · budget
   { method: "GET",   path: "/agents/{key}/runs" },
   { method: "GET",   path: "/agents/{key}/bundle" },
+  { method: "PUT",   path: "/agents/{key}/bundle" },   // edit the system prompt from the console
   { method: "GET",   path: "/runners" },        // registered adapters
   { method: "POST",  path: "/issues" },
   { method: "GET",   path: "/issues" },
@@ -70,6 +71,13 @@ export const ROUTES = [
 interface AgentPatchBody {
   adapter?: string; model?: string; effort?: Effort;
   fallbackModel?: string[]; budget?: AgentBudget;
+  /**
+   * Where this agent's system prompt lives, workspace-relative. Patchable
+   * because an agent with no `bundlePath` has nowhere for instructions to go —
+   * PUT /agents/{key}/bundle refuses one, and without this the only way to give
+   * an existing agent instructions was to disable it and hire a replacement.
+   */
+  bundlePath?: string | null;
 }
 
 /**
@@ -81,6 +89,22 @@ interface AgentPatchBody {
  */
 function pathParam(v: string | string[]): string {
   return Array.isArray(v) ? v[0] : v;
+}
+
+/**
+ * Resolve a `bundlePath` against the workspace, or `null` if it escapes it.
+ *
+ * `bundlePath` is operator-typed — the console's Add-agent form takes free
+ * text — so `../../../.ssh/config` is reachable input, and this endpoint both
+ * reads and now WRITES that path. Confining it to the workspace is the whole
+ * of the check; anything inside is the operator's own tree to edit.
+ */
+function makeSafeBundlePath(workspace: string) {
+  const root = resolve(workspace);
+  return (rel: string): string | null => {
+    const abs = resolve(root, rel);
+    return abs === root || abs.startsWith(root + sep) ? abs : null;
+  };
 }
 
 const execFileAsync = promisify(execFile);
@@ -109,6 +133,8 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   const ok = (res: Response, body: unknown): void => { res.json(body); };
   const notFound = (res: Response, what: string): void => { res.status(404).json({ error: `${what} not found` }); };
   const badRequest = (res: Response, message: string): void => { res.status(400).json({ error: message }); };
+
+  const safeBundlePath = makeSafeBundlePath(orch.config.workspace);
 
   const wrap = (fn: (req: Request, res: Response) => Promise<void>) =>
     (req: Request, res: Response): void => {
@@ -207,6 +233,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     if (patch.effort !== undefined) spec.effort = patch.effort;
     if (patch.fallbackModel !== undefined) spec.fallbackModel = patch.fallbackModel;
     if (patch.budget !== undefined) spec.budget = patch.budget;
+    if (patch.bundlePath !== undefined) spec.bundlePath = patch.bundlePath ?? undefined;
 
     await orch.repo.upsertAgent(orch.companyId, spec);
 
@@ -220,6 +247,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     if (patch.effort !== undefined) overlay.effort = patch.effort;
     if (patch.fallbackModel !== undefined) overlay.fallbackModel = patch.fallbackModel;
     if (patch.budget !== undefined) overlay.budget = patch.budget;
+    if (patch.bundlePath !== undefined) overlay.bundlePath = patch.bundlePath ?? undefined;
     if (Object.keys(overlay).length) {
       await saveOverrides(orch.config.workspace,
         withAgentPatch(await loadOverrides(orch.config.workspace), key, overlay));
@@ -313,8 +341,14 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     const agent = await orch.repo.getAgentByKey(orch.companyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
     if (!agent.bundle_path) { ok(res, { path: null, content: "" }); return; }
+    const absRead = safeBundlePath(agent.bundle_path);
+    if (!absRead) {
+      ok(res, { path: agent.bundle_path, content: "",
+                error: `bundlePath '${agent.bundle_path}' resolves outside the workspace` });
+      return;
+    }
     try {
-      ok(res, { path: agent.bundle_path, content: readFileSync(resolve(orch.config.workspace, agent.bundle_path), "utf8") });
+      ok(res, { path: agent.bundle_path, content: readFileSync(absRead, "utf8") });
     } catch (err) {
       // Not a 404: the agent exists and declares a bundle. The missing file IS
       // the finding — it is the exact state that makes Claude Code fail with
@@ -322,6 +356,51 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       // learned to handle EPIPE) took the whole process down with it.
       ok(res, { path: agent.bundle_path, content: "", error: err instanceof Error ? err.message : String(err) });
     }
+  }));
+
+  /**
+   * Overwrite an agent's system prompt.
+   *
+   * The runner reads `bundlePath` off disk at SPAWN time, so a save here takes
+   * effect on the very next run with no restart, no re-upload and no bundle to
+   * re-register — which is the whole reason instructions live as plain files
+   * rather than as rows. An edit made while a run is in flight cannot disturb
+   * it: that process was handed its prompt when it started.
+   *
+   * Writes via a temp file and a rename, so an interrupted write leaves the
+   * previous instructions intact rather than a truncated file that would make
+   * every subsequent run fail in a way nobody attributes to a browser tab
+   * closing mid-save.
+   */
+  r.put("/agents/:key/bundle", wrap(async (req, res) => {
+    const key = pathParam(req.params.key);
+    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    if (!agent) { notFound(res, `agent '${key}'`); return; }
+    if (!agent.bundle_path) {
+      badRequest(res, `agent '${key}' declares no bundlePath — set one with PATCH /agents/${key} before editing`);
+      return;
+    }
+    const { content } = (req.body ?? {}) as { content?: unknown };
+    if (typeof content !== "string") { badRequest(res, "content must be a string"); return; }
+
+    const abs = safeBundlePath(agent.bundle_path);
+    if (!abs) {
+      badRequest(res, `bundlePath '${agent.bundle_path}' resolves outside the workspace`);
+      return;
+    }
+    try {
+      // The declared-but-missing case is a supported starting point, not an
+      // error: GET reports it rather than 404ing precisely so it can be fixed
+      // from here.
+      mkdirSync(dirname(abs), { recursive: true });
+      const tmp = `${abs}.tmp-${process.pid}`;
+      writeFileSync(tmp, content, "utf8");
+      renameSync(tmp, abs);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    ok(res, { path: agent.bundle_path, bytes: Buffer.byteLength(content, "utf8") });
   }));
 
   r.get("/runners", wrap(async (_req, res) => {

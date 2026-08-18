@@ -1193,7 +1193,8 @@ async function renderAgent(key, target) {
         ' <span class="muted mono" style="font-weight:400">' + esc(agent.key) + '</span></h3>' +
         '<span class="muted" style="font-size:.82rem">' + esc(agent.title || "") + '</span></div>' +
       '<div class="wrap">' + (agent.status === "disabled" ? st("disabled") : "") +
-        (agent.bundle_path ? '<button class="ghost sm" id="a-bundle">Instructions</button>' : "") +
+        '<button class="ghost sm" id="a-bundle">' +
+          (agent.bundle_path ? "Edit instructions" : "Instructions") + '</button>' +
       '</div></div>' +
       '<div class="grid" style="margin-top:.9rem">' +
         '<div class="metric"><div class="l">spend</div><div class="v">' + esc(money(spend)) + '</div>' +
@@ -1214,7 +1215,13 @@ async function renderAgent(key, target) {
         sel(["", "low", "medium", "high", "xhigh", "max"], agent.effort || "") + '</select></div>' +
       '<div><label for="a-fallback">Fallback models (comma separated)</label>' +
         '<input id="a-fallback" value="' + esc((agent.fallback_model || []).join(", ")) + '"></div>' +
+      '<div><label for="a-bundlepath">Instructions file</label>' +
+        '<input id="a-bundlepath" value="' + esc(agent.bundle_path || "") +
+        '" placeholder="agent-instructions/x.thin.md"></div>' +
       '</div>' +
+      '<p class="hint" style="margin:.5rem 0 0">Workspace-relative. Set one and the agent&rsquo;s ' +
+      '<b>Instructions</b> become editable in this console; leave it blank and the agent runs on the bare ' +
+      'workflow prompt.</p>' +
       '<h3 style="margin-top:1.1rem">Budget — a ceiling, not a target</h3>' +
       '<div class="row">' +
       '<div><label for="a-tokens">Max tokens</label><input id="a-tokens" type="number" value="' + esc(plain(b.max_tokens)) + '"></div>' +
@@ -1240,8 +1247,7 @@ async function renderAgent(key, target) {
       : '<div class="empty" style="margin-top:1rem"><b>Never run</b>Its spend and transcripts appear here after its first run.</div>');
 
   on("tr[data-run]", "click", (e) => { location.hash = "#run/" + e.currentTarget.dataset.run; }, out);
-  const bundleBtn = document.getElementById("a-bundle");
-  if (bundleBtn) bundleBtn.addEventListener("click", () => { location.hash = "#bundle/" + key; });
+  document.getElementById("a-bundle").addEventListener("click", () => { location.hash = "#bundle/" + key; });
 
   const msg = document.getElementById("a-msg");
   document.getElementById("a-save").addEventListener("click", async () => {
@@ -1252,6 +1258,9 @@ async function renderAgent(key, target) {
     };
     if (v("a-model")) body.model = v("a-model");
     if (v("a-effort")) body.effort = v("a-effort");
+    // Sent even when blank: clearing the path is a real edit, and an empty
+    // string would be a path rather than an absence, so it goes as null.
+    body.bundlePath = v("a-bundlepath") || null;
     try {
       await send("/agents/" + key, "PATCH", body);
       // The budget lives in its own table (the engine reads workflow-then-agent),
@@ -1283,22 +1292,95 @@ async function renderAgent(key, target) {
 async function renderBundle(key) {
   setHead("Instructions", key);
   const bundle = await api("/agents/" + key + "/bundle");
+  const missing = !!bundle.error;
+  const none = !bundle.path;
+
   view.innerHTML =
-    '<div class="card"><div class="wrap" style="justify-content:space-between">' +
-      '<div><h3 style="margin:0">' + esc(key) + '</h3>' +
-      '<span class="muted mono" style="font-size:.74rem">' + esc(bundle.path || "no bundle configured") + '</span></div>' +
-      '<button class="ghost sm" id="b-back">Back to org</button></div>' +
-    (bundle.error
-      ? '<p class="err" style="margin-top:.7rem">' + esc(bundle.error) + '</p>' +
-        '<p class="hint">The agent declares this path but nothing is there. Claude Code fails fast with ' +
-        '<span class="mono">System prompt file not found</span> before any network call, so the run costs nothing — ' +
-        'but it will not start until the file exists or the path is cleared.</p>'
-      : "") +
+    '<div class="card' + (missing ? " fault" : "") + '">' +
+      '<div class="wrap" style="justify-content:space-between;align-items:flex-start">' +
+        '<div><h3 style="margin:0">' + esc(key) + '</h3>' +
+        '<span class="muted mono" style="font-size:.74rem">' +
+          esc(bundle.path || "no bundlePath declared") + '</span></div>' +
+        '<div class="wrap">' +
+          '<button class="ghost sm" id="b-agent">Back to agent</button></div>' +
+      '</div>' +
+      (missing
+        ? '<p class="err" style="margin:.7rem 0 .2rem">' + esc(bundle.error) + '</p>' +
+          '<p class="hint" style="margin:0">The agent declares this path but nothing is there. Claude Code fails ' +
+          'fast with <span class="mono">System prompt file not found</span> before any network call, so the run ' +
+          'costs nothing — but it will not start until the file exists. <b>Saving below creates it.</b></p>'
+        : "") +
+      (none
+        ? '<p class="hint" style="margin:.7rem 0 0">This agent has no <span class="mono">bundlePath</span>, so it ' +
+          'runs on the bare workflow prompt. Set a path on the agent first — then its instructions become editable here.</p>'
+        : "") +
     '</div>' +
-    (bundle.content
-      ? '<pre class="block" style="margin-top:.8rem;max-height:70vh;overflow:auto">' + esc(bundle.content) + '</pre>'
-      : (bundle.error ? "" : '<div class="empty"><b>No instructions</b>This agent runs on the bare workflow prompt.</div>'));
-  document.getElementById("b-back").addEventListener("click", () => { location.hash = "#org"; });
+
+    (none ? "" :
+      '<div class="card" style="margin-top:.8rem">' +
+        '<div class="wrap" style="justify-content:space-between">' +
+          '<h3 style="margin:0">Edit</h3>' +
+          '<span class="muted mono" style="font-size:.72rem" id="b-stat"></span>' +
+        '</div>' +
+        '<textarea id="b-text" spellcheck="false" aria-label="Agent instructions" ' +
+          'style="min-height:60vh;font-family:var(--mono);font-size:.78rem;line-height:1.6;margin-top:.6rem">' +
+          esc(bundle.content) + '</textarea>' +
+        '<div class="actions">' +
+          '<button id="b-save" disabled>Save</button>' +
+          '<button class="ghost" id="b-revert" disabled>Revert</button>' +
+          '<span id="b-msg"></span>' +
+        '</div>' +
+        '<p class="hint" style="margin:.5rem 0 0">The runner reads this file when it spawns the process, so a save ' +
+        'applies to the <b>next run</b> — nothing to re-register and nothing to restart. A run already in flight ' +
+        'is unaffected: it was handed its prompt when it started. Written via a temp file and a rename, so an ' +
+        'interrupted save leaves the previous instructions intact.</p>' +
+      '</div>');
+
+  document.getElementById("b-agent").addEventListener("click", () => { location.hash = "#agent/" + key; });
+  if (none) return;
+
+  const box = document.getElementById("b-text");
+  const save = document.getElementById("b-save");
+  const revert = document.getElementById("b-revert");
+  const msg = document.getElementById("b-msg");
+  const stat = document.getElementById("b-stat");
+  const original = bundle.content;
+
+  const measure = () => {
+    const v = box.value;
+    stat.textContent = v.split("\\n").length + " lines · " + num(v.length) + " chars";
+    const dirty = v !== original;
+    save.disabled = !dirty;
+    revert.disabled = !dirty;
+    if (dirty) msg.innerHTML = '<span class="muted" style="font-size:.78rem">Unsaved</span>';
+  };
+  measure();
+  box.addEventListener("input", measure);
+
+  revert.addEventListener("click", () => { box.value = original; measure(); msg.innerHTML = ""; });
+
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const out = await send("/agents/" + key + "/bundle", "PUT", { content: box.value });
+      msg.innerHTML = '<span class="saved">Saved ' + num(out.bytes) + ' bytes — applies to the next run.</span>';
+      // Re-read rather than assume: the file on disk is the authority, and a
+      // stale original would leave Save enabled forever after a no-op edit.
+      setTimeout(() => { renderBundle(key); }, 900);
+    } catch (e) {
+      msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+      save.disabled = false;
+    }
+  });
+
+  // Cmd/Ctrl-S is what anyone editing a text file reaches for; without it the
+  // browser opens a Save-page dialog over the top of the editor.
+  box.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      e.preventDefault();
+      if (!save.disabled) save.click();
+    }
+  });
 }
 
 /* ---- budgets ------------------------------------------------------------- */

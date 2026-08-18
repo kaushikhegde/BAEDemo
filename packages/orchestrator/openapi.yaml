@@ -142,6 +142,12 @@ paths:
                 model:         { type: string }
                 effort:        { type: string, enum: [low, medium, high, xhigh, max] }
                 fallbackModel: { type: array, items: { type: string }, description: "Tried in order when the primary is overloaded." }
+                bundlePath:
+                  type: [string, "null"]
+                  description: >-
+                    Workspace-relative path to the agent's system prompt. Required
+                    before `PUT /agents/{key}/bundle` will write anything; `null`
+                    clears it and the agent falls back to the bare workflow prompt.
                 budget:
                   type: object
                   properties:
@@ -238,6 +244,53 @@ paths:
                   path:    { type: [string, "null"] }
                   content: { type: string }
                   error:   { type: string }
+        "404":
+          description: No agent has this key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: putAgentBundle
+      summary: Overwrite the agent's system-prompt bundle
+      description: >-
+        Writes `content` to the file named by the agent's `bundlePath`. The
+        runner reads that file at SPAWN time, so a save applies to the very next
+        run — nothing to re-register, nothing to restart, and a run already in
+        flight is unaffected because it was handed its prompt when it started.
+        Written via a temp file and a rename, so an interrupted write leaves the
+        previous instructions intact. A declared-but-missing file is created,
+        which is how the "System prompt file not found" state is repaired from
+        the console. Refuses an agent with no `bundlePath`, and any path that
+        resolves outside the workspace.
+      parameters:
+        - $ref: "#/components/parameters/AgentKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: The complete new file contents. Replaces, never appends.
+      responses:
+        "200":
+          description: Written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, bytes]
+                properties:
+                  path:  { type: string }
+                  bytes: { type: integer }
+        "400":
+          description: No bundlePath declared, content is not a string, or the path escapes the workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: No agent has this key
           content:

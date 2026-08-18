@@ -474,7 +474,7 @@ Any `--key value` after the workflow name becomes a workflow param, so
 ### HTTP API
 
 `GET /health` · `/agents` · `/agents/{key}` (PATCH) · `/agents/{key}/runs` ·
-`/agents/{key}/bundle` · `/runners` · `POST /issues` · `GET /issues` ·
+`/agents/{key}/bundle` (**PUT**) · `/runners` · `POST /issues` · `GET /issues` ·
 `/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · `/issues/{id}/comments`
 (POST) · `/issues/{id}/work-products` · `/issues/{id}/gates` ·
 `POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
@@ -514,7 +514,8 @@ documented route must exist. Adding a route means editing both.
 - **A declared-but-missing agent bundle** makes Claude Code fail fast with
   `System prompt file not found`, before any network call. The run is recorded
   `failed` with that stderr — but check `GET /agents/{key}/bundle`, which reports
-  the missing path rather than 404ing.
+  the missing path rather than 404ing, and the console's **Edit instructions**
+  screen, which offers to create the file on the spot.
 - **`.claude/skills/` must be symlinked** or every agent run dies with
   `Unknown skill: <slug>`. `npm run link-skills`. `.claude/` is gitignored, so a
   fresh clone always needs it.
@@ -770,9 +771,22 @@ OAuth tokens for `mcp-remote` are cached in `~/.mcp-auth/` at user scope. The sa
 
 ### Edit an agent's instructions
 
-Edit `agent-instructions/<agent>.thin.md`. That is the whole procedure — the file
-is read from disk when the agent is spawned, so the next run picks it up. Nothing
-to push, no bundle to re-upload, no ids to look up.
+Edit `agent-instructions/<agent>.thin.md`, **or edit it in the console** — Org →
+pick the agent → *Edit instructions*. Either way the file is read from disk when
+the agent is spawned, so the next run picks it up. Nothing to push, no bundle to
+re-upload, no ids to look up.
+
+The console writes through `PUT /agents/{key}/bundle`: temp file plus rename, so
+an interrupted save leaves the previous instructions intact; a declared-but-
+missing file is **created**, which is how the `System prompt file not found`
+state is repaired without touching a terminal; and any path resolving outside
+the workspace is refused (`bundlePath` is operator-typed free text, and this
+endpoint writes to it). An edit cannot disturb a run already in flight — that
+process was handed its prompt when it spawned.
+
+`bundlePath` itself is editable on the agent's Runtime card. An agent with no
+path runs on the bare workflow prompt and has nowhere for instructions to live,
+so `PUT …/bundle` refuses it and says so.
 
 Check what an agent will actually be handed:
 

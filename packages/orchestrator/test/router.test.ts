@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOrchestrator, type Orchestrator } from "../src/index.js";
@@ -423,6 +423,75 @@ describe("router: console and bundles", () => {
     expect(declaredNone.content).toBe("");
 
     expect((await fetch(`${baseUrl}/agents/nope/bundle`)).status).toBe(404);
+  });
+
+  it("refuses to write a bundle for an agent that declares no path", async () => {
+    // Silently inventing a path would put an agent's instructions somewhere
+    // nothing reads them, which looks exactly like a save that worked.
+    const res = await fetch(`${baseUrl}/agents/ba/bundle`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hello" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("declares no bundlePath");
+  });
+
+  it("writes a declared bundle, creates it when missing, and reads back what it wrote", async () => {
+    await fetch(`${baseUrl}/agents/ba`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundlePath: "agent-instructions/ba.thin.md" }),
+    });
+
+    // The file does not exist yet — the "System prompt file not found" state,
+    // which this endpoint exists to repair rather than merely report.
+    const before = await (await fetch(`${baseUrl}/agents/ba/bundle`)).json();
+    expect(before.error).toBeTruthy();
+
+    const body = "You are the BA.\n\n## Hard rules\n- Australian English.\n";
+    const put = await fetch(`${baseUrl}/agents/ba/bundle`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: body }),
+    });
+    expect(put.status).toBe(200);
+    expect((await put.json()).bytes).toBe(Buffer.byteLength(body, "utf8"));
+
+    // On disk where the runner will look, and served back with no error.
+    expect(readFileSync(join(dir, "agent-instructions", "ba.thin.md"), "utf8")).toBe(body);
+    const after = await (await fetch(`${baseUrl}/agents/ba/bundle`)).json();
+    expect(after.content).toBe(body);
+    expect(after.error).toBeUndefined();
+  });
+
+  it("refuses a bundlePath that escapes the workspace", async () => {
+    // `bundlePath` is operator-typed free text in the console's hire form, and
+    // this endpoint WRITES to it — an unconfined path is arbitrary file write.
+    await fetch(`${baseUrl}/agents/ba`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundlePath: "../../../escaped.md" }),
+    });
+    const res = await fetch(`${baseUrl}/agents/ba/bundle`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "should never be written" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("outside the workspace");
+    expect(existsSync(join(dir, "..", "..", "..", "escaped.md"))).toBe(false);
+
+    // The read side is confined by the same guard, and reports rather than throws.
+    const got = await (await fetch(`${baseUrl}/agents/ba/bundle`)).json();
+    expect(got.error).toContain("outside the workspace");
+  });
+
+  it("rejects a non-string body rather than writing '[object Object]'", async () => {
+    await fetch(`${baseUrl}/agents/ba`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundlePath: "agent-instructions/ba.thin.md" }),
+    });
+    const res = await fetch(`${baseUrl}/agents/ba/bundle`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: { oops: true } }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 
