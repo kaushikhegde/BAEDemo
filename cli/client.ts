@@ -7,11 +7,18 @@
 // refusals and the audit trail all live behind the API, and a second
 // implementation of them would drift within a week.
 
-import { load, type CliConfig } from "./config.js";
+import { load, type CliConfig } from "./config.ts";
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  // Declared and assigned rather than a `constructor(readonly status: …)`
+  // parameter property. Node runs this file by ERASING types, and a parameter
+  // property is the one TypeScript feature that needs code generated rather
+  // than removed — using one costs the CLI its ability to run on plain `node`.
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
     this.name = "ApiError";
   }
 }

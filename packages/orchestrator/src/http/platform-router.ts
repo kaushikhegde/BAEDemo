@@ -209,10 +209,27 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   // ----------------------------------------------------------------- users
 
+  /**
+   * The user directory, at two levels of detail.
+   *
+   * Administrators see the full rows. Everyone else sees id, email and name
+   * only — because granting someone access to a project requires being able to
+   * NAME them, and a project owner who is not an administrator would otherwise
+   * be unable to share their own project with anyone. Withholding the
+   * directory entirely does not protect much either: membership lists already
+   * expose colleagues' addresses to anyone on the same project.
+   *
+   * What stays administrator-only is everything that is not identity: role,
+   * status, and when the account was created.
+   */
   r.get("/users", requireAuth(), wrap(async (req, res) => {
-    if (!requireAdmin(req, res)) return;
     const users = await platform.listUsers(companyId);
-    ok(res, users.map(({ password_hash, ...u }) => u));
+    if (req.principal!.user.role === "admin") {
+      return ok(res, users.map(({ password_hash, ...u }) => u));
+    }
+    ok(res, users
+      .filter(u => u.status === "active")
+      .map(u => ({ id: u.id, email: u.email, name: u.name })));
   }));
 
   r.post("/users", requireAuth(), wrap(async (req, res) => {

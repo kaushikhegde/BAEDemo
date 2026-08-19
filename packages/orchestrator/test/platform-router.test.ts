@@ -197,13 +197,45 @@ describe("project roles", () => {
 });
 
 describe("administrator-only routes", () => {
-  it("refuses a member the user list, installations and spend", async () => {
+  it("refuses a member installations and spend", async () => {
     const admin = await bootstrap();
     const alice = await makeUser(admin, "alice@x.co");
-    for (const p of ["/users", "/installations", "/spend"]) {
+    for (const p of ["/installations", "/spend"]) {
       expect((await call("GET", p, { token: alice.token })).status, p).toBe(403);
       expect((await call("GET", p, { token: admin })).status, p).toBe(200);
     }
+  });
+
+  it("gives a member a redacted user directory, not a refusal", async () => {
+    // Granting someone access to a project means naming them, so a project
+    // owner who is not an administrator must be able to look colleagues up.
+    // What they must NOT see is anything beyond identity.
+    const admin = await bootstrap();
+    const alice = await makeUser(admin, "alice@x.co");
+
+    const asMember = await call("GET", "/users", { token: alice.token });
+    expect(asMember.status).toBe(200);
+    expect(asMember.body.length).toBeGreaterThan(0);
+    for (const u of asMember.body) {
+      expect(Object.keys(u).sort()).toEqual(["email", "id", "name"]);
+      expect(u.role).toBeUndefined();
+      expect(u.status).toBeUndefined();
+    }
+
+    const asAdmin = await call("GET", "/users", { token: admin });
+    expect(asAdmin.body[0].role).toBeTruthy();
+    expect(asAdmin.body.every((u: any) => u.password_hash === undefined)).toBe(true);
+  });
+
+  it("hides a disabled account from the member directory", async () => {
+    const admin = await bootstrap();
+    const alice = await makeUser(admin, "alice@x.co");
+    const bob = await makeUser(admin, "bob@x.co");
+    await call("PATCH", `/users/${bob.id}`, { token: admin, body: { status: "disabled" } });
+
+    const emails = (await call("GET", "/users", { token: alice.token })).body.map((u: any) => u.email);
+    expect(emails).toContain("alice@x.co");
+    expect(emails).not.toContain("bob@x.co");
   });
 });
 

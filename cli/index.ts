@@ -13,8 +13,8 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { createClient, resolveProject, targetProject, ApiError, type Client } from "./client.js";
-import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.js";
+import { createClient, resolveProject, targetProject, ApiError, type Client } from "./client.ts";
+import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
 // @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
 import * as pipeline from "../scripts/pipeline.mjs";
 
@@ -100,7 +100,19 @@ async function cmdLogin(): Promise<void> {
 }
 
 async function cmdInit(): Promise<void> {
-  const apiUrl = flag("api") ?? DEFAULT_API_URL;
+  // `load()` applies $SCYNE_API_URL and any saved config before falling back.
+  // Reading only `--api` here, as this once did, meant `SCYNE_API_URL=… scyne
+  // init` silently claimed whatever was on the DEFAULT address instead — which
+  // is how a test against a throwaway server created an administrator on a
+  // live one. An irreversible, install-wide action must never guess its target.
+  const apiUrl = flag("api") ?? load().apiUrl ?? DEFAULT_API_URL;
+
+  // Say which server, before asking for anything. `init` claims an entire
+  // installation and cannot be undone by running it again.
+  out(`This claims the Scyne installation at ${apiUrl}`);
+  out(`as its first administrator. It can only be done once.`);
+  out(``);
+
   const email = flag("email") ?? await prompt("Administrator email: ");
   const password = flag("password") ?? await prompt("Password: ", { silent: true });
 
@@ -251,6 +263,129 @@ async function cmdDoc(client: Client, args: string[]): Promise<void> {
 
     default:
       throw new ApiError(400, `unknown: scyne doc ${verb}. Try list, upload.`);
+  }
+}
+
+/** Resolve an email to a user, reporting the addresses that do exist. */
+async function findUser(client: Client, email: string): Promise<{ id: string; email: string }> {
+  const users = await client.get<{ id: string; email: string }[]>("/users");
+  const hit = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+  if (!hit) {
+    throw new ApiError(404,
+      `no account for '${email}'.\n  Accounts: ${users.map(u => u.email).join(", ") || "(none)"}`);
+  }
+  return hit;
+}
+
+/**
+ * Onboarding someone else. `init` claims the installation once; everything
+ * after that is an administrator creating an account, and the new person
+ * running `scyne login` on their own machine.
+ */
+async function cmdUser(client: Client, args: string[]): Promise<void> {
+  const [verb, email, third] = args;
+  switch (verb) {
+    case "list": case undefined: {
+      const users = await client.get<any[]>("/users");
+      if (has("json")) return json(users);
+      return table(users.map(u => ({
+        email: u.email, name: u.name ?? "—", role: u.role ?? "—", status: u.status ?? "—",
+      })), ["email", "name", "role", "status"]);
+    }
+
+    case "create": case "add": {
+      if (!email) throw new ApiError(400, "usage: scyne user create <email> [--role member|admin|viewer] [--password ...]");
+      // A generated password is offered rather than required: an administrator
+      // creating ten accounts should not have to invent ten secrets, and one
+      // printed once is better than one emailed around.
+      const password = flag("password") ?? Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2, 6);
+      const user = await client.post<{ id: string; email: string }>("/users", {
+        email, password, name: flag("name"), role: flag("role") ?? "member",
+      });
+      out(`✓ created ${user.email} (${flag("role") ?? "member"})`);
+      if (!flag("password")) {
+        out(``);
+        out(`  temporary password: ${password}`);
+        out(`  Give it to them once, in person or over something private —`);
+        out(`  it is not stored anywhere and will not be shown again.`);
+      }
+      out(``);
+      out(`  They then run:  scyne login --api ${client.config.apiUrl}`);
+      return;
+    }
+
+    case "role": {
+      if (!email || !third) throw new ApiError(400, "usage: scyne user role <email> <admin|member|viewer>");
+      const hit = await findUser(client, email);
+      await client.patch(`/users/${hit.id}`, { role: third });
+      out(`✓ ${email} is now ${third}`);
+      return;
+    }
+
+    case "password": {
+      if (!email) throw new ApiError(400, "usage: scyne user password <email> [--password ...]");
+      const hit = await findUser(client, email);
+      const next = flag("password") ?? await prompt(`New password for ${email}: `, { silent: true });
+      if (!next) throw new ApiError(400, "a password is required");
+      await client.patch(`/users/${hit.id}`, { password: next });
+      out(`✓ password changed for ${email}`);
+      out(`  Existing API tokens still work — revoke them with \`scyne user disable\` if that matters.`);
+      return;
+    }
+
+    case "disable": case "enable": {
+      if (!email) throw new ApiError(400, `usage: scyne user ${verb} <email>`);
+      const hit = await findUser(client, email);
+      await client.patch(`/users/${hit.id}`, { status: verb === "disable" ? "disabled" : "active" });
+      out(`✓ ${email} ${verb}d`);
+      if (verb === "disable") out(`  Their sessions and API tokens stop authenticating immediately.`);
+      return;
+    }
+
+    default:
+      throw new ApiError(400, `unknown: scyne user ${verb}. Try list, create, role.`);
+  }
+}
+
+/** Who may see one project. Distinct from `user` — that is the account, this is the access. */
+async function cmdMember(client: Client, args: string[]): Promise<void> {
+  const [verb, email] = args;
+  const project = await resolveProject(client, targetProject(client, flag("project")));
+
+  switch (verb) {
+    case "list": case undefined: {
+      const members = await client.get<any[]>(`/projects/${project.id}/members`);
+      if (has("json")) return json(members);
+      return table(members.map(m => ({ email: m.email, name: m.name ?? "—", role: m.role })),
+        ["email", "name", "role"]);
+    }
+
+    case "add": case "grant": {
+      if (!email) throw new ApiError(400, "usage: scyne member add <email> [--role owner|editor|viewer]");
+      const users = await client.get<any[]>("/users");
+      const hit = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+      if (!hit) {
+        throw new ApiError(404,
+          `no account for '${email}'.\n  Create one first: scyne user create ${email}`);
+      }
+      const role = flag("role") ?? "editor";
+      await client.put(`/projects/${project.id}/members/${hit.id}`, { role });
+      out(`✓ ${email} can now access ${project.name} as ${role}`);
+      return;
+    }
+
+    case "remove": case "revoke": {
+      if (!email) throw new ApiError(400, "usage: scyne member remove <email>");
+      const members = await client.get<any[]>(`/projects/${project.id}/members`);
+      const hit = members.find(m => m.email?.toLowerCase() === email.toLowerCase());
+      if (!hit) throw new ApiError(404, `${email} is not a member of ${project.name}`);
+      await client.del(`/projects/${project.id}/members/${hit.user_id}`);
+      out(`✓ removed ${email} from ${project.name}`);
+      return;
+    }
+
+    default:
+      throw new ApiError(400, `unknown: scyne member ${verb}. Try list, add, remove.`);
   }
 }
 
@@ -436,11 +571,17 @@ async function cmdAdapter(client: Client, args: string[]): Promise<void> {
 const USAGE = `
 scyne — the Scyne pipeline, from the command line
 
+  scyne                            open the interactive session (talk to it in English)
+
   Setup
     init [--api URL]                 claim a new installation as its first administrator
     login [--api URL]                authenticate and store a CLI token
     whoami                           who you are, and what is currently pinned
     use <project> [feature]          pin what later commands act on
+
+  People  (init is once for the whole installation, not once per person)
+    user list | create <email> [--role admin|member|viewer] | role <email> <role>
+    member list | add <email> [--role owner|editor|viewer] | remove <email>
 
   Projects
     project list | create <name> | show [name]
@@ -472,7 +613,13 @@ scyne — the Scyne pipeline, from the command line
 async function main(): Promise<void> {
   const [verb, ...rest] = positionals();
 
-  if (!verb || verb === "help" || has("help")) { out(USAGE); return; }
+  // Bare `scyne` opens the session. Commands stay reachable as one-shots so
+  // scripting and CI never have to drive an interactive prompt.
+  if (!verb && !has("help")) {
+    const { repl } = await import("./repl.ts");
+    return repl();
+  }
+  if (verb === "help" || has("help")) { out(USAGE); return; }
   if (verb === "init") return cmdInit();
   if (verb === "login") return cmdLogin();
   if (verb === "logout") { patch({ token: undefined }); out("✓ logged out"); return; }
@@ -484,6 +631,8 @@ async function main(): Promise<void> {
     case "use":      return cmdUse(client, rest);
     case "project":  return cmdProject(client, rest);
     case "feature":  return cmdFeature(client, rest);
+    case "user":     return cmdUser(client, rest);
+    case "member":   return cmdMember(client, rest);
     case "doc":      return cmdDoc(client, rest);
     case "run":      return cmdRun(client, rest);
     case "status":   return cmdStatus(client, rest);

@@ -18,7 +18,9 @@
     "dev": "concurrently -n orch,app -c blue,green \"npm:serve\" \"npm run chatbot\"",
     "oauth": "npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2",
     "check:routing": "tsx scripts/check-routing.mts",
-    "scyne": "tsx cli/index.ts"
+    "scyne": "node cli/index.ts",
+    "typecheck": "./packages/orchestrator/node_modules/.bin/tsc --noEmit -p packages/orchestrator/tsconfig.json && ./packages/orchestrator/node_modules/.bin/tsc --noEmit -p cli/tsconfig.json",
+    "test": "npm --prefix packages/orchestrator test"
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

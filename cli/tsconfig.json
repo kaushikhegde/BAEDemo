@@ -1,0 +1,29 @@
+{
+  // The CLI is not part of packages/orchestrator's tsconfig (which includes
+  // only src and test), so without this file it was shipped unchecked.
+  //
+  // `allowImportingTsExtensions` is what lets the source say `./client.ts`
+  // rather than `./client.js`. That matters at runtime, not just here: Node 24
+  // runs this CLI by erasing types, and its resolver does not remap a `.js`
+  // specifier onto a `.ts` file — so the extension has to be honest. It
+  // requires `noEmit`, which is correct anyway: nothing compiles this, Node
+  // executes the TypeScript directly.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"],
+    // The root has no node_modules of its own — TypeScript and @types/node are
+    // installed under packages/orchestrator. Pointed at explicitly rather than
+    // adding a second copy at the root, which would be a second version to
+    // keep in step.
+    "typeRoots": ["../packages/orchestrator/node_modules/@types"]
+  },
+  "include": ["."]
+}
