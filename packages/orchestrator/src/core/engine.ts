@@ -95,6 +95,46 @@ export function createEngine(deps: {
   }
 
   /**
+   * Narrate a step to the issue's comment timeline.
+   *
+   * Before this, the engine wrote a comment in exactly three situations — a
+   * block, a retry, and a gate decision carrying a note — so a HEALTHY run
+   * produced nothing at all. A chatbot user watched an empty activity panel for
+   * the twenty-five minutes an agent takes, with no way to tell a working run
+   * from a wedged one.
+   *
+   * The Paperclip-era bundles made each agent post its own progress ("Live
+   * progress comments (REQUIRED — clients watch the chatbot timeline)"). That
+   * instruction was correctly deleted when the bundles were thinned — an agent
+   * should not be calling an API — but nothing replaced it. The engine is the
+   * right author: it knows precisely where it is, it spends no tokens saying
+   * so, and one implementation covers every workflow and both UIs.
+   *
+   * Deliberately terse. This is a timeline, not a log; the Live Transcript
+   * already carries the detail of what an agent is doing minute to minute.
+   */
+  async function note(issueId: string, body: string): Promise<void> {
+    // Narration must never be the thing that fails a run: a comment insert that
+    // throws would abort a step whose real work had already succeeded.
+    try {
+      await repo.addComment(issueId, body, { user: "orchestrator" });
+    } catch (err) {
+      console.error(`[orchestrator] could not record progress on ${issueId}:`, err);
+    }
+  }
+
+  /** "step 2 of 6" — the position a person actually asks about. */
+  const where = (issue: IssueRow, wf: WorkflowDef): string =>
+    `Step ${issue.step_index + 1} of ${wf.steps.length}`;
+
+  const humanDuration = (ms: number): string => {
+    const sec = Math.round(ms / 1000);
+    if (sec < 90) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    return m < 60 ? `${m}m ${sec % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+
+  /**
    * `AgentRow`'s nullable columns (`model: string | null`, `effort: string |
    * null`) don't line up with `resolveRuntime`'s optional-field shape
    * (`model?: string`) — null and undefined are different types under
@@ -154,6 +194,9 @@ export function createEngine(deps: {
     switch (step.type) {
       case "exec": {
         const cmd = interpolate(step.cmd, vars);
+        // The first thing a person sees after clicking Run. Naming the command
+        // is what distinguishes "staging inputs" from "rendering the app".
+        await note(issue.id, `${where(issue, wf)} · running \`${cmd}\``);
         const r = await exec(cmd, step.cwd ?? config.workspace, step.timeoutMs);
         if (r.code !== 0) {
           await block(issue.id, `Step \`${cmd}\` failed (exit ${r.code}).\n\n\`\`\`\n${r.stderr.slice(-2000)}\n\`\`\``);
@@ -199,6 +242,13 @@ export function createEngine(deps: {
         } : undefined;
 
         const prompt = buildPrompt(step, wf, { ...vars, ...read.vars });
+
+        // Posted BEFORE the run, which is the whole point: an agent step is
+        // tens of minutes of silence otherwise, and this is the line that tells
+        // a watching human the difference between working and wedged.
+        await note(issue.id,
+          `${where(issue, wf)} · **${agentRow?.name ?? agentKey}** ${step.phase}` +
+          (step.skill ? ` using the \`${step.skill}\` skill` : "") + `.`);
 
         /**
          * One attempt: its own run row, its own log file, its own wall-clock
@@ -286,6 +336,17 @@ export function createEngine(deps: {
             `\n\n\`\`\`\n${res.stderrTail}\n\`\`\``);
           return "blocked";
         }
+
+        const spend = res.usage?.costUsd;
+        // The runtime's own duration when it reported one, wall clock only as a
+        // fallback. Every other surface — the runs table, the run page — shows
+        // `usage.durationMs`, and a timeline disagreeing with them about how
+        // long the same run took is worse than no timeline.
+        const shown = res.usage?.durationMs ?? elapsedMs;
+        await note(issue.id,
+          `**${agentRow?.name ?? agentKey}** finished ${step.phase} in ${humanDuration(shown)}` +
+          (spend != null ? ` · $${spend.toFixed(4)}` : "") +
+          (res.usage?.numTurns != null ? ` · ${res.usage.numTurns} turns` : "") + `.`);
         return "next";
       }
 
@@ -302,13 +363,18 @@ export function createEngine(deps: {
           await block(issue.id, `Expected output not produced:\n${missing.map(m => `- \`${m}\``).join("\n")}`);
           return "blocked";
         }
+        const titles: string[] = [];
         for (const f of step.files) {
           const abs = resolve(config.workspace, interpolate(f, vars));
+          const title = abs.split("/").pop() ?? abs;
+          titles.push(title);
           await repo.attachWorkProduct(issue.id, {
-            type: "document", provider: "local",
-            title: abs.split("/").pop() ?? abs, url: pathToFileURL(abs).href,
+            type: "document", provider: "local", title, url: pathToFileURL(abs).href,
           });
         }
+        await note(issue.id,
+          `${where(issue, wf)} · attached ${titles.length} work product` +
+          `${titles.length === 1 ? "" : "s"}: ${titles.map(t => `\`${t}\``).join(", ")}.`);
         return "next";
       }
 
@@ -325,11 +391,15 @@ export function createEngine(deps: {
         const alreadyRaised = (await repo.listGates(issue.id))
           .some(g => g.status === "pending" && g.payload.stepIndex === issue.step_index);
         if (!alreadyRaised) {
+          const title = interpolate(step.title, vars);
           await repo.createGate(issue.id, {
-            title: interpolate(step.title, vars),
+            title,
             summary: step.summary ? interpolate(step.summary, vars) : "",
             stepIndex: issue.step_index,
           });
+          // Only on the raise, never on the reassert below — a duplicate wake
+          // must not post "awaiting your approval" a second time.
+          await note(issue.id, `${where(issue, wf)} · **awaiting your approval** — ${title}`);
         }
         // Reasserted unconditionally (not just inside the `if`) so the
         // status still catches up even if a prior call somehow created the
@@ -383,7 +453,18 @@ export function createEngine(deps: {
 
         const wf = workflow(issue.workflow_key);
         const step = wf.steps[issue.step_index];
-        if (!step) { await repo.updateIssue(issueId, { status: "done" }); return; }
+        if (!step) {
+          await repo.updateIssue(issueId, { status: "done" });
+          // The closing line of the timeline. Cost is summed from the runs
+          // rather than tracked as we go, so a resumed issue reports its whole
+          // spend and not just this pass's.
+          const runs = await repo.listRuns(issueId);
+          const total = runs.reduce((n, r) => n + Number(r.cost_usd ?? 0), 0);
+          await note(issueId,
+            `**${wf.label} complete.** ${runs.length} agent run` +
+            `${runs.length === 1 ? "" : "s"}` + (total > 0 ? ` · $${total.toFixed(4)}` : "") + `.`);
+          return;
+        }
 
         const vars: Record<string, string> = {
           ...(issue.params as Record<string, string>),

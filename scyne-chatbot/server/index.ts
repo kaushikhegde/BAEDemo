@@ -644,6 +644,14 @@ app.get("/api/status/:issueId", async (req, res) => {
       });
     }
 
+    // Agent id -> display name, so a comment written BY an agent is attributed
+    // to a person's role rather than to a uuid. One call, reused for the whole
+    // tree; a failure degrades to showing the id, never to failing the request.
+    const agentNames: Record<string, string> = {};
+    for (const a of await paperclip.listAgents().catch(() => [] as any[])) {
+      if (a?.id) agentNames[a.id] = a.name ?? a.key ?? a.id;
+    }
+
     // Flatten all comments + approvals + work-products from parent + descendants
     const flatIssues: any[] = [];
     const flatComments: any[] = [];
@@ -661,13 +669,22 @@ app.get("/api/status/:issueId", async (req, res) => {
         updatedAt: node.updatedAt,
       });
       for (const c of node.comments ?? []) {
+        // The orchestrator returns SQL rows verbatim — `author_user`,
+        // `author_agent_id`, `created_at`. These camelCase names are
+        // Paperclip's and were never updated when the backend changed, so
+        // every comment resolved to "system" with an undefined timestamp:
+        // the author was wrong AND the sort below had nothing to sort on.
+        // Both shapes are read so a Paperclip-era payload still works.
+        const agentId = c.author_agent_id ?? c.authorAgentId ?? null;
         flatComments.push({
           id: c.id,
           issueId: node.id,
           issueIdentifier: node.identifier,
           body: c.body ?? c.content ?? "",
-          author: c.authorAgentName ?? c.authorUserName ?? c.authorAgentId ?? c.authorUserId ?? "system",
-          createdAt: c.createdAt,
+          author: c.authorAgentName ?? c.authorUserName
+            ?? (agentId ? agentNames[agentId] ?? agentId : null)
+            ?? c.author_user ?? c.authorUserId ?? "system",
+          createdAt: c.created_at ?? c.createdAt ?? null,
         });
       }
       for (const a of node.approvals ?? []) {

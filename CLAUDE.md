@@ -137,6 +137,19 @@ The engine owns every status transition (`todo → in_progress → in_review →
 done/blocked`) and parks at anything waiting on a human. One issue, one workflow,
 one gate per artefact.
 
+**It also narrates itself.** Every step posts a comment to its issue — the
+command an `exec` is running, which agent is starting and with which skill, what
+it cost when it finished, what `attach` recorded, that a gate is waiting, and a
+closing total. That timeline is what the chatbot's Activity panel and the
+console's issue detail render, and it is written by the ENGINE, not by the
+agents. The Paperclip bundles used to instruct each agent to post its own
+progress ("clients watch the chatbot timeline"); that was correctly deleted when
+the bundles were thinned — an agent should not be calling an API — but nothing
+replaced it, so a HEALTHY run produced no comments at all. The panel stayed
+empty for the twenty-five minutes an agent takes, with no way to tell a working
+run from a wedged one. Narration is best-effort: a failed comment insert is
+logged and never fails the step it was describing.
+
 **Workflows are compiled, not hand-written.** `orchestrator.workflows.ts` turns
 each stage in `scripts/pipeline.mjs` into:
 

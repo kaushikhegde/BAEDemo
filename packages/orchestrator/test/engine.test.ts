@@ -89,7 +89,7 @@ describe("engine", () => {
 
     expect(calls).toEqual([]);                                  // runner never called
     expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
-    expect((await repo.listComments(issue.id))[0].body).toContain("boom");
+    expect((await repo.listComments(issue.id)).map(c => c.body).join("\n")).toContain("boom");
   });
 
   it("blocks when a produces file is missing, naming it, and raises NO gate", async () => {
@@ -323,7 +323,7 @@ describe("engine", () => {
     await engine.advance(issue.id);
 
     expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
-    expect((await repo.listComments(issue.id))[0].body).toMatch(/adapter 'openai_local' is not registered/);
+    expect((await repo.listComments(issue.id)).map(c => c.body).join("\n")).toMatch(/adapter 'openai_local' is not registered/);
   });
 
   it("marks an orphaned run and returns the issue to todo", async () => {
@@ -557,5 +557,110 @@ describe("engine (fix round 1: idempotent wait steps, interpolate() throws don't
     const paths = (await repo.listRuns(issue.id)).filter(r => r.step_index === 1).map(r => r.log_path);
     expect(new Set(paths).size).toBe(2);
     expect(paths.some(p => p.includes("-retry1"))).toBe(true);
+  });
+
+  // ---- progress narration --------------------------------------------------
+
+  it("narrates a HEALTHY run, so the activity timeline is not empty", async () => {
+    // The regression this exists for: the engine only ever commented on a
+    // block, a retry, or a gate decision carrying a note — so a run that went
+    // fine produced NOTHING, and a chatbot user watched an empty panel for the
+    // twenty-five minutes an agent takes with no way to tell working from
+    // wedged.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const bodies = (await repo.listComments(issue.id)).map(c => c.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const all = bodies.join("\n");
+
+    expect(all).toContain("Step 1 of 5");            // the exec, named
+    expect(all).toContain("stage P");
+    // The fixture never seeds the org, so the engine falls back to the agent
+    // KEY — which is the right fallback: a name it does not have must not stop
+    // it saying who is working.
+    expect(all).toContain("ba");                     // who is working, and on what
+    expect(all).toContain("generate");
+    expect(all).toContain("attached 1 work product");
+    expect(all).toContain("awaiting your approval");
+  });
+
+  it("announces an agent BEFORE it runs, not only after", async () => {
+    // Posting only on completion would leave the panel blank for exactly the
+    // period the user is watching it.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+
+    let commentsWhenRunnerCalled: string[] = [];
+    const spy = { run: async () => {
+      commentsWhenRunnerCalled = (await repo.listComments(issue.id)).map(c => c.body);
+      return { exitCode: 0, status: "succeeded" as const, stderrTail: "",
+               usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0,
+                        costUsd: 0.5, durationMs: 100, numTurns: 3, sessionId: "s" } };
+    } };
+    const engine = createEngine({ repo, config: config(dir, spy), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect(commentsWhenRunnerCalled.join("\n")).toMatch(/\*\*ba\*\* generate/);
+  });
+
+  it("reports what the run cost when the agent finishes", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+    // 100ms of reported usage.durationMs, not the engine's own wall clock.
+    expect((await repo.listComments(issue.id)).map(c => c.body).join("\n"))
+      .toMatch(/finished generate in 0s · \$0\.0100/);
+  });
+
+  it("closes the timeline when the workflow completes", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const gate = (await repo.listGates(issue.id))[0];
+    await engine.decideGate(gate.id, "approved");
+
+    expect((await repo.getIssue(issue.id))?.status).toBe("done");
+    expect((await repo.listComments(issue.id)).map(c => c.body).join("\n"))
+      .toMatch(/Requirements complete\./);
+  });
+
+  it("does not repeat the approval line when advance() is called twice", async () => {
+    // The gate step is idempotent by artefact; its narration has to be too, or
+    // a duplicate wake posts "awaiting your approval" again.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+    await engine.advance(issue.id);
+
+    const awaiting = (await repo.listComments(issue.id))
+      .filter(c => c.body.includes("awaiting your approval"));
+    expect(awaiting.length).toBe(1);
+  });
+
+  it("a failed narration never fails the step it was describing", async () => {
+    // Narration is commentary. If the comment insert throws, the work that
+    // already succeeded must still count.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const brokenRepo = { ...repo, addComment: async () => { throw new Error("db down"); } } as typeof repo;
+    const engine = createEngine({ repo: brokenRepo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
+    expect((await repo.listGates(issue.id))[0].status).toBe("pending");
   });
 });

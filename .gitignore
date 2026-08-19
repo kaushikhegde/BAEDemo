@@ -49,3 +49,6 @@ paperclip-base.tar.gz
 
 # Scyne orchestrator runtime data (PGlite data dir, run logs)
 .orchestrator/
+
+# graphify knowledge graph (local index)
+graphify-out/
