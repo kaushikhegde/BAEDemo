@@ -1379,6 +1379,26 @@ paths:
           description: OK
         "401": { description: Authentication required }
 
+
+  /actions:
+    get:
+      operationId: listAllActions
+      summary: Audit across every project, newest first. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+  /admin/overview:
+    get:
+      operationId: getAdminOverview
+      summary: Users, installations, projects, spend, issue counts and recent activity in one response. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+
 components:
   parameters:
     SkillName:

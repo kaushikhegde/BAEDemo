@@ -402,9 +402,20 @@ export function createRepo(db: Db) {
      * deleted until the issues that point at them are gone. Deleting in the
      * other order fails on a foreign key, which reads like corruption.
      */
+    /**
+     * Clear a company's history.
+     *
+     * `agents` additionally drops the org chart, which the next boot rebuilds
+     * from the config file. `platform` additionally drops IDENTITY and CONTENT
+     * — users, projects, features, documents, installations and chats — which
+     * is what "start completely fresh" has to mean once those exist. Without
+     * it a reset left every account in place, so the installation could never
+     * be claimed again and the wipe looked like it had failed.
+     */
     async resetCompany(
-      companyId: string, opts: { agents?: boolean } = {},
-    ): Promise<{ issues: number; runs: number; budgets: number; agents: number }> {
+      companyId: string, opts: { agents?: boolean; platform?: boolean } = {},
+    ): Promise<{ issues: number; runs: number; budgets: number; agents: number;
+                 users: number; projects: number; documents: number; installations: number }> {
       const count = async (table: string, col: string): Promise<number> => {
         const { rows } = await db.query<{ n: string }>(
           `select count(*) as n from ${table} where ${col}=$1`, [companyId]);
@@ -416,15 +427,42 @@ export function createRepo(db: Db) {
         `select count(*) as n from runs r join issues i on i.id = r.issue_id where i.company_id=$1`,
         [companyId]);
 
+      // Documents hang off projects, so they are counted through the join for
+      // the same reason runs are.
+      const { rows: docRows } = await db.query<{ n: string }>(
+        `select count(*) as n from documents d join projects p on p.id = d.project_id
+          where p.company_id=$1`, [companyId]);
+
       const summary = {
         issues: await count("issues", "company_id"),
         runs: Number(runRows[0]?.n ?? 0),
         budgets: await count("budgets", "company_id"),
         agents: 0,
+        users: opts.platform ? await count("users", "company_id") : 0,
+        projects: opts.platform ? await count("projects", "company_id") : 0,
+        documents: opts.platform ? Number(docRows[0]?.n ?? 0) : 0,
+        installations: opts.platform ? await count("installations", "company_id") : 0,
       };
 
       await db.query(`delete from issues where company_id=$1`, [companyId]);
       await db.query(`delete from budgets where company_id=$1`, [companyId]);
+
+      if (opts.platform) {
+        // Order follows the foreign keys. Projects cascade into features,
+        // documents, members and their actions; users cascade into tokens and
+        // sessions. What is left over is deleted explicitly rather than left
+        // to chance.
+        await db.query(`delete from projects where company_id=$1`, [companyId]);
+        await db.query(`delete from conversations where company_id=$1`, [companyId]);
+        await db.query(`delete from installations where company_id=$1`, [companyId]);
+        await db.query(`delete from actions where company_id=$1`, [companyId]);
+        await db.query(`delete from users where company_id=$1`, [companyId]);
+        // Blobs are shared content addressed by hash and belong to no company,
+        // so they are removed only once nothing references them at all.
+        await db.query(`delete from blobs b where not exists
+          (select 1 from documents d where d.sha256 = b.sha256)`);
+      }
+
       if (opts.agents) {
         summary.agents = await count("agents", "company_id");
         await db.query(`delete from agents where company_id=$1`, [companyId]);

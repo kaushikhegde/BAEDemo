@@ -48,6 +48,8 @@ export const PLATFORM_ROUTES = [
   { method: "POST",   path: "/projects/{id}/documents" },
   { method: "GET",    path: "/projects/{id}/documents/{docId}" },
   { method: "GET",    path: "/projects/{id}/actions" },
+  { method: "GET",    path: "/actions" },
+  { method: "GET",    path: "/admin/overview" },
   { method: "GET",    path: "/installations" },
   { method: "POST",   path: "/installations" },
   { method: "DELETE", path: "/installations/{id}" },
@@ -404,6 +406,65 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     ok(res, await platform.listActions(companyId, {
       projectId: row.id, limit: req.query.limit ? Number(req.query.limit) : undefined,
     }));
+  }));
+
+  /**
+   * Audit across every project. Administrators only — the per-project feed
+   * above is what a member gets, and it is already scoped by the membership
+   * check. `listActions` always supported this; there was simply no route, so
+   * an administrator could see who did what on one project at a time and never
+   * across the organisation.
+   */
+  r.get("/actions", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    ok(res, await platform.listActions(companyId, {
+      ...(req.query.projectId ? { projectId: String(req.query.projectId) } : {}),
+      limit: req.query.limit ? Number(req.query.limit) : 100,
+    }));
+  }));
+
+  /**
+   * Everything an administrator needs in one request.
+   *
+   * Assembled server-side rather than left to the caller to stitch together
+   * from six endpoints: the point of an overview is that it is ONE answer, and
+   * a client composing it would have to know which of those six it is allowed
+   * to call.
+   */
+  r.get("/admin/overview", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const [users, installs, projects, spend, actions] = await Promise.all([
+      platform.listUsers(companyId),
+      platform.listInstallations(companyId),
+      platform.listProjects(companyId, { isAdmin: true }),
+      platform.spend(companyId, "project"),
+      platform.listActions(companyId, { limit: 15 }),
+    ]);
+
+    // Counts come from the same query the detail does, so the summary can
+    // never disagree with the list underneath it.
+    const { rows: issueRows } = await orch.db.query<{ status: string; n: string }>(
+      `select status, count(*)::text as n from issues where company_id=$1 group by status`, [companyId]);
+    const { rows: docRows } = await orch.db.query<{ n: string; bytes: string }>(
+      `select count(*)::text as n, coalesce(sum(b.bytes),0)::text as bytes
+         from documents d join blobs b on b.sha256 = d.sha256
+         join projects p on p.id = d.project_id
+        where p.company_id=$1 and d.is_current`, [companyId]);
+
+    ok(res, {
+      users: users.map(({ password_hash, ...u }) => u),
+      installations: installs,
+      projects,
+      spend,
+      issues: Object.fromEntries(issueRows.map(r => [r.status, Number(r.n)])),
+      documents: { count: Number(docRows[0]?.n ?? 0), bytes: Number(docRows[0]?.bytes ?? 0) },
+      recentActions: actions,
+      totals: {
+        costUsd: spend.reduce((n, r) => n + Number(r.cost_usd ?? 0), 0),
+        runs: spend.reduce((n, r) => n + Number(r.run_count ?? 0), 0),
+      },
+    });
   }));
 
   // --------------------------------------------------------- installations

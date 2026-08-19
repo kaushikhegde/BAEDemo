@@ -776,7 +776,13 @@ app.get("/api/status/:issueId", async (req, res) => {
 // the issue, but the frontend only sends the root parentIssueId.
 async function findInteractionIssueId(rootId: string, interactionId: string): Promise<string | null> {
   const tree = await paperclip.getIssueTree(rootId);
+  // Same null /api/status already guards for: a root the database no longer
+  // has, which a browser keeps polling from localStorage after a reset.
+  // "Not found" is the honest answer; throwing on the APPROVE path is the
+  // worst place to do it, because the user is mid-decision.
+  if (!tree) return null;
   function walk(node: any): string | null {
+    if (!node) return null;
     if ((node.approvals ?? []).some((a: any) => a.id === interactionId)) return node.id;
     for (const c of node.children ?? []) {
       const r = walk(c);
@@ -920,6 +926,7 @@ app.get("/api/history", async (_req, res) => {
         try {
           const tree = await paperclip.getIssueTree(run.id);
           const collect = (node: any) => {
+            if (!node) return;   // a deleted root returns null, not a tree
             for (const c of node.comments ?? []) bodies.push(String(c.body ?? c.content ?? ""));
             for (const ch of node.children ?? []) collect(ch);
           };
@@ -1017,9 +1024,16 @@ app.get("/api/runs/:issueId/agent-runs", async (req, res) => {
     // Also need the issue identifier (e.g. SCY-2) per id — fetch from the cached tree.
     const tree = await paperclip.getIssueTree(rootId);
     const idToIdent = new Map<string, string>();
+    // `n?.children`, not `n.children`. getIssueTree returns NULL for a root
+    // that no longer exists — deliberately, because a browser keeps
+    // `scyne_parent_issue_id` in localStorage and goes on polling an issue that
+    // a database reset removed. The first line already guarded for that; this
+    // one did not, so every poll after a reset threw
+    // "Cannot read properties of null (reading 'children')" and the panel 500ed
+    // until someone cleared their storage.
     (function collect(n: any) {
       if (n?.id) idToIdent.set(n.id, n.identifier ?? n.id);
-      for (const c of n.children ?? []) collect(c);
+      for (const c of n?.children ?? []) collect(c);
     })(tree);
 
     const flat: any[] = [];
@@ -1604,25 +1618,57 @@ app.post("/api/revise", async (req, res) => {
 
 // --- Uploads & voice agent ------------------------------------------------
 
-const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
+/**
+ * One rule for what a project or feature may be called.
+ *
+ * There used to be two, and they disagreed. `SAFE_PROJECT` (line 1102, and
+ * `pipeline.SAFE_NAME`) allows spaces and `&`; this one did not. So
+ * `POST /api/features` would happily create "Review & Verify Evidence" — the
+ * DEFAULT_FEATURE_NAME in .env, no less — and then all sixteen routes guarded
+ * by the assertions below refused every request touching it, uploads and the
+ * web attach button included, with "Invalid project or feature name".
+ *
+ * The character class now matches the rest of the pipeline. The segment check
+ * is NEW and applies to both: `..` and `.` satisfy every one of these regexes,
+ * which meant a crafted name could climb out of `projects/` on any route that
+ * joins one into a path. A name is a single directory segment, so anything
+ * that is not one is refused regardless of its characters.
+ */
+const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
+
+function isSafeSegment(name: string): boolean {
+  if (!name || !SAFE_NAME.test(name)) return false;
+  // A leading dot is either traversal or a hidden directory; neither is a
+  // project. Trailing dots and spaces are refused because some filesystems
+  // silently strip them, so two different names would resolve to one folder.
+  if (name.startsWith(".") || /[. ]$/.test(name)) return false;
+  return true;
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
 });
 
+function nameError(message: string): Error & { status: number } {
+  const err = new Error(message) as Error & { status: number };
+  err.status = 400;
+  return err;
+}
+
 function assertSafeProjectFeature(project: string, feature: string) {
-  if (!SAFE_NAME.test(project) || !SAFE_NAME.test(feature)) {
-    const err: any = new Error("Invalid project or feature name");
-    err.status = 400;
-    throw err;
+  if (!isSafeSegment(project) || !isSafeSegment(feature)) {
+    throw nameError(
+      `Invalid project or feature name. Use letters, numbers, spaces and . _ & - ` +
+      `(not starting with a dot).`);
   }
 }
 
 function assertSafeProject(project: string) {
-  if (!SAFE_NAME.test(project)) {
-    const err: any = new Error("Invalid project name");
-    err.status = 400;
-    throw err;
+  if (!isSafeSegment(project)) {
+    throw nameError(
+      `Invalid project name. Use letters, numbers, spaces and . _ & - ` +
+      `(not starting with a dot).`);
   }
 }
 

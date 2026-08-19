@@ -16,6 +16,9 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { load, patch } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
+import {
+  createProject, createFeature, uploadDocument, CATEGORY_DIR, type DualResult,
+} from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
 
 /** Anthropic-shaped blocks, which is what `/api/chat` returns. */
@@ -137,19 +140,32 @@ async function follow(chatUrl: string, issueId: string): Promise<void> {
 
 const HELP = `
   ${c.bold("Just type what you want.")}  "create a project for RTWSA", "run the data model",
-  "what still needs doing?", "upload the SOP I mentioned".
+  "what still needs doing?", "add a feature called Appeals".
 
-  ${c.grey("Slash commands run instantly, with no model call:")}
+  ${c.grey("Slash commands run instantly, with no model call and no cost:")}
 
-    ${c.cyan("/use")} <project> [feature]   pin what you are working on
-    ${c.cyan("/projects")}                  list projects
-    ${c.cyan("/docs")}                      documents for the current target
-    ${c.cyan("/status")} [issue]            activity, gates and work products
-    ${c.cyan("/gates")}                     everything awaiting approval
-    ${c.cyan("/approve")} <id> ${c.grey("|")} ${c.cyan("/reject")} <id>
-    ${c.cyan("/spend")}                     cost by project
-    ${c.cyan("/actions")}                   who did what
-    ${c.cyan("/whoami")}   ${c.cyan("/clear")}   ${c.cyan("/help")}   ${c.cyan("/exit")}
+    ${c.cyan("/use")} <project> [feature]        pin what you are working on
+    ${c.cyan("/projects")}                       projects in the database
+    ${c.cyan("/upload")} <file...> [--as TYPE]   add documents. TYPE is one of
+                                    ${c.grey("sop, transcripts, notes, ui, template")}
+    ${c.cyan("/docs")}                           documents for the current target
+    ${c.cyan("/status")} [issue]                 activity, gates and work products
+    ${c.cyan("/gates")}                          everything awaiting approval
+    ${c.cyan("/approve")} <gateId>               approve it
+    ${c.cyan("/reject")} <gateId>                send it back to be regenerated
+    ${c.cyan("/spend")}                          cost by project
+    ${c.cyan("/actions")}                        who did what on this project
+    ${c.cyan("/whoami")}                         who you are signed in as
+    ${c.cyan("/clear")}                          forget the conversation so far
+    ${c.cyan("/help")}   ${c.cyan("/exit")}
+
+  ${c.grey("Not slash commands — run these in another terminal:")}
+
+    ${c.grey("scyne user")} list ${c.grey("|")} create <email> ${c.grey("|")} role ${c.grey("|")} password ${c.grey("|")} disable
+    ${c.grey("scyne member")} list ${c.grey("|")} add <email> --role owner|editor|viewer ${c.grey("|")} remove
+    ${c.grey("scyne installs")} ${c.grey("|")} ${c.grey("scyne adapter list")} ${c.grey("|")} ${c.grey("scyne logs <runId> --follow")}
+    ${c.grey("scyne spend --by")} project|agent|adapter
+    ${c.grey("scyne help")}   ${c.grey("— the full list")}
 `;
 
 export async function repl(): Promise<void> {
@@ -223,9 +239,56 @@ export async function repl(): Promise<void> {
         case "projects": {
           const projects = await client.get<{ name: string; description?: string }[]>("/projects");
           out();
-          if (!projects.length) out(`  ${c.grey("(no projects yet — try: create a project called RTWSA)")}`);
           for (const p of projects) {
             out(`  ${p.name === project ? c.brand("▸") : " "} ${c.bold(p.name)}  ${c.grey((p.description ?? "").slice(0, 50))}`);
+          }
+          if (!projects.length) out(`  ${c.grey("(none in the database yet)")}`);
+
+          // The assistant reads the folder tree, this list reads the database,
+          // and until the two are bridged they genuinely disagree. Saying
+          // "no projects yet" while the assistant answers "SAPN already
+          // exists" makes the tool look broken when it is merely split.
+          const known = new Set(projects.map(p => p.name));
+          const onDisk = await fetch(`${chatUrl}/api/features`)
+            .then(r => r.ok ? r.json() as Promise<Record<string, unknown>> : {})
+            .catch(() => ({}));
+          const missing = Object.keys(onDisk).filter(n => !known.has(n));
+          if (missing.length) {
+            out();
+            out(`  ${c.yellow("!")} ${c.grey("also on disk, not in the database:")} ${missing.join(", ")}`);
+            out(`    ${c.grey("The assistant can see these and will say they exist; scyne commands cannot")}`);
+            out(`    ${c.grey("use them yet. Generated work from before this database was set up.")}`);
+          }
+          return false;
+        }
+
+        case "upload": {
+          // The session had no way to add a document at all — the assistant
+          // cannot read your filesystem, and the web UI's attach button has no
+          // equivalent here. This is that button.
+          const parts = rest.filter(Boolean);
+          const asFlag = parts.indexOf("--as");
+          const as = asFlag >= 0 ? parts[asFlag + 1] : undefined;
+          const files = parts.filter((p, i) => !p.startsWith("--") && i !== asFlag + 1);
+
+          if (!files.length) {
+            out(`  ${cross} usage: /upload <file...> [--as ${Object.keys(CATEGORY_DIR).join("|")}]`);
+            return false;
+          }
+          if (!project) { out(`  ${cross} pin a project first: /use <project> [feature]`); return false; }
+          if (as && !CATEGORY_DIR[as]) {
+            out(`  ${cross} --as must be one of ${Object.keys(CATEGORY_DIR).join(", ")}`);
+            return false;
+          }
+          if (as && !feature) { out(`  ${cross} --as ${as} needs a feature: /use ${project} <feature>`); return false; }
+
+          for (const file of files) {
+            try {
+              const r = await uploadDocument(client, { project, feature, file, as });
+              reportDual(String(r.extra?.path ?? file), r);
+            } catch (err) {
+              out(`  ${cross} ${file}: ${(err as Error).message.split("\n")[0]}`);
+            }
           }
           return false;
         }
@@ -309,6 +372,43 @@ export async function repl(): Promise<void> {
     }
   }
 
+  /** Render what each half of the split did. */
+  function reportDual(title: string, r: DualResult): void {
+    const show = (s: DualResult["disk"]): string => {
+      switch (s.state) {
+        case "created": return `${tick} ${c.grey(s.detail ?? "created")}`;
+        case "exists":  return `${dot} ${c.grey("already there")}`;
+        case "skipped": return `${dot} ${c.grey(s.detail)}`;
+        case "failed":  return `${cross} ${s.detail}`;
+      }
+    };
+    out();
+    out(`  ${c.bold(title)}`);
+    out(`    ${c.grey("folder tree (agents read this)")}  ${show(r.disk)}`);
+    out(`    ${c.grey("database (scyne reads this)   ")}  ${show(r.db)}`);
+  }
+
+  async function createBoth(tool: string, args: Record<string, string>): Promise<void> {
+    const name = String(args.project ?? "");
+    if (!name) { out(`  ${cross} the assistant did not say which project`); return; }
+
+    if (tool === "create_project") {
+      reportDual(name, await createProject(client, {
+        name, description: args.description, website: args.website,
+      }));
+      if (args.website) out(`    ${c.grey("branding pulled from")} ${args.website}`);
+      project = name; feature = null;
+      patch({ project: name, feature: undefined });
+      return;
+    }
+
+    const featureName = String(args.feature ?? "");
+    if (!featureName) { out(`  ${cross} the assistant did not say which feature`); return; }
+    reportDual(`${name} / ${featureName}`, await createFeature(client, { project: name, feature: featureName }));
+    project = name; feature = featureName;
+    patch({ project: name, feature: featureName });
+  }
+
   async function converse(text: string): Promise<void> {
     history.push({ role: "user", content: text });
     const spin = spinner("thinking…");
@@ -341,6 +441,17 @@ export async function repl(): Promise<void> {
       feature = args.feature ? String(args.feature) : null;
       patch({ project: project ?? undefined, feature: feature ?? undefined });
       if (!text_.trim()) out(`  ${tick} target set to ${c.brand(project ?? "?")}${feature ? " / " + c.brand(feature) : ""}`);
+      return;
+    }
+
+    // Creating a project or feature has to land in BOTH places, because the
+    // two halves of this system currently disagree about what exists: the
+    // assistant's tools write the folder tree that agents read, while
+    // `/projects` and every `scyne` command read the database. Writing only
+    // one is what produces "SAPN already exists" directly above
+    // "(no projects yet)".
+    if (tool.name === "create_project" || tool.name === "create_feature") {
+      await createBoth(tool.name, args);
       return;
     }
 
@@ -404,9 +515,15 @@ export async function repl(): Promise<void> {
   };
 
   for (;;) {
-    // Only draw a prompt at a terminal — piped input has no one to prompt,
-    // and the escape codes would land in whatever the output is redirected to.
-    if (process.stdin.isTTY) process.stdout.write(promptLabel(project, feature));
+    // Hand the prompt to readline rather than writing it ourselves. In
+    // terminal mode readline re-renders its OWN prompt after every line, so
+    // printing one here produced two: the real label first, then readline's
+    // default "> " on every turn afterwards, with the typed line echoed under
+    // it. Setting it means there is one prompt and readline owns it.
+    if (process.stdin.isTTY) {
+      rl.setPrompt(promptLabel(project, feature));
+      rl.prompt();
+    }
     const raw = await nextLine();
     if (raw === null) break;
 

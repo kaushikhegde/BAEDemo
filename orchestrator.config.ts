@@ -3,6 +3,8 @@
 // single source of truth for what a stage requires and produces. Nothing under
 // packages/orchestrator/ is touched to make this work.
 
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   defineOrchestrator, createClaudeRunner, createLoopRunner,
   createGeminiProvider, createAzureProvider, type Runner,
@@ -10,6 +12,40 @@ import {
 import { ORG, buildWorkflows } from "./orchestrator.workflows.js";
 
 const installRoot = process.env.SCYNE_INSTALL_ROOT ?? process.cwd();
+
+/**
+ * Read `.env` before anything below looks at `process.env`.
+ *
+ * Here rather than inside packages/orchestrator, because loading a config file
+ * is the CONSUMER's job — the library is handed a resolved config object and
+ * must not go hunting for one (see CLAUDE.md). It also has to happen at the
+ * very top of this module: every value below, from `DATABASE_URL` to the
+ * adapter registry, is read while this file's body executes.
+ *
+ * `process.loadEnvFile` is built into Node — no dotenv dependency, which
+ * matters for a package that deliberately has three. It does NOT overwrite a
+ * variable that is already set, so an explicit `DATABASE_URL=… npm run serve`
+ * still beats the file, which is the behaviour anyone would expect.
+ *
+ * `.env.local` is loaded second for per-machine overrides. Neither file is
+ * required; a deployment configured purely through real environment variables
+ * simply has neither.
+ */
+for (const file of [".env", ".env.local"]) {
+  const path = resolve(installRoot, file);
+  if (existsSync(path)) process.loadEnvFile(path);
+}
+
+// A .env beside the library instead of at the root is a natural guess and
+// silently does nothing — the library never reads one. Say so rather than
+// letting someone debug a DATABASE_URL that is never picked up.
+const strayEnv = resolve(installRoot, "packages", "orchestrator", ".env");
+if (existsSync(strayEnv)) {
+  console.warn(
+    `[config] ignoring ${strayEnv}\n` +
+    `         Configuration lives in ONE file at the workspace root: ${resolve(installRoot, ".env")}\n` +
+    `         Move your settings there — the chatbot reads that same file, and two would drift.`);
+}
 
 /**
  * The adapter registry.

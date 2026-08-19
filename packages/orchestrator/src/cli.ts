@@ -59,9 +59,12 @@ const usage = `
 scyne-orchestrator <verb>
 
   seed                                 reconcile the database to orchestrator.config.ts
-  reset [--hard] [--yes]               clear issues/runs/gates/budgets, keep the org. Prints a plan
+  reset [--hard] [--all] [--yes]       clear issues/runs/gates/budgets, keep the org. Prints a plan
                                         unless --yes. --hard also drops agents and the overrides
-                                        overlay, so the next boot rebuilds the org from the config file
+                                        overlay, so the next boot rebuilds the org from the config file.
+                                        --all additionally removes users, projects, documents,
+                                        installations and chats — a factory reset, after which the
+                                        installation must be claimed again with \`scyne init\`
   run <workflow> --project P [--feature F]
                                         start a workflow and advance it as far as it will go
   status <issueId>                     issue, step index, comments, work products, gates
@@ -213,7 +216,14 @@ async function main(): Promise<void> {
        * the workflows at read time. Nothing to reseed.
        */
       case "reset": {
-        const hard = rest.includes("--hard");
+        // Three depths, each a superset of the last:
+        //   (bare)    the work — issues, runs, gates, comments, budgets
+        //   --hard    + the org chart and console overrides
+        //   --all     + identity and content: users, projects, documents,
+        //             installations, chats. A genuine factory reset, and the
+        //             only one that lets the installation be claimed again.
+        const all = rest.includes("--all");
+        const hard = rest.includes("--hard") || all;
         const confirmed = rest.includes("--yes");
 
         const agents = await orch.repo.listAgents(orch.companyId);
@@ -233,12 +243,32 @@ async function main(): Promise<void> {
             ? `  ${agents.length} agent(s) AND .orchestrator/overrides.json — the next boot rebuilds\n` +
               `    the org from orchestrator.config.ts, discarding console edits`
             : `  keeping ${agents.length} agent(s) and .orchestrator/overrides.json`);
+
+          if (all) {
+            const n = async (sql: string): Promise<string> =>
+              (await orch.db.query<{ n: string }>(sql, [orch.companyId])).rows[0]?.n ?? "0";
+            console.log(
+              `  ${await n(`select count(*)::text n from users where company_id=$1`)} user(s), ` +
+              `every API token and session`);
+            console.log(
+              `  ${await n(`select count(*)::text n from projects where company_id=$1`)} project(s) ` +
+              `with their features, members and audit trail`);
+            console.log(
+              `  ${await n(`select count(*)::text n from documents d join projects p on p.id=d.project_id where p.company_id=$1`)} ` +
+              `stored document(s) — the DATABASE copy; files under projects/ on disk are untouched`);
+            console.log(
+              `  ${await n(`select count(*)::text n from installations where company_id=$1`)} plugin installation(s), ` +
+              `and every saved chat`);
+            console.log(`\n  After this the installation is UNCLAIMED — run \`scyne init\` to set it up again.`);
+          } else {
+            console.log(`  keeping every user, project and stored document (add --all to remove those too)`);
+          }
           console.log(`\nNothing has been deleted. Re-run with --yes to do it.`);
           console.log(`Skills are files, not rows — ${"reset"} never touches them.`);
           break;
         }
 
-        const summary = await orch.repo.resetCompany(orch.companyId, { agents: hard });
+        const summary = await orch.repo.resetCompany(orch.companyId, { agents: hard, platform: all });
 
         // The logs are referenced by run rows that no longer exist; leaving
         // them behind is orphaned disk that no console view can reach.

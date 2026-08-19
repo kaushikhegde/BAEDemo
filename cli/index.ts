@@ -10,11 +10,13 @@
 // Every command goes over HTTP to the same API the browser uses, so parity is
 // structural rather than maintained by hand.
 
-import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createClient, resolveProject, targetProject, ApiError, type Client } from "./client.ts";
 import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
+import {
+  createProject, createFeature, uploadDocument, chatUrl, CATEGORY_DIR, type DualResult,
+} from "./dual.ts";
 // @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
 import * as pipeline from "../scripts/pipeline.mjs";
 
@@ -54,22 +56,76 @@ function table(rows: Record<string, unknown>[], columns?: string[]): void {
   }
 }
 
+/**
+ * Read a secret from a terminal without echoing it.
+ *
+ * Written against raw stdin rather than readline, deliberately. The obvious
+ * approach — override readline's `_writeToOutput` so keystrokes are swallowed
+ * — is wrong twice over. It depends on an internal that Node 24 no longer
+ * exposes (the method moved behind a symbol, so touching it throws
+ * "Cannot read properties of undefined"), and even where it does exist,
+ * muting it hides the PROMPT as well: readline clears the line and re-renders
+ * `prompt + input` through that same method on every keystroke, so muting
+ * leaves a bare cursor and the command looks like it has hung.
+ *
+ * Raw mode has neither problem and behaves the same on every Node version.
+ * Backspace, Ctrl-C and Ctrl-D are handled here because raw mode means the
+ * terminal no longer handles them for us.
+ */
+function readSecret(label: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const stdin = process.stdin;
+    process.stdout.write(label);
+
+    const wasRaw = stdin.isRaw === true;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+
+    let value = "";
+    const done = (finish: () => void): void => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+      process.stdout.write("\n");
+      finish();
+    };
+
+    const onData = (chunk: string): void => {
+      for (const ch of chunk) {
+        switch (ch) {
+          case "\r": case "\n":
+            return done(() => resolve(value));
+          case "":                       // Ctrl-C
+            return done(() => reject(new ApiError(130, "cancelled")));
+          case "":                       // Ctrl-D
+            return done(() => resolve(value));
+          case "": case "\b":            // backspace
+            value = value.slice(0, -1);
+            break;
+          default:
+            // Ignore the remaining control characters — arrow keys arrive as
+            // escape sequences and would otherwise land in the password.
+            if (ch >= " ") value += ch;
+        }
+      }
+    };
+
+    stdin.on("data", onData);
+  });
+}
+
+/** Ask a question. `silent` hides what is typed, for passwords. */
 async function prompt(question: string, opts: { silent?: boolean } = {}): Promise<string> {
+  // A terminal is the only place there is anyone to hide input from — and the
+  // only place raw mode exists. Piped input (`printf 'pw\n' | scyne init`)
+  // goes through readline unchanged.
+  if (opts.silent && process.stdin.isTTY) {
+    return (await readSecret(`${question.replace(/:\s*$/, "")} (hidden as you type): `)).trim();
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    if (!opts.silent) return (await rl.question(question)).trim();
-    // No echo for a password. `rl.question` has no silent mode, so the output
-    // stream is muted for the duration rather than the characters being
-    // echoed and then cleared, which leaves them in a scrollback buffer.
-    const outStream = process.stdout as NodeJS.WriteStream & { _writeToOutput?: unknown };
-    process.stdout.write(question);
-    const original = (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput;
-    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {};
-    const answer = await rl.question("");
-    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = original;
-    void outStream;
-    process.stdout.write("\n");
-    return answer.trim();
+    return (await rl.question(question)).trim();
   } finally {
     rl.close();
   }
@@ -161,11 +217,36 @@ async function cmdProject(client: Client, args: string[]): Promise<void> {
     }
     case "create": {
       if (!name) throw new ApiError(400, "usage: scyne project create <name> [--description ...] [--website ...]");
-      const p = await client.post("/projects", {
+      // Both sides: the folder tree agents read, and the database `scyne`
+      // reads. Writing only the database — which this did — produced a project
+      // that no agent could ever work on, and no branding.
+      const r = await createProject(client, {
         name, description: flag("description"), website: flag("website"),
       });
-      out(`✓ created project ${name}`);
-      if (has("json")) json(p);
+      reportDual(name, r);
+      if (flag("website")) out(`    branding pulled from ${flag("website")}`);
+      if (!flag("description")) {
+        out(``);
+        out(`  No --description given. Every skill reads the project definition before`);
+        out(`  any discovery document, so add one:`);
+        out(`    scyne project describe ${name} "Who the client is, what they are regulated to do…"`);
+      }
+      return;
+    }
+
+    case "describe": {
+      if (!name) throw new ApiError(400, `usage: scyne project describe <name> "<the definition>"`);
+      const text = args.slice(2).join(" ") || flag("description");
+      if (!text) throw new ApiError(400, `usage: scyne project describe <name> "<the definition>"`);
+      const proj = await resolveProject(client, name);
+      await client.patch(`/projects/${proj.id}`, { description: text });
+      // The definition also has to reach description.md, which is what the
+      // skills actually read.
+      await fetch(`${chatUrl()}/api/project-description`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: name, description: text }),
+      }).catch(() => null);
+      out(`✓ definition saved for ${name}`);
       return;
     }
     case "show": {
@@ -183,7 +264,7 @@ async function cmdProject(client: Client, args: string[]): Promise<void> {
       return;
     }
     default:
-      throw new ApiError(400, `unknown: scyne project ${verb}. Try list, create, show.`);
+      throw new ApiError(400, `unknown: scyne project ${verb}. Try list, create, describe, show.`);
   }
 }
 
@@ -197,8 +278,8 @@ async function cmdFeature(client: Client, args: string[]): Promise<void> {
     }
     case "add": case "create": {
       if (!name) throw new ApiError(400, "usage: scyne feature add <name> [--project <p>]");
-      await client.post(`/projects/${project.id}/features`, { name });
-      out(`✓ added feature ${name} to ${project.name}`);
+      reportDual(`${project.name} / ${name}`,
+        await createFeature(client, { project: project.name, feature: name }));
       return;
     }
     default:
@@ -206,11 +287,21 @@ async function cmdFeature(client: Client, args: string[]): Promise<void> {
   }
 }
 
-/** `--as` maps to the folder the pipeline expects, matching fileRouter.ts. */
-const CATEGORY_DIR: Record<string, string> = {
-  sop: "requirements/SOP", transcripts: "requirements/Transcripts",
-  notes: "requirements/Notes", ui: "requirements/UI", template: "requirements/templates",
-};
+/** Render what each half of the split did. Shared with the session's version. */
+function reportDual(title: string, r: DualResult): void {
+  const show = (s: DualResult["disk"]): string => {
+    switch (s.state) {
+      case "created": return `✓ ${s.detail ?? "created"}`;
+      case "exists":  return `· already there`;
+      case "skipped": return `· ${s.detail}`;
+      case "failed":  return `✗ ${s.detail}`;
+    }
+  };
+  out(``);
+  out(`  ${title}`);
+  out(`    folder tree (agents read this)  ${show(r.disk)}`);
+  out(`    database (scyne reads this)     ${show(r.db)}`);
+}
 
 async function cmdDoc(client: Client, args: string[]): Promise<void> {
   const [verb, ...rest] = args;
@@ -245,18 +336,8 @@ async function cmdDoc(client: Client, args: string[]): Promise<void> {
       if (as && !feature) throw new ApiError(400, `--as ${as} needs a feature. Pass --feature or \`scyne use <p> <f>\`.`);
 
       for (const file of files) {
-        const bytes = readFileSync(file);
-        const name = basename(file);
-        const path = as ? `${CATEGORY_DIR[as]}/${name}` : (feature ? `requirements/${name}` : `documents/${name}`);
-        const res = await client.post<{ version: number; changed: boolean }>(
-          `/projects/${project.id}/documents`, {
-            feature: as || feature ? feature : undefined,
-            path, category: as ?? null,
-            content: bytes.toString("base64"), encoding: "base64",
-          });
-        out(res.changed
-          ? `✓ ${name} → ${path} (v${res.version})`
-          : `· ${name} unchanged — identical content already stored`);
+        const r = await uploadDocument(client, { project: project.name, feature, file, as });
+        reportDual(String(r.extra?.path ?? file), r);
       }
       return;
     }
@@ -497,6 +578,106 @@ async function cmdActions(client: Client, args: string[]): Promise<void> {
   })), ["when", "verb", "target", "detail"]);
 }
 
+/**
+ * The superadmin view: everything, in one screen.
+ *
+ * Admin visibility was previously spread across `user list`, `installs`,
+ * `spend` and a per-project `actions` feed, with no way to see activity across
+ * projects at all. Someone asking "what is going on here" should not have to
+ * know which four commands to run and in which order.
+ */
+async function cmdAdmin(client: Client, args: string[]): Promise<void> {
+  const view = args[0];
+  const o = await client.get<any>("/admin/overview").catch((err: ApiError) => {
+    if (err.status === 403) throw new ApiError(403, "administrators only — `scyne whoami` shows your role");
+    throw err;
+  });
+
+  if (has("json")) return json(o);
+
+  const bytes = (n: number): string =>
+    n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`;
+
+  // A named section shows only that one, in full.
+  const only = (name: string): boolean => !view || view === name;
+
+  if (only("summary") && !view) {
+    out(``);
+    out(`  ${o.users.length} user(s)  ·  ${o.projects.length} project(s)  ·  ` +
+        `${o.installations.filter((i: any) => !i.revoked_at).length} active install(s)`);
+    out(`  ${o.documents.count} document(s), ${bytes(o.documents.bytes)}  ·  ` +
+        `${o.totals.runs} run(s)  ·  $${o.totals.costUsd.toFixed(4)}`);
+    const issues = Object.entries(o.issues) as [string, number][];
+    if (issues.length) out(`  issues: ${issues.map(([s, n]) => `${n} ${s}`).join("  ·  ")}`);
+  }
+
+  if (only("people")) {
+    out(``); out(`  PEOPLE`);
+    table(o.users.map((u: any) => ({
+      email: u.email, role: u.role, status: u.status, since: String(u.created_at).slice(0, 10),
+    })), ["email", "role", "status", "since"]);
+  }
+
+  if (only("installs")) {
+    out(``); out(`  INSTALLATIONS`);
+    table(o.installations.map((i: any) => ({
+      machine: i.hostname ?? i.machine_id.slice(0, 12), os: i.os ?? "—",
+      version: i.plugin_version ?? "—",
+      lastSeen: i.last_seen_at ? String(i.last_seen_at).slice(0, 16).replace("T", " ") : "never",
+      state: i.revoked_at ? "revoked" : "active",
+    })), ["machine", "os", "version", "lastSeen", "state"]);
+  }
+
+  if (only("projects")) {
+    out(``); out(`  PROJECTS`);
+    const cost = new Map<string, number>(
+      o.spend.map((s: any) => [String(s.project_name), Number(s.cost_usd ?? 0)]));
+    table(o.projects.map((p: any) => ({
+      name: p.name, cost: `$${(cost.get(p.name) ?? 0).toFixed(4)}`,
+      created: String(p.created_at).slice(0, 10),
+    })), ["name", "cost", "created"]);
+  }
+
+  if (only("activity")) {
+    out(``); out(`  RECENT ACTIVITY`);
+    const byId = new Map<string, string>(o.users.map((u: any) => [u.id, u.email]));
+    table(o.recentActions.map((a: any) => ({
+      when: String(a.created_at).slice(0, 16).replace("T", " "),
+      who: byId.get(a.user_id) ?? a.agent_key ?? "—",
+      did: a.verb,
+    })), ["when", "who", "did"]);
+  }
+
+  if (!view) {
+    out(``);
+    out(`  Narrow it:  scyne admin people | installs | projects | activity`);
+    out(`  Full audit: scyne audit [--limit 200]`);
+  }
+}
+
+/** Cross-project audit. The per-project feed is `scyne actions`. */
+async function cmdAudit(client: Client): Promise<void> {
+  const rows = await client.get<any[]>(`/actions?limit=${flag("limit") ?? 100}`)
+    .catch((err: ApiError) => {
+      if (err.status === 403) throw new ApiError(403, "administrators only — `scyne actions` shows one project");
+      throw err;
+    });
+  if (has("json")) return json(rows);
+
+  const users = await client.get<any[]>("/users").catch(() => []);
+  const byId = new Map<string, string>(users.map(u => [u.id, u.email]));
+  const projects = await client.get<any[]>("/projects").catch(() => []);
+  const projName = new Map<string, string>(projects.map(p => [p.id, p.name]));
+
+  table(rows.map(a => ({
+    when: String(a.created_at).slice(0, 19).replace("T", " "),
+    who: byId.get(a.user_id) ?? a.agent_key ?? "—",
+    project: projName.get(a.project_id) ?? "—",
+    did: a.verb,
+    detail: JSON.stringify(a.detail ?? {}).slice(0, 40),
+  })), ["when", "who", "project", "did", "detail"]);
+}
+
 async function cmdSpend(client: Client): Promise<void> {
   const by = flag("by") ?? "project";
   const rows = await client.get<any[]>(`/spend?by=${by}`);
@@ -580,11 +761,17 @@ scyne — the Scyne pipeline, from the command line
     use <project> [feature]          pin what later commands act on
 
   People  (init is once for the whole installation, not once per person)
-    user list | create <email> [--role admin|member|viewer] | role <email> <role>
-    member list | add <email> [--role owner|editor|viewer] | remove <email>
+    user list
+    user create <email> [--role admin|member|viewer] [--password …] [--name …]
+    user role <email> <admin|member|viewer>
+    user password <email>            change it (prompts, no echo)
+    user disable <email> | enable <email>
+    member list                      who can see the current project
+    member add <email> [--role owner|editor|viewer]
+    member remove <email>
 
   Projects
-    project list | create <name> | show [name]
+    project list | create <name> [--description "…"] [--website …] | describe <name> "…" | show
     feature list | add <name>
 
   Documents
@@ -597,10 +784,17 @@ scyne — the Scyne pipeline, from the command line
     gate list | approve <id> | reject <id> [--note "..."]
     logs <runId> [--follow]          an agent's transcript
 
+  Superadmin  (administrators only)
+    admin                            everything in one screen
+    admin people | installs | projects | activity
+    audit [--limit N]                who did what, across ALL projects
+
   Visibility
-    actions [project]                who did what, newest first
-    spend [--by project|agent|adapter]
-    installs [list] | register | revoke <id>
+    actions [project] [--limit N]    who did what, newest first
+    spend [--by project|agent|adapter]   cost, grouped. Default: project
+    installs [list]                  who installed the plugin, and where
+    installs register [--version V]  register this machine
+    installs revoke <id>             stop that installation authenticating
     chat history
     adapter list
 
@@ -639,6 +833,8 @@ async function main(): Promise<void> {
     case "gate":     return cmdGate(client, rest);
     case "logs":     return cmdLogs(client, rest);
     case "actions":  return cmdActions(client, rest);
+    case "admin":    return cmdAdmin(client, rest);
+    case "audit":    return cmdAudit(client);
     case "spend":    return cmdSpend(client);
     case "installs": return cmdInstalls(client, rest);
     case "chat":     return cmdChat(client, rest);

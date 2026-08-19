@@ -74,3 +74,72 @@ describe("resetCompany", () => {
     expect(await repo.resetCompany(companyId)).toMatchObject({ issues: 0, runs: 0, budgets: 0 });
   });
 });
+
+describe("resetCompany --all (factory reset)", () => {
+  /** Seed the platform side: an admin, a project with a feature and a document. */
+  async function seedPlatform() {
+    const { createPlatformRepo } = await import("../src/core/platform.js");
+    const { createDocumentStore } = await import("../src/core/documents.js");
+    const platform = createPlatformRepo(db);
+    const store = createDocumentStore(db);
+
+    const user = await platform.createUser({ companyId, email: "admin@scyne.co", role: "admin" });
+    await platform.createToken(user.id, "cli");
+    await platform.createSession(user.id);
+    const project = await platform.createProject({ companyId, name: "RTWSA", createdBy: user.id });
+    const feature = await platform.createFeature({ projectId: project.id, name: "Appeals" });
+    await store.put({ projectId: project.id, featureId: feature.id, path: "a.md", content: "x" });
+    await platform.registerInstallation({ companyId, userId: user.id, machineId: "m1" });
+    await platform.recordAction({ companyId, projectId: project.id, verb: "project.create" });
+    const convo = await platform.createConversation({ companyId, userId: user.id, projectId: project.id });
+    await platform.appendMessage(convo.id, { role: "user", content: [] });
+    return platform;
+  }
+
+  const count = async (table: string): Promise<number> => {
+    const { rows } = await db.query<{ n: string }>(`select count(*)::text as n from ${table}`);
+    return Number(rows[0].n);
+  };
+
+  it("keeps identity and content by default — a plain reset is not a factory reset", async () => {
+    const platform = await seedPlatform();
+    await repo.resetCompany(companyId, { agents: true });
+
+    expect(await count("users")).toBe(1);
+    expect(await count("projects")).toBe(1);
+    expect(await count("documents")).toBe(1);
+    expect(await platform.isUnclaimed(companyId)).toBe(false);
+  });
+
+  it("removes everything with platform:true, and reports what it removed", async () => {
+    await seedPlatform();
+    const summary = await repo.resetCompany(companyId, { agents: true, platform: true });
+
+    expect(summary.users).toBe(1);
+    expect(summary.projects).toBe(1);
+    expect(summary.documents).toBe(1);
+    expect(summary.installations).toBe(1);
+
+    for (const t of ["users", "projects", "features", "documents", "project_members",
+                     "api_tokens", "sessions", "installations", "actions",
+                     "conversations", "messages", "blobs"]) {
+      expect(await count(t), t).toBe(0);
+    }
+  });
+
+  it("leaves the installation claimable again — the whole point of a factory reset", async () => {
+    const platform = await seedPlatform();
+    expect(await platform.isUnclaimed(companyId)).toBe(false);
+
+    await repo.resetCompany(companyId, { agents: true, platform: true });
+    expect(await platform.isUnclaimed(companyId)).toBe(true);
+  });
+
+  it("is idempotent — a second factory reset is a no-op, not an error", async () => {
+    await seedPlatform();
+    await repo.resetCompany(companyId, { agents: true, platform: true });
+    const second = await repo.resetCompany(companyId, { agents: true, platform: true });
+    expect(second.users).toBe(0);
+    expect(second.projects).toBe(0);
+  });
+});
