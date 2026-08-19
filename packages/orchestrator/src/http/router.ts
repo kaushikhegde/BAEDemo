@@ -17,6 +17,7 @@ import type {
   AgentBudget, AgentRow, AgentSpec, Effort, ListIssuesFilter, RunRow, UpdateIssuePatch,
 } from "../core/repo.js";
 import { resolveTheme } from "./theme.js";
+import { createPlatformRouter, PLATFORM_ROUTES } from "./platform-router.js";
 import { loadOverrides, saveOverrides, withAgentPatch } from "../core/overrides.js";
 import { listSkills, skillFilePath } from "../core/skills.js";
 import { createDocsHandlers } from "./docs.js";
@@ -33,7 +34,7 @@ import type { createOrchestrator } from "../index.js";
  * when adding a route, which is exactly the discipline this table exists to
  * enforce).
  */
-export const ROUTES = [
+const CORE_ROUTES = [
   { method: "GET",   path: "/health" },
   { method: "GET",   path: "/agents" },
   { method: "POST",  path: "/agents" },          // hire
@@ -72,6 +73,14 @@ export const ROUTES = [
   { method: "GET",   path: "/openapi.json" },
   { method: "GET",   path: "/docs" },
 ] as const;
+
+/**
+ * The whole HTTP surface: the engine's routes above, plus the platform's from
+ * http/platform-router.ts. Merged here rather than kept apart so that
+ * test/openapi.test.ts — which diffs this table against openapi.yaml in BOTH
+ * directions — still covers every route there is. Two files, one contract.
+ */
+export const ROUTES = [...CORE_ROUTES, ...PLATFORM_ROUTES] as const;
 
 interface AgentPatchBody {
   adapter?: string; model?: string; effort?: Effort;
@@ -140,6 +149,10 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   const badRequest = (res: Response, message: string): void => { res.status(400).json({ error: message }); };
 
   const safeBundlePath = makeSafeBundlePath(orch.config.workspace);
+
+  // Mounted first so the platform's own paths resolve before any of this
+  // router's parameterised ones could shadow them.
+  r.use(createPlatformRouter(orch));
 
   const wrap = (fn: (req: Request, res: Response) => Promise<void>) =>
     (req: Request, res: Response): void => {

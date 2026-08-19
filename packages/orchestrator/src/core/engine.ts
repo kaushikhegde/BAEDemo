@@ -26,7 +26,15 @@ import type { createRepo, AgentRow, IssueRow } from "./repo.js";
 /** The shape `createRepo(db)` returns. There is no separately exported `Repo` interface (Task 2). */
 type Repo = ReturnType<typeof createRepo>;
 
-export type ExecFn = (cmd: string, cwd: string, timeoutMs?: number)
+/**
+ * `env` is how an `exec` step is told which project tree to act on. The ten
+ * scripts under `scripts/` all resolve their root as
+ * `process.env.WORKSPACE_PATH || <the script's own directory>/..`, so setting
+ * it is the whole mechanism — no script needs to change, and one that is run
+ * by hand keeps behaving exactly as it does today. Optional so the fakes in
+ * engine.test.ts, which take only `cmd`, still satisfy the type.
+ */
+export type ExecFn = (cmd: string, cwd: string, timeoutMs?: number, env?: NodeJS.ProcessEnv)
   => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /**
@@ -60,9 +68,9 @@ export interface Engine {
  * Every test in engine.test.ts injects its own `exec`, so this path is never
  * hit by the suite.
  */
-const defaultExec: ExecFn = (cmd, cwd, timeoutMs = 20 * 60_000) =>
+const defaultExec: ExecFn = (cmd, cwd, timeoutMs = 20 * 60_000, env) =>
   new Promise((res) => {
-    nodeExec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
+    nodeExec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: env ?? process.env },
       (err, stdout, stderr) => res({ code: err ? (err.code ?? 1) : 0, stdout, stderr }));
   });
 
@@ -73,6 +81,39 @@ export function createEngine(deps: {
 }): Engine {
   const { repo, config } = deps;
   const exec = deps.exec ?? defaultExec;
+
+  /**
+   * The two roots, resolved once. `config.workspace` used to answer both of
+   * these questions at once, which is true only while one checkout holds the
+   * code AND the projects — the shape a plugin breaks immediately.
+   *
+   *   installRoot   skills/, agent-instructions/, scripts/, .mcp.json.
+   *                 Where the code and its library live.
+   *   workRoot      projects/, generated-apps/. The tree being worked on.
+   *
+   * `workRoot` defaults to `installRoot`, so today nothing moves and the
+   * existing suite is the proof of that. Materialisation supplies a different
+   * one per run, and only the value changes — every consumer below already
+   * names which of the two it wants.
+   */
+  const installRoot = config.workspace;
+  const workRoot = config.workRoot ?? config.workspace;
+
+  /**
+   * The environment an `exec` step's child process gets.
+   *
+   * `exec` steps run with cwd = installRoot, because their commands name
+   * `scripts/…` relatively and that is where the scripts are. They are pointed
+   * at the project tree through `WORKSPACE_PATH` instead — the variable those
+   * scripts already read. Agent steps are the other way round (cwd = workRoot),
+   * because their prompts name `projects/{project}/…` relatively.
+   */
+  const execEnv = (): NodeJS.ProcessEnv => ({
+    ...process.env,
+    WORKSPACE_PATH: workRoot,
+    SCYNE_WORK_ROOT: workRoot,
+    SCYNE_INSTALL_ROOT: installRoot,
+  });
 
   // Per-issue in-memory lock. advance() must be safe to call twice
   // concurrently for the same issue — a status-change trigger and a manual
@@ -159,7 +200,9 @@ export function createEngine(deps: {
     for (const [name, tpl] of Object.entries(step.reads ?? {})) {
       const rel = interpolate(tpl, vars);
       try {
-        const body = await readFile(resolve(config.workspace, rel), "utf8");
+        // workRoot: a `reads` entry names a project artefact
+        // (`projects/{project}/…/salesforce-data-model.md`), never a library file.
+        const body = await readFile(resolve(workRoot, rel), "utf8");
         out[name] = body.length > MAX_READ_CHARS
           ? `${body.slice(0, MAX_READ_CHARS)}\n\n[…truncated at ${MAX_READ_CHARS} characters]`
           : body;
@@ -197,7 +240,10 @@ export function createEngine(deps: {
         // The first thing a person sees after clicking Run. Naming the command
         // is what distinguishes "staging inputs" from "rendering the app".
         await note(issue.id, `${where(issue, wf)} · running \`${cmd}\``);
-        const r = await exec(cmd, step.cwd ?? config.workspace, step.timeoutMs);
+        // installRoot: the command says `node scripts/stage.mjs …`, and that
+        // path is relative to where the scripts live. The project tree reaches
+        // it through WORKSPACE_PATH in execEnv() instead.
+        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv());
         if (r.code !== 0) {
           await block(issue.id, `Step \`${cmd}\` failed (exit ${r.code}).\n\n\`\`\`\n${r.stderr.slice(-2000)}\n\`\`\``);
           return "blocked";
@@ -268,7 +314,9 @@ export function createEngine(deps: {
         const attemptOnce = async (): Promise<{ res: RunResult; elapsedMs: number }> => {
           const attempt = (await repo.listRuns(issue.id))
             .filter(r => r.step_index === issue.step_index).length;
-          const logPath = join(config.workspace, ".orchestrator", "runs",
+          // installRoot: run logs are this deployment's own runtime data, not
+          // the project's. (They move into Postgres entirely in a later step.)
+          const logPath = join(installRoot, ".orchestrator", "runs",
             `${issue.id}-${issue.step_index}${attempt ? `-retry${attempt}` : ""}.jsonl`);
           const run = await repo.startRun({
             issueId: issue.id, agentId: agentRow?.id ?? null,
@@ -279,7 +327,8 @@ export function createEngine(deps: {
           const res = await runner.run({
             agent: {
               key: agentKey,
-              bundlePath: agentRow?.bundle_path ? resolve(config.workspace, agentRow.bundle_path) : undefined,
+              // installRoot: `agent-instructions/<agent>.thin.md` ships with the install.
+              bundlePath: agentRow?.bundle_path ? resolve(installRoot, agentRow.bundle_path) : undefined,
               mcpEnabled: agentRow?.mcp_enabled ?? false,
               extraArgs: agentRow?.extra_args ?? [],
             },
@@ -287,10 +336,16 @@ export function createEngine(deps: {
             effort: rt.effort,
             fallbackModel: agentRow?.fallback_model ?? [],
             prompt,
-            cwd: config.workspace,
+            // Passed so a non-Claude adapter can load the SKILL.md itself;
+            // createClaudeRunner ignores it and discovers the skill as before.
+            skill: step.skill,
+            // workRoot: the agent's prompt names `projects/{project}/…`
+            // relatively, so it must stand in the project tree.
+            cwd: workRoot,
             logPath,
             budget,
-            mcpConfigPath: join(config.workspace, ".mcp.json"),
+            // installRoot: the MCP registration belongs to the install.
+            mcpConfigPath: join(installRoot, ".mcp.json"),
           });
           const elapsedMs = Date.now() - startedAt;
 
@@ -353,7 +408,7 @@ export function createEngine(deps: {
       case "attach": {
         const missing: string[] = [];
         for (const f of step.files) {
-          const abs = resolve(config.workspace, interpolate(f, vars));
+          const abs = resolve(workRoot, interpolate(f, vars));
           try { await access(abs); } catch { missing.push(f); }
         }
         if (missing.length) {
@@ -365,7 +420,7 @@ export function createEngine(deps: {
         }
         const titles: string[] = [];
         for (const f of step.files) {
-          const abs = resolve(config.workspace, interpolate(f, vars));
+          const abs = resolve(workRoot, interpolate(f, vars));
           const title = abs.split("/").pop() ?? abs;
           titles.push(title);
           await repo.attachWorkProduct(issue.id, {
@@ -468,7 +523,9 @@ export function createEngine(deps: {
 
         const vars: Record<string, string> = {
           ...(issue.params as Record<string, string>),
-          workspace: config.workspace,
+          // workRoot: `{workspace}` is interpolated into prompts and commands
+          // that go on to name `projects/…`, so it must mean the project tree.
+          workspace: workRoot,
           issueId,
         };
 

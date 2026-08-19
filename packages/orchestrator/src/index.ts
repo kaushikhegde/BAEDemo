@@ -10,12 +10,48 @@ export {
 export { createRouter, ROUTES } from "./http/router.js";
 export { openDb, migrate, type Db, type DbOptions } from "./core/db.js";
 export {
+  resolveRoots, findInstallRoot, hasInstallMarkers, RootResolutionError,
+  INSTALL_MARKERS, type Roots, type ResolveRootsOptions,
+} from "./core/roots.js";
+export {
   createRepo,
   type AgentSpec, type AgentRow, type IssueRow, type RunRow, type GateRow,
   type CommentRow, type WorkProductRow, type Effort,
 } from "./core/repo.js";
 export { createEngine, type Engine, type ExecFn } from "./core/engine.js";
 export { createClaudeRunner, buildArgs, type Runner, type RunRequest, type RunResult } from "./core/runner.js";
+export {
+  createLoopRunner, MAX_TURNS,
+  type ChatProvider, type CompleteRequest, type ProviderTurn, type ProviderToolCall, type LoopMessage,
+} from "./core/agent-loop.js";
+export {
+  createGeminiProvider, createAzureProvider, type GeminiOptions, type AzureOptions,
+} from "./core/providers.js";
+export {
+  runTool, confine, ToolError, TOOL_SCHEMAS, ALLOWED_COMMANDS,
+  type ToolCall, type ToolOutcome, type ToolContext,
+} from "./core/tools.js";
+export {
+  createDocumentStore, sha256Of,
+  type DocumentStore, type DocumentRef, type PutInput, type ListFilter,
+} from "./core/documents.js";
+export {
+  materialise, harvest, attribute, createWorkRoot, discardWorkRoot,
+  LINKED_FROM_INSTALL, HARVESTED_ROOTS,
+  type Manifest, type HarvestResult, type MaterialiseInput, type FeatureRef,
+} from "./core/materialise.js";
+export {
+  createPlatformRepo,
+  type PlatformRepo, type UserRow, type ProjectRow, type FeatureRow,
+  type InstallationRow, type ActionRow, type ConversationRow, type MessageRow,
+  type Principal, type SpendRow,
+} from "./core/platform.js";
+export {
+  hashPassword, verifyPassword, mintToken, hashToken, looksLikeToken, bearerFrom,
+  atLeast, effectiveProjectRole, isGlobalRole, isProjectRole, sessionExpiry,
+  GLOBAL_ROLES, PROJECT_ROLES, TOKEN_PREFIX,
+  type GlobalRole, type ProjectRole, type MintedToken,
+} from "./core/auth.js";
 export { extractUsage, type RunUsage } from "./core/usage.js";
 export { filterRunLog, type TranscriptEvent } from "./core/transcript.js";
 export { interpolate } from "./core/interpolate.js";

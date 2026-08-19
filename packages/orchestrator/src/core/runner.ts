@@ -24,6 +24,15 @@ export interface RunRequest {
   cwd: string;
   logPath: string;
   mcpConfigPath?: string;
+  /**
+   * The skill this step invokes, when it names one.
+   *
+   * Claude Code needs no help here — it discovers `.claude/skills/<slug>/`
+   * itself, which is why this was never passed before. No other provider can,
+   * so the shared agent loop reads the SKILL.md and puts it in the system
+   * prompt. createClaudeRunner ignores it, keeping its behaviour identical.
+   */
+  skill?: string;
   budget?: { maxTokens?: number; maxCostUsd?: number; maxDurationMs?: number };
 }
 

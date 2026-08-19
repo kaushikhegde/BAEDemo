@@ -84,7 +84,31 @@ export interface Theme {
 }
 
 export interface OrchestratorConfig {
+  /**
+   * The INSTALL root: where this deployment's own material lives — the skills
+   * an agent step names, the agent instruction bundles, the scripts an `exec`
+   * step invokes, `.mcp.json`. Read-only as far as a run is concerned.
+   *
+   * Trusted verbatim when supplied. Discovery (walking up for a marker
+   * directory, reading `$SCYNE_INSTALL_ROOT`, failing loudly when neither
+   * answers) belongs to the consumer that has a cwd to search from — see
+   * `core/roots.ts`, which the CLI uses to PRODUCE this value. A library that
+   * went looking on its own behalf would be second-guessing a caller who has
+   * already said where it is.
+   */
   workspace: string;
+  /**
+   * The WORK root: where the project tree being operated on lives —
+   * `projects/`, `generated-apps/`. Agents write here and the result is
+   * harvested back.
+   *
+   * Optional, defaulting to `workspace`, because one checkout holding both is
+   * the current shape and must keep working unchanged. It exists separately
+   * because a plugin cannot assume it: its skills ship with the install while
+   * the project it is pointed at is materialised somewhere else entirely, and
+   * handing a script the wrong one of the two is not a subtle failure.
+   */
+  workRoot?: string;
   company?: string;          // default "Scyne"
   /**
    * Workspace-relative directory holding the skills agent steps invoke by name,

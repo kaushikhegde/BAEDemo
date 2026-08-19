@@ -19,9 +19,11 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { WORK_ROOT } from "./lib/roots.mjs";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// The project tree this run operates on. See scripts/lib/roots.mjs for why
+// this is not the same question as "where does this code live".
+const WORKSPACE = WORK_ROOT;
 const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
 
 // Must match the palette in the skill's Appendix C and the companion app's

@@ -17,10 +17,14 @@
     "serve": "npm run orch -- serve --port 3100",
     "dev": "concurrently -n orch,app -c blue,green \"npm:serve\" \"npm run chatbot\"",
     "oauth": "npx -y mcp-remote https://mcp.atlassian.com/v1/mcp/authv2",
-    "check:routing": "tsx scripts/check-routing.mts"
+    "check:routing": "tsx scripts/check-routing.mts",
+    "scyne": "tsx cli/index.ts"
   },
   "devDependencies": {
     "concurrently": "^9.0.0",
     "tsx": "^4.19.2"
+  },
+  "bin": {
+    "scyne": "./cli/index.ts"
   }
 }

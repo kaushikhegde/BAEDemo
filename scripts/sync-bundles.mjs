@@ -10,9 +10,12 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { INSTALL_ROOT } from "./lib/roots.mjs";
 
-const WORKSPACE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// INSTALL_ROOT: this reads agent-instructions/, which ships with the code —
+// it is never a per-project path, which is why it never consulted
+// WORKSPACE_PATH even before the two roots were told apart.
+const WORKSPACE = INSTALL_ROOT;
 const BUNDLES = path.join(WORKSPACE, "agent-instructions");
 
 const [mode, dir] = process.argv.slice(2);

@@ -23,14 +23,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { INSTALL_ROOT, WORK_ROOT } from "./lib/roots.mjs";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// The project tree this run operates on. See scripts/lib/roots.mjs for why
+// this is not the same question as "where does this code live".
+const WORKSPACE = WORK_ROOT;
 
 // markitdown-ts lives in the chatbot's node_modules; resolve from there so the
 // root install stays lean and the two paths can never use different versions.
+//
+// INSTALL_ROOT, deliberately, not WORKSPACE: the converter ships with this
+// code, whereas WORKSPACE is the project tree — which, once a run materialises
+// one, is a temporary directory holding documents and no node_modules at all.
+// Resolving this against WORKSPACE threw there, with an error about a missing
+// package rather than about the wrong root.
 async function loadMarkItDown() {
-  const require = createRequire(path.join(WORKSPACE, "scyne-chatbot", "package.json"));
+  const require = createRequire(path.join(INSTALL_ROOT, "scyne-chatbot", "package.json"));
   let entry;
   try {
     entry = require.resolve("markitdown-ts");

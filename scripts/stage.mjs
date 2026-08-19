@@ -28,7 +28,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { WORK_ROOT } from "./lib/roots.mjs";
 import { convertTree, report as reportConversion } from "./convert-to-md.mjs";
 import {
   LEVEL, STAGES, ORDERED, ordered, NOT_SOURCE, SAFE_NAME, RENDER_CMD,
@@ -36,7 +36,9 @@ import {
   listProjects, listFeatures, stageIsDone, unmetRequirements,
 } from "./pipeline.mjs";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// The project tree this run operates on. See scripts/lib/roots.mjs for why
+// this is not the same question as "where does this code live".
+const WORKSPACE = WORK_ROOT;
 const KNOWN_FLAGS = ["--force", "--no-convert", "--keep-originals", "--from-requirements"];
 
 const PROJECT_STAGE_KEYS = new Set(ordered(LEVEL.PROJECT).map(([k]) => k));

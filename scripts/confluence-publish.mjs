@@ -49,11 +49,17 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { loadCredentials, fail } from "./lib/atlassian.mjs";
+import { INSTALL_ROOT } from "./lib/roots.mjs";
 
 // `marked` lives in the chatbot's tree — the only place in this repo with a
 // markdown parser. Resolved from there rather than added as a second copy at
 // the root, which would be a second version to keep in step.
-const require = createRequire(path.resolve(process.cwd(), "scyne-chatbot", "package.json"));
+//
+// From INSTALL_ROOT rather than process.cwd(): this script is run BY AN AGENT,
+// whose working directory is the project tree — and after materialisation that
+// is a temp directory with no scyne-chatbot/ in it. The same reasoning already
+// governs lib/atlassian.mjs's REPO_ROOT.
+const require = createRequire(path.join(INSTALL_ROOT, "scyne-chatbot", "package.json"));
 let marked;
 try {
   ({ marked } = await import(require.resolve("marked")));

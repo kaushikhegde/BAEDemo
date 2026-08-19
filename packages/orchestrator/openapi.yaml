@@ -1092,6 +1092,293 @@ paths:
             text/html:
               schema: { type: string }
 
+
+  # ---- platform: identity, projects, documents, access, audit ----
+  /auth/bootstrap:
+    post:
+      operationId: bootstrapInstallation
+      summary: Claim an installation that has no users yet, creating the first administrator. Refused once any user exists.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /auth/login:
+    post:
+      operationId: login
+      summary: Exchange email and password for a session token.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Destroy the presented session.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /auth/whoami:
+    get:
+      operationId: whoami
+      summary: The authenticated user, and whether a token or a session was presented.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /auth/tokens:
+    get:
+      operationId: listTokens
+      summary: API tokens belonging to the authenticated user. Secrets are never returned.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: createToken
+      summary: Mint an API token for the CLI or the plugin. The secret is returned exactly once.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /auth/tokens/{id}:
+    delete:
+      operationId: revokeToken
+      summary: Revoke one of your own API tokens.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /users:
+    get:
+      operationId: listUsers
+      summary: Every user in the company. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: createUser
+      summary: Create a user. Administrators only.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /users/{id}:
+    patch:
+      operationId: updateUser
+      summary: Change a user's name, role, status or password. Administrators only.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /projects:
+    get:
+      operationId: listProjects
+      summary: Projects the caller may see — all of them for an administrator, their memberships otherwise.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: createProject
+      summary: Create a project. The creator becomes its owner.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /projects/{id}:
+    get:
+      operationId: getProject
+      summary: One project, with the role the caller holds on it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+    patch:
+      operationId: updateProject
+      summary: Update a project's description, website or theme. Needs editor.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/members:
+    get:
+      operationId: listMembers
+      summary: Who has access to a project, and at what role.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/members/{userId}:
+    put:
+      operationId: setMember
+      summary: Grant or change a member's project role. Needs owner.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+    delete:
+      operationId: removeMember
+      summary: Remove a member's access. Needs owner.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/features:
+    get:
+      operationId: listFeatures
+      summary: Features under a project.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+    post:
+      operationId: createFeature
+      summary: Add a feature. Reserved names are refused. Needs editor.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/documents:
+    get:
+      operationId: listDocuments
+      summary: Current documents, by level. `all=true` spans the project and every feature.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+    post:
+      operationId: uploadDocument
+      summary: Store a document version. Identical content is a no-op reported as changed=false. Needs editor.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/documents/{docId}:
+    get:
+      operationId: readDocument
+      summary: The bytes of one document version, base64 encoded.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: docId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /projects/{id}/actions:
+    get:
+      operationId: listProjectActions
+      summary: Who did what on this project, newest first.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
+  /installations:
+    get:
+      operationId: listInstallations
+      summary: Every plugin installation, with its machine and last-seen time. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: registerInstallation
+      summary: Register or refresh this machine's plugin installation.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /installations/{id}:
+    delete:
+      operationId: revokeInstallation
+      summary: Revoke an installation. Administrators only.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /conversations:
+    get:
+      operationId: listConversations
+      summary: The caller's chat conversations.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: createConversation
+      summary: Start a conversation, optionally scoped to a project.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /conversations/{id}/messages:
+    get:
+      operationId: listMessages
+      summary: Every message in a conversation, in order.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: appendMessage
+      summary: Append a message to a conversation.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+  /spend:
+    get:
+      operationId: getSpend
+      summary: Cost grouped by project, agent or adapter. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+
 components:
   parameters:
     SkillName:

@@ -21,9 +21,11 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { WORK_ROOT } from "./lib/roots.mjs";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// The project tree this run operates on. See scripts/lib/roots.mjs for why
+// this is not the same question as "where does this code live".
+const WORKSPACE = WORK_ROOT;
 const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 

@@ -34,13 +34,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { WORK_ROOT } from "./lib/roots.mjs";
 import os from "node:os";
 // One definition of "what counts as a feature", shared with the CLI and the
 // server — otherwise `solutions/` and `documents/` show up as features here.
 import { listFeatures as listFeatureDirs } from "./pipeline.mjs";
 
-const WORKSPACE = process.env.WORKSPACE_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// The project tree this run operates on. See scripts/lib/roots.mjs for why
+// this is not the same question as "where does this code live".
+const WORKSPACE = WORK_ROOT;
 const SAFE_NAME = /^[A-Za-z0-9._ &-]+$/;
 const PREVIEW_ORIGIN = process.env.SCYNE_PREVIEW_ORIGIN || "http://127.0.0.1:4000";
 
