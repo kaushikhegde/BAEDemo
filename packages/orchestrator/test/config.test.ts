@@ -112,6 +112,18 @@ describe("config", () => {
     };
     expect(validateConfig(bad as any)[0]).toMatch(/effort 'turbo'/);
   });
+
+  it("refuses an agent naming an unregistered adapter, and names what is available", () => {
+    const problems = validateConfig({
+      workspace: "/w",
+      db: { driver: "pglite", dir: "/tmp/x" },
+      adapters: { claude_local: {} as any },
+      org: [{ key: "ba", name: "BA", adapter: "codex" }],
+      workflows: [],
+    });
+    expect(problems.join("\n")).toContain("adapter 'codex', which is not registered");
+    expect(problems.join("\n")).toContain("claude_local");
+  });
 });
 
 describe("resolveRuntime", () => {

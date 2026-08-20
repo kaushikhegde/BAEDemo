@@ -4,14 +4,25 @@
 // packages/orchestrator/ is touched to make this work.
 
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
-  defineOrchestrator, createClaudeRunner, createLoopRunner,
+  defineOrchestrator, createClaudeRunner, createCodexRunner, createLoopRunner,
   createGeminiProvider, createAzureProvider, type Runner,
 } from "./packages/orchestrator/src/index.js";
 import { ORG, buildWorkflows } from "./orchestrator.workflows.js";
 
 const installRoot = process.env.SCYNE_INSTALL_ROOT ?? process.cwd();
+
+/**
+ * Is a binary on PATH?
+ *
+ * Codex authenticates through `codex login`, cached in `$CODEX_HOME/auth.json`
+ * — there is no environment variable to detect, unlike gemini and
+ * azure_foundry below. Presence of the binary is the only honest signal.
+ */
+const binaryExists = (bin: string): boolean =>
+  spawnSync("command", ["-v", bin], { shell: true, stdio: "ignore" }).status === 0;
 
 /**
  * Read `.env` before anything below looks at `process.env`.
@@ -75,6 +86,12 @@ function adapters(): Record<string, Runner> {
     });
   }
 
+  // Codex CLI. A whole agent like Claude Code, so it runs the stage itself
+  // rather than through the shared loop — see core/codex-runner.ts.
+  if (binaryExists("codex")) {
+    registry.codex = createCodexRunner({ installRoot, skillsDir: "skills" });
+  }
+
   if (process.env.AZURE_AI_PROJECT_ENDPOINT && (process.env.AZURE_AI_TOKEN || process.env.AZURE_AI_API_KEY)) {
     registry.azure_foundry = createLoopRunner({
       installRoot,
@@ -101,6 +118,7 @@ const defaultAdapter = process.env.SCYNE_ADAPTER ?? "claude_local";
 if (!registry[defaultAdapter]) {
   throw new Error(
     `SCYNE_ADAPTER='${defaultAdapter}' is not registered — available: ${Object.keys(registry).join(", ")}.\n` +
+    `  codex needs the CLI on PATH and a login: npm i -g @openai/codex && codex login\n` +
     `  gemini needs GEMINI_API_KEY; azure_foundry needs AZURE_AI_PROJECT_ENDPOINT plus\n` +
     `  AZURE_AI_TOKEN (az account get-access-token --scope https://ai.azure.com/.default) or AZURE_AI_API_KEY.`);
 }
@@ -130,6 +148,10 @@ export default defineOrchestrator({
     // carries its own model on the provider, so passing these to one would be
     // naming a model it cannot serve.
     ...(defaultAdapter === "claude_local" ? { model: "claude-sonnet-4-6", effort: "medium" as const } : {}),
+    // Codex's own default model unless an operator names one. Naming a model we
+    // have not verified it serves is how an entire org's runs die on their
+    // first request.
+    ...(defaultAdapter === "codex" && process.env.CODEX_MODEL ? { model: process.env.CODEX_MODEL } : {}),
   },
 
   org: ORG.map(a => ({
