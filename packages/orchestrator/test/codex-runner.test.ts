@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildCodexArgs } from "../src/core/codex-runner.js";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildCodexArgs, createCodexRunner } from "../src/core/codex-runner.js";
 import type { RunRequest } from "../src/core/runner.js";
 
 const base: RunRequest = {
@@ -67,5 +70,50 @@ describe("buildCodexArgs", () => {
     // contains the substring "ADO_PAT" but fails to parse as TOML.
     expect(joined).toContain('mcp_servers.ado.env={ ADO_PAT = "x" }');
     expect(joined).not.toContain('"ADO_PAT":"x"');
+  });
+});
+
+describe("createCodexRunner", () => {
+  it("prepends the bundle and the SKILL.md to the prompt, since Codex has no --system-prompt-file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-"));
+    mkdirSync(join(root, "skills", "salesforce-data-modeler"), { recursive: true });
+    writeFileSync(join(root, "skills", "salesforce-data-modeler", "SKILL.md"),
+      "## Method\nStandard objects first.");
+    writeFileSync(join(root, "bundle.md"), "You are the Data Modeler.");
+
+    // A stand-in for `codex` that writes its stdin to a file and exits 0, so
+    // the test can assert on what the runner actually sent.
+    const seen = join(root, "stdin.txt");
+    const fake = join(root, "fake-codex");
+    writeFileSync(fake, `#!/bin/sh\ncat > ${seen}\nexit 0\n`, { mode: 0o755 });
+
+    const runner = createCodexRunner({ installRoot: root, bin: fake });
+    const res = await runner.run({
+      agent: { key: "dataModeler", bundlePath: join(root, "bundle.md") },
+      skill: "salesforce-data-modeler",
+      prompt: "Generate the data model.",
+      cwd: root,
+      logPath: join(root, "run.jsonl"),
+    });
+
+    expect(res.exitCode).toBe(0);
+    const sent = readFileSync(seen, "utf8");
+    expect(sent).toContain("You are the Data Modeler.");
+    expect(sent).toContain("# Skill: salesforce-data-modeler");
+    expect(sent).toContain("Generate the data model.");
+    expect(sent.indexOf("You are the Data Modeler.")).toBeLessThan(sent.indexOf("Generate the data model."));
+  });
+
+  it("fails with Claude Code's own wording when the skill does not exist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-"));
+    const runner = createCodexRunner({ installRoot: root, bin: "/bin/true" });
+    const res = await runner.run({
+      agent: { key: "dataModeler" },
+      skill: "no-such-skill",
+      prompt: "x", cwd: root, logPath: join(root, "run.jsonl"),
+    });
+    expect(res.status).toBe("failed");
+    // Every runbook in this repo greps for this exact string.
+    expect(res.stderrTail).toContain("Unknown skill: no-such-skill");
   });
 });

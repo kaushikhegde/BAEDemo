@@ -14,6 +14,9 @@
 
 import { readFile } from "node:fs/promises";
 import type { RunRequest, RunResult, Runner } from "./runner.js";
+import { runChild, STDERR_TAIL_CHARS } from "./spawn.js";
+import { buildSystemPrompt, loadSkill } from "./prompt.js";
+import { extractCodexUsage } from "./usage.js";
 
 export interface McpServer { command: string; args?: string[]; env?: Record<string, string> }
 
@@ -88,4 +91,42 @@ export async function readMcpServers(path: string | undefined): Promise<Record<s
     // behaves the same way — it passes the path and lets the CLI decide.
     return {};
   }
+}
+
+export function createCodexRunner(
+  opts: { installRoot: string; skillsDir?: string; bin?: string },
+): Runner {
+  const bin = opts.bin ?? "codex";
+  const skillsDir = opts.skillsDir ?? "skills";
+
+  return {
+    async run(req: RunRequest): Promise<RunResult> {
+      // Codex has no --system-prompt-file, so who-you-are and how-you-work
+      // travel with the task on stdin. Same framing the loop adapters use, from
+      // the same module, so the three non-Claude paths cannot drift.
+      let system = "";
+      try {
+        const bundle = req.agent.bundlePath ? await readFile(req.agent.bundlePath, "utf8") : "";
+        const skill = req.skill
+          ? { name: req.skill, body: await loadSkill(opts.installRoot, skillsDir, req.skill) }
+          : null;
+        system = buildSystemPrompt(bundle, skill);
+      } catch (err) {
+        // A missing bundle or an unknown skill is a configuration error, and
+        // spawning to discover it would bill a run to learn nothing. Fail here,
+        // in the same shape a failed run takes, so the engine's blocking comment
+        // reads identically either way.
+        return {
+          exitCode: -1, status: "failed", usage: null,
+          stderrTail: String(err instanceof Error ? err.message : err).slice(-STDERR_TAIL_CHARS),
+        };
+      }
+
+      const mcpServers = await readMcpServers(req.mcpConfigPath);
+      return runChild(
+        { ...req, prompt: `${system}\n\n---\n\n${req.prompt}` },
+        { bin, args: buildCodexArgs(req, mcpServers), extractUsage: extractCodexUsage },
+      );
+    },
+  };
 }
