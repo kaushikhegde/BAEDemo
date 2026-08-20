@@ -14,12 +14,13 @@
 // command goes to the first, a sentence goes to the second.
 
 import { createInterface, type Interface } from "node:readline/promises";
-import { load, patch } from "./config.ts";
+import { load, patch, DEFAULT_API_URL } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
 import {
-  createProject, createFeature, uploadDocument, CATEGORY_DIR, type DualResult,
+  createProject, createFeature, uploadDocument, chatAuth, CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
+import { readSecret, setPromptReader } from "./prompt.ts";
 
 /** Anthropic-shaped blocks, which is what `/api/chat` returns. */
 interface Block { type: string; text?: string; name?: string; input?: Record<string, unknown> }
@@ -57,7 +58,9 @@ const GATE_REASONS: Record<string, string> = {
 
 async function postChat(chatUrl: string, body: unknown): Promise<{ content: Block[] }> {
   const res = await fetch(chatUrl + "/api/chat", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST",
+    headers: { "content-type": "application/json", ...chatAuth() },
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`chat → ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json() as Promise<{ content: Block[] }>;
@@ -66,7 +69,9 @@ async function postChat(chatUrl: string, body: unknown): Promise<{ content: Bloc
 async function postTrigger(chatUrl: string, path: string, body: unknown):
   Promise<{ id: string; identifier?: string }> {
   const res = await fetch(chatUrl + path, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}),
+    method: "POST",
+    headers: { "content-type": "application/json", ...chatAuth() },
+    body: JSON.stringify(body ?? {}),
   });
   const text = await res.text();
   const parsed = text ? JSON.parse(text) : {};
@@ -93,7 +98,8 @@ async function follow(chatUrl: string, issueId: string): Promise<void> {
 
   try {
     for (;;) {
-      const res = await fetch(`${chatUrl}/api/status/${issueId}`).catch(() => null);
+      const res = await fetch(`${chatUrl}/api/status/${issueId}`,
+        { headers: chatAuth() }).catch(() => null);
       if (!res?.ok) { spin.stop(`  ${cross} lost contact with the run`); return; }
       const status = await res.json() as {
         activity?: { id?: string; body?: string; author?: string }[];
@@ -142,39 +148,122 @@ const HELP = `
   ${c.bold("Just type what you want.")}  "create a project for RTWSA", "run the data model",
   "what still needs doing?", "add a feature called Appeals".
 
-  ${c.grey("Slash commands run instantly, with no model call and no cost:")}
+  ${c.grey("Slash commands run instantly, with no model call and no cost.")}
+  ${c.grey("Anything taking --project / --feature uses what you pinned.")}
 
-    ${c.cyan("/use")} <project> [feature]        pin what you are working on
-    ${c.cyan("/projects")}                       projects in the database
-    ${c.cyan("/upload")} <file...> [--as TYPE]   add documents. TYPE is one of
-                                    ${c.grey("sop, transcripts, notes, ui, template")}
-    ${c.cyan("/docs")}                           documents for the current target
-    ${c.cyan("/status")} [issue]                 activity, gates and work products
-    ${c.cyan("/gates")}                          everything awaiting approval
-    ${c.cyan("/approve")} <gateId>               approve it
-    ${c.cyan("/reject")} <gateId>                send it back to be regenerated
-    ${c.cyan("/spend")}                          cost by project
-    ${c.cyan("/actions")}                        who did what on this project
-    ${c.cyan("/whoami")}                         who you are signed in as
-    ${c.cyan("/clear")}                          forget the conversation so far
-    ${c.cyan("/help")}   ${c.cyan("/exit")}
+  ${c.bold("Target")}
+    ${c.cyan("/use")} <project> [feature]          pin what you are working on
+    ${c.cyan("/projects")}                         projects in the database
+    ${c.cyan("/whoami")}                           who you are, and what is pinned
+    ${c.cyan("/login")}                            sign in, or as somebody else
+    ${c.cyan("/logout")}                           forget the stored token
 
-  ${c.grey("Not slash commands — run these in another terminal:")}
+  ${c.bold("Documents")}
+    ${c.cyan("/upload")} <file...> --as TYPE       ${c.grey("sop | transcripts | notes | ui | template")}
+      ${c.grey("--as needs a feature. WITHOUT it a file lands in requirements/")}
+      ${c.grey("uncategorised (feature pinned), or in the project's documents/")}
+      ${c.grey("(no feature) — which is right for policy and legislation.")}
+    ${c.cyan("/docs")}                             documents for the current target
 
-    ${c.grey("scyne user")} list ${c.grey("|")} create <email> ${c.grey("|")} role ${c.grey("|")} password ${c.grey("|")} disable
-    ${c.grey("scyne member")} list ${c.grey("|")} add <email> --role owner|editor|viewer ${c.grey("|")} remove
-    ${c.grey("scyne installs")} ${c.grey("|")} ${c.grey("scyne adapter list")} ${c.grey("|")} ${c.grey("scyne logs <runId> --follow")}
-    ${c.grey("scyne spend --by")} project|agent|adapter
-    ${c.grey("scyne help")}   ${c.grey("— the full list")}
+  ${c.bold("Running")}
+    ${c.cyan("/run")} <stage>                      ${c.grey("no stage lists them")}
+    ${c.cyan("/run")} pause|cancel|resume <issue>  ${c.grey("pause --force stops the agent now")}
+    ${c.cyan("/status")} [issue]                   activity, gates and work products
+    ${c.cyan("/gates")}                            everything awaiting approval
+    ${c.cyan("/approve")} <gateId>                 approve it
+    ${c.cyan("/reject")} <gateId> [note]           send it back to be regenerated
+    ${c.cyan("/logs")} <runId>                     an agent's transcript
+
+  ${c.bold("People and organisations")}
+    ${c.cyan("/user")} list ${c.grey("|")} create <email> [--role admin|member|viewer] [--password …]
+    ${c.cyan("/user")} role <email> <role> ${c.grey("|")} password <email> ${c.grey("|")} disable ${c.grey("|")} enable
+    ${c.cyan("/member")} list ${c.grey("|")} add <email> [--role owner|editor|viewer] ${c.grey("|")} remove <email>
+    ${c.cyan("/org")} list ${c.grey("|")} create <name> ${c.grey("|")} use <slug> ${c.grey("|")} show ${c.grey("|")} archive <slug>
+    ${c.cyan("/installs")}                         who installed the CLI, and where
+
+  ${c.bold("Cost and configuration")}
+    ${c.cyan("/spend")} [--by project|feature|user|agent|adapter|model] [--since D] [--json]
+    ${c.cyan("/models")} list ${c.grey("|")} set <model> --input <n> --output <n> ${c.grey("|")} proposal ${c.grey("|")} apply
+    ${c.cyan("/adapter")} list ${c.grey("|")} set <name> [--project P] ${c.grey("|")} unset
+    ${c.cyan("/audit")} [--limit N]                who did what, across every project
+    ${c.cyan("/actions")}                          who did what on this project
+
+  ${c.bold("Session")}
+    ${c.cyan("/clear")}   forget the conversation so far
+    ${c.cyan("/help")}    ${c.cyan("/exit")}
+
+  ${c.grey("Every scyne command works here — drop the prefix. --follow needs its")}
+  ${c.grey("own terminal, since it would hold this prompt for a whole run.")}
 `;
 
 export async function repl(): Promise<void> {
   const cfg = load();
   const chatUrl = process.env.SCYNE_CHAT_URL || DEFAULT_CHAT_URL;
-  const client: Client = createClient();
+  // `let`, not `const`: /login and /logout replace it. createClient() snapshots
+  // the config file at construction, so a client made before signing in keeps
+  // sending the old (or no) credential for the rest of the session.
+  let client: Client = createClient();
+  let signedOut = false;
 
   let project = cfg.project ?? null;
   let feature = cfg.feature ?? null;
+
+  /**
+   * Ask the person a question, through the session's own line queue.
+   *
+   * NOT a second readline (it never sees input this one has already buffered —
+   * observed hanging on "Email:" forever) and not rl.question() either, for
+   * the reason nextLine's own comment gives.
+   *
+   * A password still gets raw mode when there is a terminal to hide it from.
+   * On a pipe there is nobody to hide it from, so it arrives like every other
+   * line, which is what makes signing in scriptable.
+   */
+  async function ask(label: string, silent = false): Promise<string> {
+    if (silent && process.stdin.isTTY) {
+      rl.pause();
+      try {
+        return (await readSecret(label.replace(/:\s*$/, "") + " (hidden as you type): ")).trim();
+      } finally {
+        rl.resume();
+      }
+    }
+    process.stdout.write(label);
+    const line = ((await nextLine()) ?? "").trim();
+    // A pipe echoes nothing, so without this the next label lands on the same
+    // line and reads as "Email:   Password:".
+    if (!process.stdin.isTTY) process.stdout.write("\n");
+    return line;
+  }
+
+  /**
+   * Confirm the pinned target still exists on THIS server, and drop it if not.
+   *
+   * The pin lives in ~/.scyne/config.json and survives everything: a database
+   * reset, a different server, signing in as somebody else. It was never
+   * checked, so the prompt read "SAPN / customer-data" against an installation
+   * that had no projects at all — and every command that defaulted to the pin
+   * failed with a message about SAPN rather than about the pin.
+   *
+   * A network error leaves it alone. Discarding somebody's target because the
+   * server blinked would be worse than showing one that is briefly wrong.
+   */
+  async function retarget(): Promise<void> {
+    if (!project) return;
+    let projects: { name: string }[];
+    try {
+      projects = await client.get<{ name: string }[]>("/projects");
+    } catch {
+      return;
+    }
+    if (projects.some(p => p.name === project)) return;
+    const names = projects.map(p => p.name).join(", ");
+    out(`  ${cross} pinned project ${c.brand(project)} is not on this server — unpinned.`);
+    out(`     ${names ? "you have: " + names : "no projects here yet — try: create a project called Acme"}`);
+    project = null;
+    feature = null;
+    patch({ project: undefined, feature: undefined });
+  }
 
   // Who am I — and is the orchestrator even up? Both are worth knowing before
   // the first prompt rather than as a failure three commands later.
@@ -185,15 +274,21 @@ export async function repl(): Promise<void> {
     user = me.email;
     adapter = (await client.get<{ defaults?: { adapter?: string } }>("/config")).defaults?.adapter;
   } catch (err) {
-    banner({ apiUrl: client.config.apiUrl, chatUrl });
-    out(`  ${cross} ${err instanceof ApiError && err.status === 401
-      ? "not signed in — run " + c.cyan("scyne login") + " first."
-      : (err as Error).message.split("\n")[0]}`);
-    out();
-    return;
+    // A 401 is no longer fatal: the session opens anyway so /login can be
+    // typed into it. Returning here is why signing in was impossible from the
+    // one screen that told you to sign in.
+    if (!(err instanceof ApiError && err.status === 401)) {
+      banner({ apiUrl: client.config.apiUrl, chatUrl });
+      out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+      out();
+      return;
+    }
+    signedOut = true;
   }
 
   banner({ apiUrl: client.config.apiUrl, chatUrl, user, adapter });
+  if (signedOut) out(`  ${cross} not signed in — type ${c.cyan("/login")}`);
+  else await retarget();
 
   const rl: Interface = createInterface({
     input: process.stdin, output: process.stdout, historySize: 500,
@@ -213,6 +308,41 @@ export async function repl(): Promise<void> {
         case "exit": case "quit": return true;
         case "help": out(HELP); return false;
         case "clear": history = []; out(`  ${tick} conversation cleared`); return false;
+
+        case "login": {
+          const apiUrl = client.config.apiUrl || DEFAULT_API_URL;
+          out(`  signing in to ${c.brand(apiUrl)}`);
+          const email = await ask("  Email: ");
+          const password = await ask("  Password: ", true);
+
+          const anon = createClient({ apiUrl, token: undefined });
+          const res = await anon.post<{ token: string; user: { email: string; role: string } }>(
+            "/auth/login", { email, password });
+          // Trade the session for a long-lived token, exactly as `scyne login`
+          // does — a session expires in hours, which is wrong for a terminal.
+          const authed = createClient({ apiUrl, token: res.token });
+          const tok = await authed.post<{ token: string }>(
+            "/auth/tokens", { name: "cli@repl" });
+          patch({ apiUrl, token: tok.token });
+
+          client = createClient();
+          signedOut = false;
+          history = [];   // a new person should not inherit the last one's conversation
+          out(`  ${tick} signed in as ${c.brand(res.user.email)} (${res.user.role})`);
+          await retarget();
+          return false;
+        }
+
+        case "logout": {
+          patch({ token: undefined });
+          client = createClient();
+          signedOut = true;
+          history = [];
+          project = null; feature = null;
+          patch({ project: undefined, feature: undefined });
+          out(`  ${tick} signed out. Type ${c.cyan("/login")} to sign in again.`);
+          return false;
+        }
 
         case "whoami": {
           const me = await client.get("/auth/whoami");
@@ -249,7 +379,7 @@ export async function repl(): Promise<void> {
           // "no projects yet" while the assistant answers "SAPN already
           // exists" makes the tool look broken when it is merely split.
           const known = new Set(projects.map(p => p.name));
-          const onDisk = await fetch(`${chatUrl}/api/features`)
+          const onDisk = await fetch(`${chatUrl}/api/features`, { headers: chatAuth() })
             .then(r => r.ok ? r.json() as Promise<Record<string, unknown>> : {})
             .catch(() => ({}));
           const missing = Object.keys(onDisk).filter(n => !known.has(n));
@@ -341,16 +471,6 @@ export async function repl(): Promise<void> {
           return false;
         }
 
-        case "spend": {
-          const rows = await client.get<any[]>("/spend?by=project");
-          out();
-          for (const r of rows) {
-            out(`  ${c.bold(String(r.project_name ?? "—").padEnd(18))} ${String(r.run_count).padStart(4)} runs  ${c.green("$" + Number(r.cost_usd).toFixed(4))}`);
-          }
-          if (!rows.length) out(`  ${c.grey("(no runs yet)")}`);
-          return false;
-        }
-
         case "actions": {
           if (!project) { out(`  ${cross} pin a project first: /use <project>`); return false; }
           const projects = await client.get<{ id: string; name: string }[]>("/projects");
@@ -362,9 +482,38 @@ export async function repl(): Promise<void> {
           return false;
         }
 
-        default:
-          out(`  ${cross} unknown command ${c.cyan("/" + verb)}. Try ${c.cyan("/help")}.`);
+        default: {
+          // Anything this session does not implement itself is handed to the
+          // ordinary command dispatcher, so /user, /member, /installs,
+          // /adapter, /models, /audit, /org and the rest all work here. They
+          // were never withheld for a reason — they simply had not been
+          // written, and the help called that "run these in another terminal".
+          //
+          // Commands that PROMPT work here too — setPromptReader routes them
+          // through this session's queue, so /user password and the y/N on
+          // /run cancel ask inline instead of hanging on a readline that will
+          // never be fed. (/login and /logout never reach here; the session
+          // owns them, because they also replace the client.)
+          const args = [verb, ...rest];
+          // --follow polls until a run ends, which would hold the prompt for
+          // the length of an agent run with no way to type /exit.
+          const follow = args.indexOf("--follow");
+          if (follow !== -1) {
+            args.splice(follow, 1);
+            out(`  ${c.grey("(--follow needs its own terminal; showing the transcript so far)")}`);
+          }
+          // The pinned target, so /docs and /run behave the same whether the
+          // command was typed here or in a shell.
+          if (project && args.indexOf("--project") === -1) args.push("--project", project);
+          if (feature && args.indexOf("--feature") === -1) args.push("--feature", feature);
+          try {
+            const { runCommand } = await import("./index.ts");
+            await runCommand(args);
+          } catch (err) {
+            out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+          }
           return false;
+        }
       }
     } catch (err) {
       out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
@@ -419,9 +568,18 @@ export async function repl(): Promise<void> {
       spin.stop();
     } catch (err) {
       spin.stop();
-      out(`  ${cross} ${(err as Error).message}`);
-      out(`     ${c.grey("The conversation runs on the chatbot server at " + chatUrl + ".")}`);
-      out(`     ${c.grey("Start it with")} ${c.cyan("npm run dev")}${c.grey(", or set $SCYNE_CHAT_URL.")}`);
+      const message = (err as Error).message;
+      out(`  ${cross} ${message}`);
+      // A 401 came back FROM the server, so telling someone to start it sends
+      // them to check a process that is already running. The two failures look
+      // nothing alike and must not share a hint.
+      if (/\b401\b|not_authenticated/.test(message)) {
+        out(`     ${c.grey("The chatbot server is running; it did not accept the credential.")}`);
+        out(`     ${c.grey("Sign in with")} ${c.cyan("/login")}${c.grey(" — the session forwards that token to it.")}`);
+      } else {
+        out(`     ${c.grey("The conversation runs on the chatbot server at " + chatUrl + ".")}`);
+        out(`     ${c.grey("Start it with")} ${c.cyan("npm run dev")}${c.grey(", or set $SCYNE_CHAT_URL.")}`);
+      }
       history.pop();
       return;
     }
@@ -513,6 +671,11 @@ export async function repl(): Promise<void> {
     if (closed) return Promise.resolve(null);
     return new Promise(resolve => { waiting = resolve; });
   };
+
+  // From here on, any command that prompts — `user password`, `run cancel` —
+  // asks through this session rather than opening a readline that would find
+  // stdin already drained. Installed only now, because ask() needs the queue.
+  setPromptReader(ask);
 
   for (;;) {
     // Hand the prompt to readline rather than writing it ourselves. In

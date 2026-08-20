@@ -18,9 +18,24 @@
 import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { ApiError, resolveProject, type Client } from "./client.ts";
+import { load } from "./config.ts";
 
 export const DEFAULT_CHAT_URL = "http://127.0.0.1:4000";
 export const chatUrl = (): string => process.env.SCYNE_CHAT_URL || DEFAULT_CHAT_URL;
+
+/**
+ * The credential for the chatbot server.
+ *
+ * The browser holds an httpOnly cookie it cannot read; a terminal holds a
+ * bearer token and no cookie. Sending nothing — which every call here used to
+ * do — is why the chatbot answered 401 not_authenticated to the whole of the
+ * session's natural-language path and to the on-disk half of creating a
+ * project, a feature or a document.
+ */
+export function chatAuth(): Record<string, string> {
+  const token = load().token;
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
 
 /** What happened on one side. "exists" is a normal outcome, not a failure. */
 export type SideResult =
@@ -50,7 +65,9 @@ export const CATEGORY_DIR: Record<string, string> = {
 async function postChat(path: string, body: unknown): Promise<SideResult> {
   try {
     const res = await fetch(chatUrl() + path, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      method: "POST",
+      headers: { "content-type": "application/json", ...chatAuth() },
+      body: JSON.stringify(body),
     });
     if (res.ok) return { state: "created" };
     if (res.status === 409) return { state: "exists" };
@@ -133,6 +150,14 @@ export async function uploadDocument(client: Client, input: UploadInput): Promis
   if (input.as && !dir) {
     throw new ApiError(400, `--as must be one of ${Object.keys(CATEGORY_DIR).join(", ")}`);
   }
+  // No --as, and the two answers are genuinely different:
+  //   feature in scope  -> requirements/<name>, the working folder's ROOT.
+  //                        On disk and in the database, but in none of the four
+  //                        categorised folders, so the BA reads it with no idea
+  //                        whether it is a transcript (the primary source of
+  //                        stories) or an SOP (context, explicitly NOT stories).
+  //   no feature        -> documents/<name>, the project's client-wide folder,
+  //                        which is exactly right for policy and legislation.
   const path = dir ? `${dir}/${name}` : (input.feature ? `requirements/${name}` : `documents/${name}`);
 
   let db: SideResult;
@@ -168,7 +193,8 @@ export async function uploadDocument(client: Client, input: UploadInput): Promis
       if (input.as) form.set("hint", input.as);
     }
     const res = await fetch(chatUrl() + (projectLevel ? "/api/upload/project" : "/api/upload"), {
-      method: "POST", body: form,
+      // No content-type: fetch sets the multipart boundary itself.
+      method: "POST", headers: chatAuth(), body: form,
     });
     if (res.ok) {
       const parsed = await res.json().catch(() => ({} as { filename?: string; converted?: boolean }));

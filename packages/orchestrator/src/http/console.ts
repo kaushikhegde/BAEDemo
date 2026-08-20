@@ -1386,8 +1386,8 @@ async function renderOrg(selected) {
 
 function renderHireForm() {
   const d = document.getElementById("detail");
-  Promise.all([api("/agents"), api("/runners")]).then(both => {
-    const agents = both[0], runners = both[1];
+  Promise.all([api("/agents"), api("/runners"), config()]).then(both => {
+    const agents = both[0], runners = both[1], cfg = both[2];
     d.innerHTML = '<div class="card"><h3>Add an agent</h3>' +
       '<p class="hint">Saved to <span class="mono">.orchestrator/overrides.json</span>, merged over ' +
       '<span class="mono">orchestrator.config.ts</span> on every boot.</p>' +
@@ -1398,6 +1398,7 @@ function renderHireForm() {
       '<div><label for="f-reports">Reports to</label><select id="f-reports"><option value="">— nobody —</option>' +
         agents.map(a => '<option value="' + esc(a.key) + '">' + esc(a.name) + '</option>').join("") + '</select></div>' +
       '<div><label for="f-adapter">Adapter</label><select id="f-adapter">' +
+        '<option value="">inherit — ' + esc(cfg.defaults.adapter || "none") + '</option>' +
         runners.map(r => '<option>' + esc(r) + '</option>').join("") + '</select></div>' +
       '<div><label for="f-model">Model</label><input id="f-model" placeholder="claude-sonnet-4-6"></div>' +
       '<div><label for="f-effort">Effort</label><select id="f-effort"><option value="">default</option>' +
@@ -1439,9 +1440,13 @@ async function renderAgent(key, target) {
     api("/agents/" + key + "/runs").catch(() => []),
     api("/budgets").catch(() => []),
     skills(),
+    // Suggestions for the Model field. Failing to load them must not take the
+    // whole agent page with it, hence the catch.
+    api("/models").catch(() => []),
   ]);
   const agent = all[0], cfg = all[1], runners = all[2], runs = all[3], budgets = all[4];
   const mySkills = skillsFor(all[5], key);
+  const prices = all[6] || [];
   // Assigned work with no skill is a different thing from no assigned work:
   // the Developer runs a renderer, the CEO runs nothing.
   const myWorkflows = cfg.workflows.filter(w => w.assignee === key).map(w => w.key);
@@ -1497,9 +1502,27 @@ async function renderAgent(key, target) {
 
     '<div class="card"><h3>Runtime</h3>' +
       '<div class="row">' +
-      '<div><label for="a-adapter">Adapter</label><select id="a-adapter">' + sel(runners, agent.adapter) + '</select></div>' +
-      '<div><label for="a-model">Model</label><input id="a-model" value="' + esc(agent.model || "") +
-        '" placeholder="' + esc(cfg.defaults.model || "default") + '"></div>' +
+      /* The blank option is not decoration. Without it, an agent that expresses
+         NO adapter preference (the normal case — null means "use the org
+         default") matched no option, so the browser displayed the first
+         registered runner. Every agent read claude_local while the install was
+         actually running codex, and worse: Save sends this field
+         unconditionally, so opening an agent to change its budget PINNED it to
+         a runtime nobody chose. */
+      '<div><label for="a-adapter">Adapter</label><select id="a-adapter">' +
+        '<option value=""' + (agent.adapter ? "" : " selected") + '>' +
+        'inherit — ' + esc(cfg.defaults.adapter || "none") + '</option>' +
+        sel(runners, agent.adapter) + '</select></div>' +
+      /* A datalist, not a select. Nothing enumerates the models an adapter
+         actually serves — /models is a PRICE table, and a model can be valid
+         without a published price — so restricting the field to it would
+         refuse names that work. Suggestions solve the real problem (nobody
+         remembers "gpt-5.6-terra") without inventing a whitelist. */
+      '<div><label for="a-model">Model</label><input id="a-model" list="model-names" value="' +
+        esc(agent.model || "") + '" placeholder="' + esc(cfg.defaults.model || "default") + '">' +
+        '<datalist id="model-names">' +
+        prices.map(m => '<option value="' + esc(m.model) + '"></option>').join("") +
+        '</datalist></div>' +
       '<div><label for="a-effort">Effort</label><select id="a-effort">' +
         sel(["", "low", "medium", "high", "xhigh", "max"], agent.effort || "") + '</select></div>' +
       '<div><label for="a-fallback">Fallback models (comma separated)</label>' +
@@ -1542,7 +1565,10 @@ async function renderAgent(key, target) {
   document.getElementById("a-save").addEventListener("click", async () => {
     const v = (id) => document.getElementById(id).value.trim();
     const body = {
-      adapter: v("a-adapter"),
+      /* Blank goes as NULL, not "". resolveRuntime reads a null adapter as
+         "no preference" and falls through to the default; an empty string is
+         a value, and would resolve to an adapter that does not exist. */
+      adapter: v("a-adapter") || null,
       fallbackModel: v("a-fallback") ? v("a-fallback").split(",").map(x => x.trim()).filter(Boolean) : [],
     };
     if (v("a-model")) body.model = v("a-model");

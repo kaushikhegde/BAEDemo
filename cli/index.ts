@@ -13,15 +13,20 @@
 // cli/ alone into one file a user installs without a clone.
 
 import { basename } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { createClient, resolveProject, targetProject, ApiError, type Client } from "./client.ts";
 import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
 import {
   createProject, createFeature, uploadDocument, chatUrl, CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
 import { fetchStages, callerParams, type Stage } from "./stages.ts";
+import { prompt } from "./prompt.ts";
 
-const argv = process.argv.slice(2);
+/* Not a const, and not read straight from process.argv at each site.
+   Every flag() / has() / positionals() call below reads THIS, so setting it is
+   how the interactive session runs a command that was typed as a slash command
+   rather than as an argv. Before that, the session had to tell people to open
+   another terminal for two thirds of the CLI. */
+let argv: string[] = process.argv.slice(2);
 
 // ------------------------------------------------------------------ helpers
 
@@ -66,80 +71,8 @@ function table(rows: Record<string, unknown>[], columns?: string[]): void {
   }
 }
 
-/**
- * Read a secret from a terminal without echoing it.
- *
- * Written against raw stdin rather than readline, deliberately. The obvious
- * approach — override readline's `_writeToOutput` so keystrokes are swallowed
- * — is wrong twice over. It depends on an internal that Node 24 no longer
- * exposes (the method moved behind a symbol, so touching it throws
- * "Cannot read properties of undefined"), and even where it does exist,
- * muting it hides the PROMPT as well: readline clears the line and re-renders
- * `prompt + input` through that same method on every keystroke, so muting
- * leaves a bare cursor and the command looks like it has hung.
- *
- * Raw mode has neither problem and behaves the same on every Node version.
- * Backspace, Ctrl-C and Ctrl-D are handled here because raw mode means the
- * terminal no longer handles them for us.
- */
-function readSecret(label: string): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const stdin = process.stdin;
-    process.stdout.write(label);
-
-    const wasRaw = stdin.isRaw === true;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-
-    let value = "";
-    const done = (finish: () => void): void => {
-      stdin.removeListener("data", onData);
-      stdin.setRawMode(wasRaw);
-      stdin.pause();
-      process.stdout.write("\n");
-      finish();
-    };
-
-    const onData = (chunk: string): void => {
-      for (const ch of chunk) {
-        switch (ch) {
-          case "\r": case "\n":
-            return done(() => resolve(value));
-          case "":                       // Ctrl-C
-            return done(() => reject(new ApiError(130, "cancelled")));
-          case "":                       // Ctrl-D
-            return done(() => resolve(value));
-          case "": case "\b":            // backspace
-            value = value.slice(0, -1);
-            break;
-          default:
-            // Ignore the remaining control characters — arrow keys arrive as
-            // escape sequences and would otherwise land in the password.
-            if (ch >= " ") value += ch;
-        }
-      }
-    };
-
-    stdin.on("data", onData);
-  });
-}
-
-/** Ask a question. `silent` hides what is typed, for passwords. */
-async function prompt(question: string, opts: { silent?: boolean } = {}): Promise<string> {
-  // A terminal is the only place there is anyone to hide input from — and the
-  // only place raw mode exists. Piped input (`printf 'pw\n' | scyne init`)
-  // goes through readline unchanged.
-  if (opts.silent && process.stdin.isTTY) {
-    return (await readSecret(`${question.replace(/:\s*$/, "")} (hidden as you type): `)).trim();
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    return (await rl.question(question)).trim();
-  } finally {
-    rl.close();
-  }
-}
+// readSecret() and prompt() moved to ./prompt.ts, so cli/repl.ts can offer
+// /login with the same hidden-input handling rather than a second copy.
 
 // ----------------------------------------------------------------- commands
 
@@ -435,6 +368,14 @@ async function cmdDoc(client: Client, args: string[]): Promise<void> {
       // it routes into only exist under a feature.
       if (as && !feature) throw new ApiError(400, `--as ${as} needs a feature. Pass --feature or \`scyne use <p> <f>\`.`);
 
+      // Uncategorised INTO A FEATURE is almost always a slip: the file lands at
+      // the root of requirements/ rather than in SOP/, Transcripts/, Notes/ or
+      // UI/, and the BA is told what each of those folders means. Said once,
+      // not refused — a loose file is legal, just rarely what was meant.
+      if (!as && feature) {
+        out(`  note: no --as, so this goes to requirements/ uncategorised.`);
+        out(`        the BA treats ${Object.keys(CATEGORY_DIR).join(", ")} differently — pass one.`);
+      }
       for (const file of files) {
         const r = await uploadDocument(client, { project: project.name, feature, file, as });
         reportDual(String(r.extra?.path ?? file), r);
@@ -1176,15 +1117,39 @@ scyne — the Scyne pipeline, from the command line
 
 // ---------------------------------------------------------------------- main
 
+/**
+ * Run one command as if it had been typed on the command line.
+ *
+ * Exported for cli/repl.ts, which dispatches anything it does not handle
+ * itself here — so every command is a slash command, and one added below is a
+ * slash command for free rather than another line in a "run these elsewhere"
+ * list that has to be maintained by hand.
+ *
+ * `init`, `login` and `logout` are the session's own: the first two prompt,
+ * and a prompt built on a second readline cannot share stdin with the
+ * session's line queue.
+ */
+export async function runCommand(args: string[]): Promise<void> {
+  if (!args.length) throw new ApiError(400, "no command given");
+  argv = args;
+  return dispatch();
+}
+
 async function main(): Promise<void> {
-  const [verb, ...rest] = positionals();
+  argv = process.argv.slice(2);
 
   // Bare `scyne` opens the session. Commands stay reachable as one-shots so
   // scripting and CI never have to drive an interactive prompt.
-  if (!verb && !has("help")) {
+  if (!positionals().length && !has("help")) {
     const { repl } = await import("./repl.ts");
     return repl();
   }
+  return dispatch();
+}
+
+async function dispatch(): Promise<void> {
+  const [verb, ...rest] = positionals();
+
   if (verb === "help" || has("help")) { out(USAGE); return; }
   if (verb === "init") return cmdInit();
   if (verb === "login") return cmdLogin();

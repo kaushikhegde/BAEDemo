@@ -202,7 +202,13 @@ export default defineOrchestrator({
   org: ORG.map(a => ({
     ...a,
     // If Sonnet 4.6 is overloaded mid-run the pipeline should degrade, not stop.
-    ...(a.bundlePath ? { fallbackModel: ["claude-sonnet-4-5-20250929"] } : {}),
+    //
+    // claude_local ONLY. `--fallback-model` is Claude Code's flag and no other
+    // runner reads it (see core/runner.ts), so on a Codex org this was a Claude
+    // model name displayed on every agent's Runtime card that nothing would
+    // ever use — advertising a safety net that is not there.
+    ...(a.bundlePath && defaultAdapter === "claude_local"
+      ? { fallbackModel: ["claude-sonnet-4-5-20250929"] } : {}),
     // A ceiling, not a target. The one measured requirements run took 25
     // minutes and $3.19 (prototype findings); 45 minutes and $15 leaves room
     // for a heavier feature without letting a runaway run all night.

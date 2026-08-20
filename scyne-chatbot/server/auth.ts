@@ -37,6 +37,21 @@ export function currentToken(): string | null {
 }
 
 export function tokenFor(req: Request): string | null {
+  // Authorization first, cookie second — the same precedence the orchestrator
+  // uses, and for the same reason: the browser has a cookie it cannot read,
+  // the CLI has a bearer token and no cookie.
+  //
+  // Reading the cookie ONLY is why every CLI call here answered 401
+  // not_authenticated: the interactive session's entire natural-language path
+  // (/api/chat), and the on-disk half of creating a project, a feature or a
+  // document. The session reported it as "the chatbot server is not running",
+  // which is the one thing it was not.
+  const auth = req.headers.authorization;
+  if (auth && /^Bearer\s+/i.test(auth)) {
+    const token = auth.replace(/^Bearer\s+/i, "").trim();
+    if (token) return token;
+  }
+
   const raw = req.headers.cookie;
   if (!raw) return null;
   for (const part of raw.split(";")) {
