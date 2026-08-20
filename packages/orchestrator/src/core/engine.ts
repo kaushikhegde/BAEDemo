@@ -27,6 +27,25 @@ import type { createRepo, AgentRow, IssueRow } from "./repo.js";
 type Repo = ReturnType<typeof createRepo>;
 
 /**
+ * The closing line of an issue's timeline.
+ *
+ * Exported so it can be tested directly, and because the unpriced case is
+ * easy to get wrong: `sum(cost_usd)` over rows where some are null yields a
+ * number that looks complete and is not. An adapter that reports no cost
+ * (Codex does not price its own runs) must produce a line that says so, not a
+ * quiet total that understates what was spent.
+ */
+export function closingNote(runs: Array<{ cost_usd: string | number | null }>, label: string): string {
+  const priced = runs.filter(r => r.cost_usd != null);
+  const total = priced.reduce((n, r) => n + Number(r.cost_usd), 0);
+  const unpriced = runs.length - priced.length;
+
+  return `**${label} complete.** ${runs.length} agent run${runs.length === 1 ? "" : "s"}` +
+    (total > 0 ? ` · $${total.toFixed(4)}` : "") +
+    (unpriced ? ` · cost not reported for ${unpriced} run${unpriced === 1 ? "" : "s"}` : "") + `.`;
+}
+
+/**
  * `env` is how an `exec` step is told which project tree to act on. The ten
  * scripts under `scripts/` all resolve their root as
  * `process.env.WORKSPACE_PATH || <the script's own directory>/..`, so setting
@@ -561,10 +580,7 @@ export function createEngine(deps: {
           // rather than tracked as we go, so a resumed issue reports its whole
           // spend and not just this pass's.
           const runs = await repo.listRuns(issueId);
-          const total = runs.reduce((n, r) => n + Number(r.cost_usd ?? 0), 0);
-          await note(issueId,
-            `**${wf.label} complete.** ${runs.length} agent run` +
-            `${runs.length === 1 ? "" : "s"}` + (total > 0 ? ` · $${total.toFixed(4)}` : "") + `.`);
+          await note(issueId, closingNote(runs, wf.label));
           return;
         }
 

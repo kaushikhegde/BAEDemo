@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, migrate, type Db } from "../src/core/db.js";
 import { createRepo } from "../src/core/repo.js";
-import { createEngine } from "../src/core/engine.js";
+import { createEngine, closingNote } from "../src/core/engine.js";
 import { defineOrchestrator } from "../src/config.js";
 
 let dir: string, db: Db, repo: ReturnType<typeof createRepo>, calls: string[];
@@ -662,5 +662,28 @@ describe("engine (fix round 1: idempotent wait steps, interpolate() throws don't
 
     expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
     expect((await repo.listGates(issue.id))[0].status).toBe("pending");
+  });
+
+  it("says how many runs reported no cost instead of summing them as zero", async () => {
+    // A workflow that completed entirely on an adapter that does not price runs
+    // must not close with a bare run count that reads as free.
+    const companyId = await repo.ensureCompany("Scyne");
+    const issue = await repo.createIssue({
+      companyId, title: "unpriced", workflowKey: "datamodel",
+    });
+    const run = await repo.startRun({
+      issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",
+      logPath: "/tmp/u.jsonl", adapter: "codex",
+    });
+    await repo.finishRun(run.id, {
+      status: "succeeded", exitCode: 0, sessionId: null,
+      inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheCreationTokens: 0,
+      costUsd: null, durationMs: 1000, numTurns: 3,
+    });
+
+    const line = closingNote(await repo.listRuns(issue.id), "Data Model");
+    expect(line).toContain("1 agent run");
+    expect(line).toContain("cost not reported");
+    expect(line).not.toContain("$0.0000");
   });
 });
