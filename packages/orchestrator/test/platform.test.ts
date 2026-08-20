@@ -5,15 +5,17 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDb, migrate, type Db } from "../src/core/db.js";
 import { createPlatformRepo, type PlatformRepo, type UserRow } from "../src/core/platform.js";
+import { createRepo } from "../src/core/repo.js";
 import { hashPassword } from "../src/core/auth.js";
 
-let dir: string, db: Db, p: PlatformRepo, company: string;
+let dir: string, db: Db, p: PlatformRepo, repo: ReturnType<typeof createRepo>, company: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-plat-"));
   db = await openDb({ driver: "pglite", dir });
   await migrate(db, new URL("../migrations", import.meta.url).pathname);
   p = createPlatformRepo(db);
+  repo = createRepo(db);
   company = randomUUID();
   await db.query(`insert into companies (id, name) values ($1,'Scyne')`, [company]);
 });
@@ -306,5 +308,31 @@ describe("spend", () => {
     const byName = new Map(rows.map(r => [r.project_name, Number(r.cost_usd)]));
     expect(byName.get("RTWSA")).toBeCloseTo(3.75);
     expect(byName.get("SAPN")).toBeCloseTo(0.75);
+  });
+
+  it("groups spend by the adapter the run used, not the agent's pin", async () => {
+    // Two runs on one issue, different adapters. `agents.adapter` is null for
+    // every agent since migration 003, so grouping on it collapses both to one
+    // null row — the bug this fixes.
+    const issue = await repo.createIssue({
+      companyId: company, title: "mixed adapters", workflowKey: "datamodel",
+    });
+    for (const [adapter, cost] of [["claude_local", 1.5], ["codex", 0]] as const) {
+      const run = await repo.startRun({
+        issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",
+        logPath: `/tmp/${adapter}.jsonl`, adapter,
+      });
+      await repo.finishRun(run.id, {
+        status: "succeeded", exitCode: 0, sessionId: null,
+        inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0,
+        costUsd: adapter === "codex" ? null : cost, durationMs: 1000, numTurns: 1,
+      });
+    }
+
+    const rows = await p.spend(company, "adapter");
+    const byAdapter = Object.fromEntries(rows.map(r => [r.adapter, r]));
+    expect(Object.keys(byAdapter).sort()).toEqual(["claude_local", "codex"]);
+    expect(Number(byAdapter.claude_local.cost_usd)).toBeCloseTo(1.5);
+    expect(byAdapter.codex.run_count).toBe("1");
   });
 });

@@ -508,12 +508,12 @@ export function createPlatformRepo(db: Db) {
       const dimension = {
         project: `p.id, p.name`,
         agent: `a.key`,
-        adapter: `a.adapter`,
+        adapter: `r.adapter`,
       }[by];
       const select = {
         project: `p.id as project_id, p.name as project_name, null::text as agent_key, null::text as adapter, null::uuid as user_id`,
         agent: `null::uuid as project_id, null::text as project_name, a.key as agent_key, null::text as adapter, null::uuid as user_id`,
-        adapter: `null::uuid as project_id, null::text as project_name, null::text as agent_key, a.adapter as adapter, null::uuid as user_id`,
+        adapter: `null::uuid as project_id, null::text as project_name, null::text as agent_key, r.adapter as adapter, null::uuid as user_id`,
       }[by];
 
       const { rows } = await db.query<SpendRow>(

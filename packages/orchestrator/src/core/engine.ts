@@ -364,6 +364,10 @@ export function createEngine(deps: {
           const run = await repo.startRun({
             issueId: issue.id, agentId: agentRow?.id ?? null,
             stepIndex: issue.step_index, phase: step.phase, logPath,
+            // `rt` is the ONLY place that knows: step → agent → project
+            // setting → default. Recorded so the transcript can be decoded
+            // and spend can be attributed.
+            adapter: rt.adapter,
           });
 
           const startedAt = Date.now();
