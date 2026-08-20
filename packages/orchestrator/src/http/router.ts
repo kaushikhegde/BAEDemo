@@ -176,7 +176,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     }
     return {
       key: row.key, name: row.name, title: row.title ?? undefined, icon: row.icon ?? undefined,
-      reportsTo, adapter: row.adapter, model: row.model ?? undefined,
+      reportsTo, adapter: row.adapter ?? undefined, model: row.model ?? undefined,
       effort: (row.effort ?? undefined) as Effort | undefined,
       fallbackModel: row.fallback_model, cwd: row.cwd ?? undefined,
       mcpEnabled: row.mcp_enabled, extraArgs: row.extra_args, bundlePath: row.bundle_path ?? undefined,

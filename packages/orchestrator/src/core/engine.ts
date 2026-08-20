@@ -20,7 +20,7 @@ import { interpolate } from "./interpolate.js";
 import { classifyFailure } from "./retry.js";
 import type { RunResult } from "./runner.js";
 import { resolveRuntime } from "../config.js";
-import type { OrchestratorConfig, Step, WorkflowDef } from "../config.js";
+import type { OrchestratorConfig, OrchestratorDefaults, Step, WorkflowDef } from "../config.js";
 import type { createRepo, AgentRow, IssueRow } from "./repo.js";
 
 /** The shape `createRepo(db)` returns. There is no separately exported `Repo` interface (Task 2). */
@@ -183,7 +183,49 @@ export function createEngine(deps: {
    */
   function toRuntimeAgent(agent: AgentRow | null): { adapter?: string; model?: string; effort?: string } | null {
     if (!agent) return null;
-    return { adapter: agent.adapter, model: agent.model ?? undefined, effort: agent.effort ?? undefined };
+    // `?? undefined` on the adapter is load-bearing, not tidying. A null
+    // adapter means the agent expresses no preference, and resolveRuntime
+    // falls through step -> agent -> scope -> defaults on undefined ONLY.
+    // Passing null answers the question with "null" and stops the chain,
+    // which is exactly how a configured default came to be ignored.
+    return {
+      adapter: agent.adapter ?? undefined,
+      model: agent.model ?? undefined,
+      effort: agent.effort ?? undefined,
+    };
+  }
+
+  /**
+   * Runtime settings that apply to this issue because of what it is ABOUT.
+   *
+   * For each name in `config.runtimeScopes` (the CONSUMER says which issue
+   * params are scopes — this library does not know what a "project" is), the
+   * issue's own param value is the scope key. Company-wide settings come last,
+   * so a project overrides the organisation and the organisation overrides the
+   * config file.
+   *
+   * This is what makes "this client's work runs on Azure" expressible at all:
+   * before it the only dimensions were per-step, per-agent, and one global
+   * default read from an environment variable at boot.
+   */
+  async function scopedSettings(issue: IssueRow): Promise<Array<Partial<OrchestratorDefaults>>> {
+    const out: Array<Partial<OrchestratorDefaults>> = [];
+    const params = (issue.params ?? {}) as Record<string, unknown>;
+    try {
+      for (const scope of config.runtimeScopes ?? []) {
+        const key = params[scope];
+        if (typeof key !== "string" || !key) continue;
+        const found = await repo.getSettings(issue.company_id, scope, key);
+        if (Object.keys(found).length) out.push(found as Partial<OrchestratorDefaults>);
+      }
+      const company = await repo.getSettings(issue.company_id, "company", "*");
+      if (Object.keys(company).length) out.push(company as Partial<OrchestratorDefaults>);
+    } catch (err) {
+      // A settings lookup that fails must not stop a run — the configured
+      // defaults are a complete answer on their own.
+      console.error("[orchestrator] could not read runtime settings:", err);
+    }
+    return out;
   }
 
   /**
@@ -266,7 +308,8 @@ export function createEngine(deps: {
         }
 
         // Resolve adapter / model / effort: step → agent → defaults.
-        const rt = resolveRuntime(step, toRuntimeAgent(agentRow), config.defaults);
+        const rt = resolveRuntime(
+          step, toRuntimeAgent(agentRow), config.defaults, await scopedSettings(issue));
         const runner = config.adapters[rt.adapter];
         if (!runner) {
           await block(issue.id,

@@ -143,3 +143,75 @@ describe("resetCompany --all (factory reset)", () => {
     expect(second.projects).toBe(0);
   });
 });
+
+describe("runtime adapter resolution", () => {
+  it("lets the configured default apply when the agent has no opinion", async () => {
+    // The bug this pins: upsertAgent used to write 'claude_local' for an agent
+    // whose spec named no adapter, so resolveRuntime's step → agent → defaults
+    // chain always stopped at the agent and SCYNE_ADAPTER=gemini did nothing.
+    const { resolveRuntime } = await import("../src/config.js");
+    await repo.upsertAgent(companyId, { key: "noPref", name: "No Preference" });
+    const row = await repo.getAgentByKey(companyId, "noPref");
+    expect(row!.adapter).toBeNull();
+
+    const rt = resolveRuntime(
+      { type: "agent", phase: "generate" },
+      { adapter: row!.adapter ?? undefined },
+      { adapter: "gemini" });
+    expect(rt.adapter).toBe("gemini");
+  });
+
+  it("still honours an agent that IS explicitly pinned", async () => {
+    const { resolveRuntime } = await import("../src/config.js");
+    await repo.upsertAgent(companyId, { key: "pinned", name: "Pinned", adapter: "claude_local" });
+    const row = await repo.getAgentByKey(companyId, "pinned");
+    expect(row!.adapter).toBe("claude_local");
+
+    const rt = resolveRuntime(
+      { type: "agent", phase: "generate" },
+      { adapter: row!.adapter ?? undefined },
+      { adapter: "gemini" });
+    expect(rt.adapter).toBe("claude_local");
+  });
+
+  it("resolves project over company over the config file", async () => {
+    const { resolveRuntime } = await import("../src/config.js");
+    await repo.setSetting(companyId, "company", "*", "adapter", "gemini");
+    await repo.setSetting(companyId, "project", "RTWSA", "adapter", "azure_foundry");
+
+    const projectFirst = [
+      await repo.getSettings(companyId, "project", "RTWSA"),
+      await repo.getSettings(companyId, "company", "*"),
+    ];
+    expect(resolveRuntime({ type: "agent", phase: "g" }, null, { adapter: "claude_local" }, projectFirst).adapter)
+      .toBe("azure_foundry");
+
+    // A project with no setting of its own falls through to the company.
+    const companyOnly = [
+      await repo.getSettings(companyId, "project", "SAPN"),
+      await repo.getSettings(companyId, "company", "*"),
+    ];
+    expect(resolveRuntime({ type: "agent", phase: "g" }, null, { adapter: "claude_local" }, companyOnly).adapter)
+      .toBe("gemini");
+  });
+
+  it("falls back a scope at a time when a setting is cleared", async () => {
+    const { resolveRuntime } = await import("../src/config.js");
+    await repo.setSetting(companyId, "company", "*", "adapter", "gemini");
+    await repo.setSetting(companyId, "project", "RTWSA", "adapter", "azure_foundry");
+
+    expect(await repo.clearSetting(companyId, "project", "RTWSA", "adapter")).toBe(true);
+    const scoped = [
+      await repo.getSettings(companyId, "project", "RTWSA"),
+      await repo.getSettings(companyId, "company", "*"),
+    ];
+    expect(resolveRuntime({ type: "agent", phase: "g" }, null, { adapter: "claude_local" }, scoped).adapter)
+      .toBe("gemini");
+
+    await repo.clearSetting(companyId, "company", "*", "adapter");
+    expect(resolveRuntime({ type: "agent", phase: "g" }, null, { adapter: "claude_local" }, [
+      await repo.getSettings(companyId, "project", "RTWSA"),
+      await repo.getSettings(companyId, "company", "*"),
+    ]).adapter).toBe("claude_local");
+  });
+});

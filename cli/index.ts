@@ -28,6 +28,15 @@ function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
 }
+
+/** Every value of a repeatable flag: `--doc a.md --doc b.pdf`. */
+function flagAll(name: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === `--${name}` && argv[i + 1] !== undefined) values.push(argv[i + 1]);
+  }
+  return values;
+}
 const has = (name: string): boolean => argv.includes(`--${name}`);
 
 /** Positional arguments, with every `--flag value` pair removed. */
@@ -225,12 +234,32 @@ async function cmdProject(client: Client, args: string[]): Promise<void> {
       });
       reportDual(name, r);
       if (flag("website")) out(`    branding pulled from ${flag("website")}`);
+
+      // The client-wide documents. These are the ones every skill reads before
+      // any feature's discovery material, and the capability map cannot start
+      // without at least one — so creating a project and uploading its
+      // documents is really one act, and the wizard treats it that way too.
+      const docs = flagAll("doc");
+      for (const file of docs) {
+        try {
+          const up = await uploadDocument(client, { project: name, feature: null, file });
+          reportDual(String(up.extra?.path ?? file), up);
+        } catch (err) {
+          out(`  ✗ ${file}: ${(err as Error).message.split("\n")[0]}`);
+        }
+      }
+
+      out(``);
       if (!flag("description")) {
-        out(``);
-        out(`  No --description given. Every skill reads the project definition before`);
-        out(`  any discovery document, so add one:`);
+        out(`  Next — the project definition. Every skill reads it before any document:`);
         out(`    scyne project describe ${name} "Who the client is, what they are regulated to do…"`);
       }
+      if (!docs.length) {
+        out(`  Next — the client-wide documents (policy, legislation, standards):`);
+        out(`    scyne doc upload <file...> --project ${name}`);
+        out(`    ${"(.docx and .pdf are converted to markdown on arrival)"}`);
+      }
+      out(`  Then a feature:  scyne feature add "<name>" --project ${name}`);
       return;
     }
 
@@ -734,17 +763,67 @@ async function cmdChat(client: Client, args: string[]): Promise<void> {
 }
 
 async function cmdAdapter(client: Client, args: string[]): Promise<void> {
-  const config = await client.get<any>("/config");
-  if (args[0] === "list" || !args[0]) {
-    out(`Registered adapters:`);
-    for (const a of config.adapters) {
-      out(`  ${a === config.defaults?.adapter ? "→" : " "} ${a}`);
+  const [verb, name] = args;
+  const info = await client.get<{
+    settings: { scope: string; scope_key: string; key: string; value: string }[];
+    available: string[]; configuredDefault: string; scopes: string[];
+  }>("/settings");
+
+  const adapterAt = (scope: string, key: string): string | undefined =>
+    info.settings.find(s => s.scope === scope && s.scope_key === key && s.key === "adapter")?.value;
+
+  switch (verb) {
+    case "list": case undefined: {
+      if (has("json")) return json(info);
+      const org = adapterAt("company", "*");
+      out(``);
+      out(`  Registered on this server:`);
+      for (const a of info.available) out(`    ${a}`);
+      out(``);
+      out(`  Organisation default:  ${org ?? info.configuredDefault}${org ? "" : "   (from the config file / $SCYNE_ADAPTER)"}`);
+
+      const perProject = info.settings.filter(s => s.scope === "project" && s.key === "adapter");
+      if (perProject.length) {
+        out(``);
+        out(`  Per project:`);
+        table(perProject.map(s => ({ project: s.scope_key, adapter: s.value })), ["project", "adapter"]);
+      }
+      out(``);
+      out(`  Set it:    scyne adapter set <name> [--project <p>]`);
+      out(`  Unset it:  scyne adapter unset [--project <p>]`);
+      out(`  Precedence: step → agent → project → organisation → config file`);
+      return;
     }
-    out(``);
-    out(`  The default is set by $SCYNE_ADAPTER at server start — every agent uses it.`);
-    return;
+
+    case "set": {
+      if (!name) throw new ApiError(400, `usage: scyne adapter set <${info.available.join("|")}> [--project <p>]`);
+      const project = flag("project") ?? load().project;
+      const body = project
+        ? { scope: "project", scopeKey: project, key: "adapter", value: name }
+        : { scope: "company", key: "adapter", value: name };
+      await client.put("/settings", body);
+      out(project
+        ? `✓ ${project} now runs on ${name}`
+        : `✓ the whole organisation now runs on ${name}`);
+      out(`  Takes effect on the next run — no restart needed.`);
+      return;
+    }
+
+    case "unset": case "clear": {
+      const project = flag("project") ?? load().project;
+      const q = project
+        ? `scope=project&scopeKey=${encodeURIComponent(project)}&key=adapter`
+        : `scope=company&key=adapter`;
+      await client.del(`/settings?${q}`);
+      out(project
+        ? `✓ ${project} falls back to the organisation default`
+        : `✓ the organisation falls back to the config file`);
+      return;
+    }
+
+    default:
+      throw new ApiError(400, `unknown: scyne adapter ${verb}. Try list, set, unset.`);
   }
-  throw new ApiError(400, "usage: scyne adapter list");
 }
 
 // --------------------------------------------------------------------- usage
@@ -776,7 +855,8 @@ scyne — the Scyne pipeline, from the command line
 
   Documents
     doc list [--all] [--category C]
-    doc upload <file...> --as sop|transcripts|notes|ui|template
+    doc upload <file...> --as sop|transcripts|notes|ui|template   (needs --feature)
+    doc upload <file...> --project P                              client-wide documents
 
   Running the pipeline
     run <stage>                      start a stage (run with no stage to list them)
@@ -796,7 +876,9 @@ scyne — the Scyne pipeline, from the command line
     installs register [--version V]  register this machine
     installs revoke <id>             stop that installation authenticating
     chat history
-    adapter list
+    adapter list                     what is registered, and what runs where
+    adapter set <name> [--project P] switch a project, or the whole org
+    adapter unset [--project P]      fall back to the next scope up
 
   Global flags
     --project <name>  --feature <name>  --json  --api <url>

@@ -24,7 +24,9 @@ export interface AgentSpec {
 
 export interface AgentRow {
   id: string; company_id: string; key: string; name: string; title: string | null;
-  icon: string | null; reports_to: string | null; adapter: string; model: string | null;
+  // Nullable: 'this agent has no opinion' and 'this agent is pinned to
+  // claude_local' are different statements, and only null expresses the first.
+  icon: string | null; reports_to: string | null; adapter: string | null; model: string | null;
   effort: string | null; fallback_model: string[]; cwd: string | null;
   mcp_enabled: boolean; extra_args: string[]; bundle_path: string | null;
   status: string; created_at: string; updated_at: string;
@@ -105,6 +107,11 @@ export interface FinishRunResult {
   costUsd?: number | null; durationMs?: number | null; numTurns?: number | null;
 }
 
+export interface SettingRow {
+  company_id: string; scope: string; scope_key: string;
+  key: string; value: string; updated_by: string | null; updated_at: string;
+}
+
 export interface BudgetRow {
   id: string; company_id: string; scope: string; scope_key: string;
   max_tokens: string | null; max_cost_usd: string | null; max_duration_ms: string | null;
@@ -143,7 +150,7 @@ export function createRepo(db: Db) {
            mcp_enabled=excluded.mcp_enabled, extra_args=excluded.extra_args,
            bundle_path=excluded.bundle_path, updated_at=now()`,
         [id, companyId, spec.key, spec.name, spec.title ?? null, spec.icon ?? null,
-         reportsTo, spec.adapter ?? "claude_local", spec.model ?? null, spec.effort ?? null,
+         reportsTo, spec.adapter ?? null, spec.model ?? null, spec.effort ?? null,
          JSON.stringify(spec.fallbackModel ?? []), spec.cwd ?? null, spec.mcpEnabled ?? false,
          JSON.stringify(spec.extraArgs ?? []), spec.bundlePath ?? null]);
       if (spec.budget) await this.setBudget(companyId, "agent", spec.key, spec.budget);
@@ -468,6 +475,44 @@ export function createRepo(db: Db) {
         await db.query(`delete from agents where company_id=$1`, [companyId]);
       }
       return summary;
+    },
+
+    /**
+     * Runtime settings, scoped. `scope_key` is '*' for the whole company and
+     * the scope's own identifier otherwise ('RTWSA'). Same vocabulary as
+     * `budgets`, which already anticipated this shape.
+     */
+    async setSetting(
+      companyId: string, scope: string, scopeKey: string, key: string,
+      value: string, updatedBy?: string | null,
+    ): Promise<void> {
+      await db.query(
+        `insert into settings (company_id, scope, scope_key, key, value, updated_by)
+         values ($1,$2,$3,$4,$5,$6)
+         on conflict (company_id, scope, scope_key, key) do update
+           set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()`,
+        [companyId, scope, scopeKey, key, value, updatedBy ?? null]);
+    },
+
+    async clearSetting(companyId: string, scope: string, scopeKey: string, key: string): Promise<boolean> {
+      const { rows } = await db.query<{ key: string }>(
+        `delete from settings where company_id=$1 and scope=$2 and scope_key=$3 and key=$4 returning key`,
+        [companyId, scope, scopeKey, key]);
+      return rows.length > 0;
+    },
+
+    /** Every setting at one scope, as a plain map. */
+    async getSettings(companyId: string, scope: string, scopeKey: string): Promise<Record<string, string>> {
+      const { rows } = await db.query<{ key: string; value: string }>(
+        `select key, value from settings where company_id=$1 and scope=$2 and scope_key=$3`,
+        [companyId, scope, scopeKey]);
+      return Object.fromEntries(rows.map(r => [r.key, r.value]));
+    },
+
+    async listSettings(companyId: string): Promise<SettingRow[]> {
+      const { rows } = await db.query<SettingRow>(
+        `select * from settings where company_id=$1 order by scope, scope_key, key`, [companyId]);
+      return rows;
     },
 
     /** Every budget for a company — agent, workflow and project scopes together. */

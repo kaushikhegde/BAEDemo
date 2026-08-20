@@ -125,6 +125,16 @@ export interface OrchestratorConfig {
   adapters: Record<string, Runner>;   // the adapter registry
   defaults?: OrchestratorDefaults;
   theme?: Partial<Theme>;    // merged over SCYNE_THEME; see src/http/theme.ts
+  /**
+   * Issue param names that a runtime setting may be scoped to, most specific
+   * first — e.g. `["project"]`. For each one, the engine looks up
+   * `settings(scope=<name>, scope_key=<issue.params[name]>)` and lets it
+   * override the global defaults.
+   *
+   * Configured rather than assumed, because the library has no idea what a
+   * "project" is; the consumer that invented the concept names it here.
+   */
+  runtimeScopes?: string[];
   org: AgentSpec[];
   workflows: WorkflowDef[];
 }
@@ -145,11 +155,26 @@ export function resolveRuntime(
   step: Extract<Step, { type: "agent" }>,
   agent: { adapter?: string; model?: string; effort?: string } | null,
   defaults: OrchestratorDefaults = {},
+  /**
+   * Settings that apply to THIS issue because of what it is about — the
+   * project it belongs to, then the company. Most specific first; the engine
+   * builds the list from `config.runtimeScopes`.
+   *
+   * Sits between the agent and the defaults deliberately. An adapter set on an
+   * agent is an explicit pin an operator typed ("the BA always runs on
+   * Claude") and should win; a project setting is a broader statement that
+   * should still beat the global fallback.
+   */
+  scoped: Array<Partial<OrchestratorDefaults>> = [],
 ): { adapter: string; model?: string; effort?: string } {
+  const fromScope = <K extends keyof OrchestratorDefaults>(key: K): OrchestratorDefaults[K] | undefined => {
+    for (const s of scoped) if (s?.[key] !== undefined) return s[key];
+    return undefined;
+  };
   return {
-    adapter: step.adapter ?? agent?.adapter ?? defaults.adapter ?? "claude_local",
-    model:   step.model   ?? agent?.model   ?? defaults.model,
-    effort:  step.effort  ?? agent?.effort  ?? defaults.effort,
+    adapter: step.adapter ?? agent?.adapter ?? fromScope("adapter") ?? defaults.adapter ?? "claude_local",
+    model:   step.model   ?? agent?.model   ?? fromScope("model")   ?? defaults.model,
+    effort:  step.effort  ?? agent?.effort  ?? fromScope("effort")  ?? defaults.effort,
   };
 }
 

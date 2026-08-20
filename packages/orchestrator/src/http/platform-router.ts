@@ -50,6 +50,9 @@ export const PLATFORM_ROUTES = [
   { method: "GET",    path: "/projects/{id}/actions" },
   { method: "GET",    path: "/actions" },
   { method: "GET",    path: "/admin/overview" },
+  { method: "GET",    path: "/settings" },
+  { method: "PUT",    path: "/settings" },
+  { method: "DELETE", path: "/settings" },
   { method: "GET",    path: "/installations" },
   { method: "POST",   path: "/installations" },
   { method: "DELETE", path: "/installations/{id}" },
@@ -467,6 +470,76 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     });
   }));
 
+
+  // ------------------------------------------------------- runtime settings
+
+  /**
+   * Which adapter (and model, and effort) a run uses, per scope.
+   *
+   * Before this the only dimensions were per-step, per-agent, and one global
+   * default read from `$SCYNE_ADAPTER` at boot — so "this client runs on
+   * Azure" meant restarting the server for everybody.
+   *
+   * Readable by any authenticated user, because knowing which model produced
+   * an artefact is part of reading it. Writable by administrators only.
+   */
+  r.get("/settings", requireAuth(), wrap(async (req, res) => {
+    const rows = await orch.repo.listSettings(companyId);
+    ok(res, {
+      settings: rows,
+      // What the server can actually run, so a caller is not left guessing
+      // which names are valid.
+      available: Object.keys(orch.config.adapters),
+      configuredDefault: orch.config.defaults?.adapter ?? "claude_local",
+      scopes: orch.config.runtimeScopes ?? [],
+    });
+  }));
+
+  r.put("/settings", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const { scope, scopeKey, key, value } = req.body ?? {};
+    if (!scope || !key || value === undefined) return bad(res, "scope, key and value are required");
+    if (!SETTABLE.has(String(key))) return bad(res, `key must be one of ${[...SETTABLE].join(", ")}`);
+
+    // An adapter that is not registered would fail at the first run, twenty
+    // minutes after someone set it. Refuse it now, naming what exists.
+    if (key === "adapter" && !orch.config.adapters[String(value)]) {
+      return bad(res,
+        `adapter '${value}' is not registered on this server — available: ` +
+        `${Object.keys(orch.config.adapters).join(", ")}`);
+    }
+    const scopes = new Set(["company", ...(orch.config.runtimeScopes ?? [])]);
+    if (!scopes.has(String(scope))) return bad(res, `scope must be one of ${[...scopes].join(", ")}`);
+
+    // A project scope is keyed by project NAME, which is what an issue's
+    // params carry; check it exists so a typo is caught here and not by a run
+    // that silently used the default.
+    const resolvedKey = String(scope) === "company" ? "*" : String(scopeKey ?? "");
+    if (String(scope) !== "company") {
+      if (!resolvedKey) return bad(res, `scope '${scope}' needs a scopeKey`);
+      if (!(await platform.getProjectByName(companyId, resolvedKey))) return missing(res, "project");
+    }
+
+    await orch.repo.setSetting(companyId, String(scope), resolvedKey, String(key), String(value),
+      req.principal!.user.id);
+    await audit(req, "setting.set", {
+      targetType: "setting", targetId: `${scope}:${resolvedKey}:${key}`, detail: { value },
+    });
+    ok(res, { scope, scopeKey: resolvedKey, key, value });
+  }));
+
+  r.delete("/settings", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const scope = String(req.query.scope ?? "");
+    const key = String(req.query.key ?? "");
+    if (!scope || !key) return bad(res, "scope and key are required");
+    const scopeKey = scope === "company" ? "*" : String(req.query.scopeKey ?? "");
+    const done = await orch.repo.clearSetting(companyId, scope, scopeKey, key);
+    if (!done) return missing(res, "setting");
+    await audit(req, "setting.clear", { targetType: "setting", targetId: `${scope}:${scopeKey}:${key}` });
+    ok(res, { ok: true });
+  }));
+
   // --------------------------------------------------------- installations
 
   r.post("/installations", requireAuth(), wrap(async (req, res) => {
@@ -540,6 +613,9 @@ export function createPlatformRouter(orch: Orchestrator): Router {
  * Duplicated from scripts/pipeline.mjs deliberately — the library must not
  * import a consumer's file — and asserted equal by a test there.
  */
+/** Runtime keys a scope may override. Anything else is refused. */
+const SETTABLE = new Set(["adapter", "model", "effort"]);
+
 export const RESERVED_FEATURE_NAMES = new Set([
   "capabilities", "personas", "app", "all", "baseline",
   "solutions", "documents", "design", "original-files", "outputs",

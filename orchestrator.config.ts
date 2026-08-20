@@ -117,6 +117,11 @@ export default defineOrchestrator({
   // `npm run link-skills` publishes to Claude Code.
   skillsDir: "skills",
 
+  // A runtime setting may be scoped to a project. The library has no idea what
+  // a "project" is — this names the issue param it should key on, so
+  // `scyne adapter set gemini --project RTWSA` reaches the engine.
+  runtimeScopes: ["project"],
+
   adapters: registry,
 
   defaults: {

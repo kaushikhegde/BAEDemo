@@ -1399,6 +1399,32 @@ paths:
         "401": { description: Authentication required }
         "403": { description: Administrators only }
 
+
+  /settings:
+    get:
+      operationId: listSettings
+      summary: Runtime settings by scope, the adapters this server can run, and the configured default.
+      responses:
+        "200": { description: OK }
+        "401": { description: Authentication required }
+    put:
+      operationId: setSetting
+      summary: Set adapter, model or effort for a project or for the whole company. Administrators only.
+      responses:
+        "200": { description: OK }
+        "400": { description: Unknown key, scope, or unregistered adapter }
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+        "404": { description: No such project }
+    delete:
+      operationId: clearSetting
+      summary: Remove a setting so the next broader scope applies. Administrators only.
+      responses:
+        "200": { description: OK }
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+        "404": { description: No such setting }
+
 components:
   parameters:
     SkillName:
