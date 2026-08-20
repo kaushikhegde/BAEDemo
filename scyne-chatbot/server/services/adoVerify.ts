@@ -23,6 +23,16 @@ export interface AdoTarget {
   wiki?: string;
   /** True when the flow will also create work items. */
   needsWorkItems?: boolean;
+  /**
+   * The type stories will be created as, when the flow declares one.
+   *
+   * Checked by NAME, not merely "is there something usable": the publishing
+   * agent is handed this exact string and told not to substitute a
+   * familiar-sounding one, so a value the project does not have fails every
+   * story — and it would fail AFTER the gate was approved and the wiki page
+   * published, which is the expensive moment to discover it.
+   */
+  workItemType?: string;
 }
 
 export interface AdoCheck {
@@ -105,10 +115,18 @@ export async function verifyAdoTarget(target: AdoTarget): Promise<AdoCheck> {
       try { types = (JSON.parse(wit.body).value ?? []).map((t: { name: string }) => t.name); } catch { /* shape drift */ }
       // The type is DISCOVERED at publish time (scripts/ado-workitems.mjs), so
       // this only has to confirm there is something usable to discover.
-      const usable = ["User Story", "Product Backlog Item", "Issue", "Requirement", "Task"]
-        .filter(t => types.includes(t));
-      add("a work item type for stories", usable.length > 0,
-        usable.length ? usable[0] : `The project has none of User Story / Issue / Task. It has: ${types.join(", ")}`);
+      if (target.workItemType) {
+        add(`work item type '${target.workItemType}' exists`, types.includes(target.workItemType),
+          types.includes(target.workItemType)
+            ? target.workItemType
+            : `The project has no '${target.workItemType}'. It has: ${types.join(", ")}. ` +
+              `Set ADO_WORK_ITEM_TYPE to one of those.`);
+      } else {
+        const usable = ["User Story", "Product Backlog Item", "Issue", "Requirement", "Task"]
+          .filter(t => types.includes(t));
+        add("a work item type for stories", usable.length > 0,
+          usable.length ? usable[0] : `The project has none of User Story / Issue / Task. It has: ${types.join(", ")}`);
+      }
     } else {
       add("work item scope", false,
         wit.status === 401 ? "401 — the token has no work item scope (vso.work_write)." : `HTTP ${wit.status}`);

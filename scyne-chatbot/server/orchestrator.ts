@@ -64,6 +64,7 @@ const PARAM_LABELS: Record<string, string> = {
   "ado org": "adoOrg",
   "ado project": "adoProject",
   "ado wiki": "adoWiki",
+  "ado work item type": "adoWorkItemType",
 };
 
 export function parseParams(description: string): Record<string, string> {

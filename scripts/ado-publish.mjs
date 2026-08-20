@@ -104,7 +104,20 @@ if (flags.verify) {
   });
   await check("token has the WORK ITEM scope", async () => {
     const r = await adoFetch(ado, `${projectPath(ado)}/_apis/wit/workitemtypes?api-version=${API}`);
-    return `${(r.value ?? []).length} type(s)`;
+    const names = (r.value ?? []).map((t) => t.name);
+    // The configured type is checked BY NAME. The publishing agent is handed
+    // this exact string over MCP and told not to substitute a
+    // familiar-sounding one — there is no MCP tool that lists a project's
+    // types — so a wrong value fails every story, after the gate was approved
+    // and the page published.
+    const want = flags.type || (await loadAdo({})).workItemType ||
+      process.env.ADO_WORK_ITEM_TYPE;
+    if (want && !names.includes(want)) {
+      throw new Error(
+        `ADO_WORK_ITEM_TYPE is '${want}', which this project does not have.\n` +
+        `  It has: ${names.join(", ")}`);
+    }
+    return `${names.length} type(s)` + (want ? `, and '${want}' exists` : "");
   });
 
   const failed = result.checks.filter((c) => !c.ok);

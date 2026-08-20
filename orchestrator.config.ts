@@ -63,6 +63,35 @@ for (const file of [".env", ".env.local"]) {
   if (existsSync(path)) process.loadEnvFile(path);
 }
 
+/**
+ * Derive the credential the Azure DevOps MCP actually wants.
+ *
+ * MEASURED, not read off a page. `@azure-devops/mcp --authentication pat` does
+ * NOT take a raw PAT in `PERSONAL_ACCESS_TOKEN`: it wants BASIC CREDENTIALS,
+ * base64 of `<anything>:<pat>`. Tried against the live server:
+ *
+ *   raw PAT              → 401
+ *   base64(":" + pat)    → works
+ *   base64(pat)          → 401
+ *
+ * Handing it the raw PAT fails EVERY call with a 401 that looks exactly like a
+ * bad token — while the same PAT answers 200 over REST, which sends you looking
+ * at scopes and permissions instead of at encoding.
+ *
+ * Derived here rather than stored, so `.env` keeps ONE credential in the form
+ * a human copies out of Azure DevOps, and the REST scripts
+ * (`scripts/lib/ado.mjs`) keep using that same raw value. Storing the base64
+ * instead would double-encode it there.
+ *
+ * `??=` so an explicitly-set value always wins — if a future server version
+ * changes its mind about the format, it can be set directly without a code
+ * change.
+ */
+const adoPat = process.env.ADO_PAT || process.env.MCP_TOKEN_FOR_AZURE;
+if (adoPat) {
+  process.env.ADO_MCP_BASIC ??= Buffer.from(`:${adoPat}`).toString("base64");
+}
+
 // A .env beside the library instead of at the root is a natural guess and
 // silently does nothing — the library never reads one. Say so rather than
 // letting someone debug a DATABASE_URL that is never picked up.

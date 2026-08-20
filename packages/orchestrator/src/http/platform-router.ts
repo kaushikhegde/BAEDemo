@@ -751,6 +751,59 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     v === null || v === undefined
     || (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= MAX_RATE);
 
+  /**
+   * The four price fields, and every spelling this API answers to.
+   *
+   * The table, the diff and the apply all use snake_case; the write endpoints
+   * have always ALSO accepted camelCase, because that is what the rest of the
+   * JSON API looks like. Proposals were the one path that did not — they were
+   * stored verbatim, and `diffProposal` / `applyProposal` look for snake_case
+   * only. A camelCase refresh was therefore accepted with 200, reported "it
+   * changes nothing", and applied as a no-op that answered `applied: 1`.
+   *
+   * Worse than useless: the sanity ceiling below is what stands between a
+   * hallucinated rate and every cost budget in the install, and it too was
+   * reading a key that was not there.
+   *
+   * So rows are canonicalised HERE, once, before they are validated and
+   * before they are stored — rather than teaching three more call sites about
+   * a second spelling.
+   */
+  const FIELD_ALIASES: Record<string, string[]> = {
+    input_per_mtok:        ["input_per_mtok", "inputPerMTok"],
+    cached_input_per_mtok: ["cached_input_per_mtok", "cachedInputPerMTok"],
+    output_per_mtok:       ["output_per_mtok", "outputPerMTok"],
+    retires_on:            ["retires_on", "retiresOn"],
+  };
+  const PRICE_FIELDS = Object.keys(FIELD_ALIASES);
+
+  /**
+   * One row, with every field under its canonical name.
+   *
+   * A field is copied only when a spelling of it is actually PRESENT: absent
+   * means "leave it alone" and an explicit null means "clear it", and
+   * collapsing the two is how a refresh that simply omitted a column would
+   * wipe every cached rate in the catalogue.
+   */
+  const canonicaliseRow = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const row: Record<string, unknown> = {
+      model: raw.model,
+      ...(("provider" in raw) ? { provider: raw.provider } : {}),
+    };
+    for (const [canonical, aliases] of Object.entries(FIELD_ALIASES)) {
+      for (const alias of aliases) {
+        if (alias in raw && raw[alias] !== undefined) { row[canonical] = raw[alias]; break; }
+      }
+    }
+    return row;
+  };
+
+  const canonicaliseRows = (rows: unknown): Record<string, unknown>[] =>
+    Array.isArray(rows)
+      ? rows.map(r => (typeof r === "object" && r !== null
+          ? canonicaliseRow(r as Record<string, unknown>) : r as Record<string, unknown>))
+      : [];
+
   /** Returns the problems with a proposed row set; empty means it is usable. */
   const validateRows = (rows: unknown): string[] => {
     if (!Array.isArray(rows) || !rows.length) return ["expected a non-empty array of rows"];
@@ -772,6 +825,13 @@ export function createPlatformRouter(orch: Orchestrator): Router {
       if (row.retires_on != null && Number.isNaN(Date.parse(String(row.retires_on)))) {
         problems.push(`row ${i} (${model}): 'retires_on' is not a date`);
       }
+      // A row naming no field at all asks for nothing. Refusing it is what
+      // turns a misspelled rate into a 400 that says so, rather than a
+      // proposal that reports "it changes nothing" and applies successfully
+      // without changing anything — which is how this was missed.
+      if (!PRICE_FIELDS.some(f => f in row)) {
+        problems.push(`row ${i} (${model}): states no price — expected one of ${PRICE_FIELDS.join(", ")}`);
+      }
     }
     return problems;
   };
@@ -780,24 +840,38 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     ok(res, await platform.listModelPrices(req.principal!.companyId));
   }));
 
+  /**
+   * Correct one row by hand.
+   *
+   * MERGED over what is already there, not replaced. `scyne models set
+   * gpt-5.6-terra --input 2 --output 12` used to clear that model's cached
+   * rate, because an omitted field arrived as null — and since most of a long
+   * agent run's input is cached, silently dropping the cache discount inflates
+   * the recorded cost of every run afterwards. Same rule as a refresh, for the
+   * same reason: absent means leave it alone, an explicit null clears it.
+   */
   r.put("/models/:provider/:model", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    const body = { ...(req.body ?? {}), provider: req.params.provider, model: req.params.model };
-    const problems = validateRows([{
-      provider: body.provider, model: body.model,
-      input_per_mtok: body.inputPerMTok ?? body.input_per_mtok ?? null,
-      cached_input_per_mtok: body.cachedInputPerMTok ?? body.cached_input_per_mtok ?? null,
-      output_per_mtok: body.outputPerMTok ?? body.output_per_mtok ?? null,
-      retires_on: body.retiresOn ?? body.retires_on ?? null,
-    }]);
+    const provider = String(req.params.provider), model = String(req.params.model);
+    const submitted = canonicaliseRow({ ...(req.body ?? {}), provider, model });
+    const problems = validateRows([submitted]);
     if (problems.length) return bad(res, problems.join("; "));
 
+    const current = (await platform.listModelPrices(req.principal!.companyId))
+      .find(m => m.provider === provider && m.model === model);
+    const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+    const merge = (field: "input_per_mtok" | "cached_input_per_mtok" | "output_per_mtok"): number | null =>
+      field in submitted ? num(submitted[field]) : num(current?.[field]);
+
+    const body = req.body ?? {};
     const row = await platform.upsertModelPrice({
-      provider: String(req.params.provider), model: String(req.params.model),
-      inputPerMTok: body.inputPerMTok ?? body.input_per_mtok ?? null,
-      cachedInputPerMTok: body.cachedInputPerMTok ?? body.cached_input_per_mtok ?? null,
-      outputPerMTok: body.outputPerMTok ?? body.output_per_mtok ?? null,
-      retiresOn: body.retiresOn ?? body.retires_on ?? null,
+      provider, model,
+      inputPerMTok: merge("input_per_mtok"),
+      cachedInputPerMTok: merge("cached_input_per_mtok"),
+      outputPerMTok: merge("output_per_mtok"),
+      retiresOn: "retires_on" in submitted
+        ? (submitted.retires_on === null ? null : String(submitted.retires_on))
+        : (current?.retires_on ?? null),
       sourceUrl: body.sourceUrl ?? body.source_url ?? "set by hand",
       updatedBy: req.principal!.user.id,
     });
@@ -825,7 +899,11 @@ export function createPlatformRouter(orch: Orchestrator): Router {
    */
   r.post("/models/refresh", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    const { rows, source } = (req.body ?? {}) as { rows?: unknown; source?: string };
+    const { rows: submitted, source } = (req.body ?? {}) as { rows?: unknown; source?: string };
+    // Canonicalised BEFORE validation and before storage, so the sanity
+    // ceiling sees the rates whichever way they were spelled, and what is
+    // stored is what `diffProposal` and `applyProposal` know how to read.
+    const rows = Array.isArray(submitted) ? canonicaliseRows(submitted) : submitted;
     const problems = validateRows(rows);
     if (problems.length) {
       res.status(400).json({ error: "invalid_rows", problems });

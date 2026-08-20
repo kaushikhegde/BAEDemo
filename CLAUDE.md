@@ -95,20 +95,35 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot does not
 > with the PAT read from the root `.env` as `${MCP_TOKEN_FOR_AZURE}` — never
 > inlined, because that file is committed and a PAT in it is a PAT in the git
 > history. `scripts/ado-publish.mjs` and `scripts/ado-workitems.mjs` are the
-> REST equivalents; the publish prompt reaches for the first when a document
-> exceeds about 40 KB, because passing 110 KB through a tool call is measured to
-> fail (run SCY-6: $2.73, no page).
+> REST equivalents, kept as fallbacks. The publish prompt reaches for the first
+> when a document exceeds about 40 KB — `wiki_upsert_page` takes the page body
+> as a `content` STRING parameter, with no publish-from-file form, so the whole
+> document must travel through the agent's context to reach it. Passing 110 KB
+> that way is measured to fail (run SCY-6: $2.73, no page).
 >
 > **Two scopes, and a 401 that lies.** The PAT needs `vso.wiki_write` AND
 > `vso.work_write`. Azure DevOps answers a MISSING SCOPE with **401**, not 403 —
 > so a wiki call failing beside a working project call means a scope, not a bad
 > token. `node scripts/ado-publish.mjs --verify` says which.
 >
-> **The work item type is discovered, not assumed.** "User Story" exists only in
-> the Agile process template; the current target runs **Basic**, whose types are
-> Epic → Issue → Task with no User Story at all. `ado-workitems.mjs` reads the
-> project's types and matches a preference order, so a hard-coded `$User Story`
-> cannot fail every story at once.
+> **Publishing runs on the MCP.** The wiki page goes through
+> `wiki_upsert_page`; the stories go through `wit_work_item_write`
+> (`create` / `update` / `add_child`, with `parentId`). Confirmed against the
+> live server, which exposes 40 tools.
+>
+> **The work item type is a PARAMETER, because no MCP tool lists them.** None of
+> those 40 can enumerate a project's work item types. "User Story" exists only
+> in the Agile process template; the current target runs **Basic**, whose types
+> are Epic → Issue → Task with no User Story at all — so an agent guessing a
+> familiar name fails every story at once, after the gate was approved and the
+> page already published. `ADO_WORK_ITEM_TYPE` (default `Issue`) is handed to
+> the publishing agent, and BOTH `npm run ado:verify` and the approval-time
+> check confirm that exact name exists in the project before anything runs.
+>
+> `scripts/ado-workitems.mjs` remains the deterministic fallback — it discovers
+> the type itself, refuses to write a description still containing
+> `{{PRODUCT_SUMMARY_URL}}`, and writes the created ids back so a re-run cannot
+> duplicate a backlog.
 
 ## How it runs
 
@@ -634,7 +649,17 @@ duplicates) and stored with the diff they would apply. A superadmin applies
 them. A model that hallucinates a rate must not be able to change what every
 run in the install is billed at, or trip every cost budget at once. An omitted
 field means "leave it alone" rather than "clear it", so a refresh that forgets a
-column cannot silently wipe every cached rate.
+column cannot silently wipe every cached rate — and that rule holds for
+`models set` too, which used to clear the cached rate of any model whose input
+rate you corrected.
+
+> **Rows are canonicalised at the HTTP boundary, and a row naming no rate is
+> refused.** `input_per_mtok` and `inputPerMTok` both work. They did not: the
+> proposal path stored rows verbatim and read snake_case only, so a refresh
+> written the way every other write endpoint accepts was taken with 200,
+> reported "it changes nothing", and applied as a no-op answering
+> `applied: 1` — the whole feature, inert. The sanity ceiling was reading the
+> same absent key, so it was not checking those rows either.
 
 **Storage** is PGlite at `.orchestrator/pgdata`, with raw run logs as JSONL at
 `.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
@@ -1217,11 +1242,28 @@ npm run orch -- reset --yes      # do it: issues, comments, work products, gates
                                  #   runs, budgets and the raw .jsonl logs
 npm run orch -- reset --hard --yes   # also drop the agents and .orchestrator/overrides.json,
                                      #   then rebuild the org from orchestrator.config.ts
+npm run orch -- reset --all --yes    # also users, projects, documents, installations
+                                     #   and chats — the installation is then UNCLAIMED
 ```
 
 The bare verb is a **dry run** — a half-remembered command cannot cost anyone
 their history. Stop `npm run dev` first: the database is single-writer and the
 CLI is refused while a server holds it.
+
+> **It resets ONE organisation, not the database.** Every depth is scoped to
+> the home company, so another organisation's projects, people and issues
+> survive even `--all` — the plan lists the ones it will not touch, because
+> "the installation is UNCLAIMED" reads like everything is gone. For a
+> genuinely empty database, stop the server and `rm -rf .orchestrator/pgdata`.
+>
+> **`--hard` also detaches other organisations' issues from the agent rows.**
+> The org chart lives in one company but every issue in the install is assigned
+> out of it, so deleting those rows hits `issues_assignee_agent_id_fkey` the
+> moment a second organisation exists. Measured before the fix: the reset
+> aborted half-applied, having already deleted the superadmin, leaving an
+> installation that could be neither used nor re-claimed. The whole reset is
+> now one transaction, and the pointers are nulled rather than the issues
+> deleted — they dangle either way, since the re-seeded agents get new ids.
 
 **Skills need no reseeding — they are not in the database.** They are files
 under `skillsDir`, and the agent-to-skill mapping is derived from the workflows
@@ -1401,6 +1443,57 @@ curl -sS -X POST http://127.0.0.1:3100/issues -H 'Content-Type: application/json
   -d '{"workflow":"requirements","params":{"project":"SADA","feature":"interim-benefit","adoOrg":"Scyne-AI-Lab","adoProject":"Scyne AI Project"}}'
 ```
 
+### Ship the `scyne` CLI to a user with no clone
+
+```bash
+npm run build:cli     # dist/cli/  — one file, no dependencies
+npm run pack:cli      # …and dist/scyne-cli-<version>.tgz, ~21 KB
+```
+
+The user needs **Node 20+** and one of:
+
+```bash
+npm install -g ./scyne-cli-0.1.0.tgz                    # a tarball you hand over
+npm install -g https://…/releases/…/scyne-cli-0.1.0.tgz # a GitHub release asset
+npm install -g @scyne/cli                               # a registry, if you publish
+cp dist/cli/scyne.mjs ~/bin/scyne                       # no npm at all
+```
+
+Then `scyne login --api-url https://…` and they are working. Nothing else is
+installed — no engine, no PGlite, no workspace, no skills.
+
+**It detaches cleanly because it was never coupled.** Every command goes over
+HTTP to the same API the browser uses, and nothing in `cli/` has an npm
+dependency — only `node:` builtins and global `fetch`. So "ship the CLI" is
+bundling six files rather than extracting a subsystem, and the published
+package declares **zero** dependencies: `npm i -g` on a locked-down machine
+fetches nothing but the package.
+
+**The stage list comes from the server, not from the package.**
+`cli/stages.ts` reads `GET /config` — it used to `import … from
+"../scripts/pipeline.mjs"`, the one line that required a checkout. Cutting it
+is what makes the bundle standalone, but it is also the more correct answer:
+"what can I run" is a fact about the server being asked. A CLI carrying its own
+copy would answer for the version it was published at and **refuse a stage the
+server had gained since** — the failure you least want in a tool distributed
+separately from the engine it drives. Users do not have to upgrade in lockstep
+with the server.
+
+`level` is derived rather than declared: a workflow that interpolates
+`{feature}` runs per feature. `params` comes from the engine's own scan of each
+workflow's templates, so it cannot disagree with what the steps read — which is
+also how `scyne run revise-<stage> --instruction "…"` now works at all, and how
+a missing parameter is refused as a usage error instead of blocking mid-run on
+`unknown placeholder`.
+
+> **The build runs the artefact before packaging it.** Both failures it checks
+> for have already happened here: esbuild HOISTS the entry's own shebang, so a
+> `banner` adding a second one produced a package that installed perfectly and
+> then failed every invocation with `SyntaxError` on line 2; and a bundle that
+> is not `chmod +x` is not a command. Neither shows up until a user runs it, so
+> `scripts/build-cli.mjs` asserts one shebang, sets the mode, and executes
+> `scyne --help` — the one entirely offline command — before `npm pack` sees it.
+
 ### Watch what an agent is doing
 
 Open `http://127.0.0.1:3100/orch#runs` and click any run — the transcript
@@ -1498,6 +1591,13 @@ npm run orch -- log <runId> --raw   # the raw JSONL, byte for byte
   > **Writes the created ids back** into `stories.json`, so a re-run updates
   > rather than duplicating a client's backlog.
 - `scripts/extract-brand.mjs <url> <project>` — see *Brand the companion app*.
+- **`scripts/build-cli.mjs`** (`npm run build:cli` / `npm run pack:cli`) — bundles
+  `cli/` into `dist/cli/`: one readable, dependency-free `scyne.mjs` plus a
+  GENERATED `package.json`, because the repo's own root package is
+  `private: true` and carries the whole stack's scripts. Not minified on
+  purpose — it is a file people are asked to install from an email and run
+  against their own credentials. It executes `scyne --help` on the built
+  artefact before packaging. See *Ship the `scyne` CLI to a user with no clone*.
 - `scripts/convert-to-md.mjs <project> [<feature>]` — with a feature, converts that
   feature's `requirements/`; with none, the project's own `documents/`.
 - `scripts/audit-a11y.mjs <project>` — used by the **UX Auditor**. Runs

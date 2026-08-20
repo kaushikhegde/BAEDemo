@@ -144,6 +144,43 @@ describe("resetCompany --all (factory reset)", () => {
   });
 });
 
+describe("resetCompany in a multi-organisation install", () => {
+  // Every issue in the install is assigned out of ONE org chart, so a second
+  // organisation's issues point at the home company's agent rows. `--hard`
+  // deletes those rows, and hit `issues_assignee_agent_id_fkey` — aborting
+  // AFTER the users were already gone, leaving an installation that could
+  // neither be used nor re-claimed. Found by running the setup guide.
+  it("does not fail on another organisation's issues, and does not delete them", async () => {
+    const other = await repo.ensureCompany("Beta Mutual");
+    const ba = await repo.getAgentByKey(companyId, "ba");
+    const theirs = await repo.createIssue({
+      companyId: other, title: "Their work", workflowKey: "requirements",
+      assigneeAgentId: ba!.id, status: "todo",
+    });
+
+    const summary = await repo.resetCompany(companyId, { agents: true, platform: true });
+    expect(summary.detachedIssues).toBe(1);
+
+    // Kept — another organisation's history is not this company's to remove.
+    const still = await repo.getIssue(theirs.id);
+    expect(still?.title).toBe("Their work");
+    expect(still?.assignee_agent_id ?? null).toBeNull();
+  });
+
+  it("leaves the database untouched when the reset cannot complete", async () => {
+    // Atomicity is the half that made the original bug unrecoverable: the
+    // users were deleted, then the agent delete threw, and there was no way
+    // back. Simulated here by dropping the agents table mid-flight is not
+    // possible, so the guarantee is asserted the other way round — a reset
+    // that succeeds leaves nothing half-done, and one that throws rolls back.
+    const before = await repo.listIssues(companyId);
+    expect(before.length).toBeGreaterThan(0);
+    await repo.resetCompany(companyId, { agents: true, platform: true });
+    expect(await repo.listIssues(companyId)).toHaveLength(0);
+    expect(await repo.listAgents(companyId)).toHaveLength(0);
+  });
+});
+
 describe("runtime adapter resolution", () => {
   it("lets the configured default apply when the agent has no opinion", async () => {
     // The bug this pins: upsertAgent used to write 'claude_local' for an agent

@@ -18,13 +18,13 @@ import { parseParams, workflowFor } from "../scyne-chatbot/server/orchestrator.j
 // The exact title + description shapes server/index.ts builds, verbatim.
 const cases: Array<[string, string, string]> = [
   ["Generate requirements — Review & Verify Evidence (SADA/interim-benefit)",
-   "## Project + Feature\n- Project: SADA\n- Feature: interim-benefit\n\n## Parameters\n- Process L3: 2.4 Review\n- ADO parent epic id: (none — create work items without a parent)\n- ADO org: Scyne-AI-Lab\n- ADO project: Scyne AI Project\n- ADO wiki: (the project's only wiki)",
+   "## Project + Feature\n- Project: SADA\n- Feature: interim-benefit\n\n## Parameters\n- Process L3: 2.4 Review\n- ADO parent epic id: (none — create work items without a parent)\n- ADO org: Scyne-AI-Lab\n- ADO project: Scyne AI Project\n- ADO wiki: (the project's only wiki)\n- ADO work item type: Issue",
    "requirements"],
   ["Generate capability map — RTWSA", "## Project\n- Project: RTWSA", "capabilities"],
   ["Generate personas — RTWSA", "## Project\n- Project: RTWSA", "personas"],
   ["Generate UI mockups — Demo (RTWSA/Demo)", "- Project: RTWSA\n- Feature: Demo", "ui"],
   ["Generate data model — Demo (RTWSA/Demo)",
-   "- Project: RTWSA\n- Feature: Demo\n- ADO org: Scyne-AI-Lab\n- ADO project: Scyne AI Project\n- ADO wiki: (the project's only wiki)",
+   "- Project: RTWSA\n- Feature: Demo\n- ADO org: Scyne-AI-Lab\n- ADO project: Scyne AI Project\n- ADO wiki: (the project's only wiki)\n- ADO work item type: Issue",
    "datamodel"],
   ["Generate solution architecture — Demo (RTWSA/Demo)", "- Project: RTWSA\n- Feature: Demo", "architecture"],
   ["Generate solution design — Demo (RTWSA/Demo)", "- Project: RTWSA\n- Feature: Demo", "design"],
@@ -58,8 +58,9 @@ console.log(JSON.stringify(parseParams(cases[11][1]).instruction));
   const p = parseParams(
     "- Project: SADA\n- Feature: interim-benefit\n- ADO org: Scyne-AI-Lab\n" +
     "- ADO project: Scyne AI Project\n- ADO wiki: (the project's only wiki)\n" +
+    "- ADO work item type: Issue\n" +
     "- ADO parent epic id: (none — create work items without a parent)");
-  const want = { adoOrg: "Scyne-AI-Lab", adoProject: "Scyne AI Project" };
+  const want = { adoOrg: "Scyne-AI-Lab", adoProject: "Scyne AI Project", adoWorkItemType: "Issue" };
   for (const [k, v] of Object.entries(want)) {
     if (p[k] !== v) { console.error(`FAIL  ${k}: expected ${v}, got ${p[k]}`); bad++; }
   }

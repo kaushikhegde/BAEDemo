@@ -501,6 +501,7 @@ export function createRepo(db: Db) {
     async resetCompany(
       companyId: string, opts: { agents?: boolean; platform?: boolean } = {},
     ): Promise<{ issues: number; runs: number; budgets: number; agents: number;
+                 detachedIssues: number;
                  users: number; projects: number; documents: number; installations: number }> {
       const count = async (table: string, col: string): Promise<number> => {
         const { rows } = await db.query<{ n: string }>(
@@ -519,39 +520,74 @@ export function createRepo(db: Db) {
         `select count(*) as n from documents d join projects p on p.id = d.project_id
           where p.company_id=$1`, [companyId]);
 
+      // Issues in OTHER companies that point at THIS company's agents.
+      //
+      // The org chart is reconciled into one company, but every issue in the
+      // install is assigned out of it — so `--hard`, which deletes the agents
+      // and immediately re-seeds them, hits
+      // `issues_assignee_agent_id_fkey` as soon as a second organisation
+      // exists. Measured: the reset aborted half-applied, having already
+      // deleted the superadmin, leaving an installation that could neither be
+      // used nor re-claimed.
+      //
+      // The pointers are cleared rather than the issues deleted: another
+      // organisation's history is not this company's to remove. They are
+      // dangling either way — the re-seeded agents get new ids — so what is
+      // lost is a name the console already resolves through the workflow.
+      const { rows: orphanRows } = await db.query<{ n: string }>(
+        `select count(*) as n from issues
+          where company_id <> $1
+            and assignee_agent_id in (select id from agents where company_id=$1)`,
+        [companyId]);
+
       const summary = {
         issues: await count("issues", "company_id"),
         runs: Number(runRows[0]?.n ?? 0),
         budgets: await count("budgets", "company_id"),
         agents: 0,
+        detachedIssues: opts.agents ? Number(orphanRows[0]?.n ?? 0) : 0,
         users: opts.platform ? await count("users", "company_id") : 0,
         projects: opts.platform ? await count("projects", "company_id") : 0,
         documents: opts.platform ? Number(docRows[0]?.n ?? 0) : 0,
         installations: opts.platform ? await count("installations", "company_id") : 0,
       };
 
-      await db.query(`delete from issues where company_id=$1`, [companyId]);
-      await db.query(`delete from budgets where company_id=$1`, [companyId]);
+      // One transaction. A reset that fails half way is worse than one that
+      // refuses: the aborted run above had already removed the only account
+      // that could sign in, and no part of it could be retried or undone.
+      await db.query(`begin`);
+      try {
+        await db.query(`delete from issues where company_id=$1`, [companyId]);
+        await db.query(`delete from budgets where company_id=$1`, [companyId]);
 
-      if (opts.platform) {
-        // Order follows the foreign keys. Projects cascade into features,
-        // documents, members and their actions; users cascade into tokens and
-        // sessions. What is left over is deleted explicitly rather than left
-        // to chance.
-        await db.query(`delete from projects where company_id=$1`, [companyId]);
-        await db.query(`delete from conversations where company_id=$1`, [companyId]);
-        await db.query(`delete from installations where company_id=$1`, [companyId]);
-        await db.query(`delete from actions where company_id=$1`, [companyId]);
-        await db.query(`delete from users where company_id=$1`, [companyId]);
-        // Blobs are shared content addressed by hash and belong to no company,
-        // so they are removed only once nothing references them at all.
-        await db.query(`delete from blobs b where not exists
-          (select 1 from documents d where d.sha256 = b.sha256)`);
-      }
+        if (opts.platform) {
+          // Order follows the foreign keys. Projects cascade into features,
+          // documents, members and their actions; users cascade into tokens and
+          // sessions. What is left over is deleted explicitly rather than left
+          // to chance.
+          await db.query(`delete from projects where company_id=$1`, [companyId]);
+          await db.query(`delete from conversations where company_id=$1`, [companyId]);
+          await db.query(`delete from installations where company_id=$1`, [companyId]);
+          await db.query(`delete from actions where company_id=$1`, [companyId]);
+          await db.query(`delete from users where company_id=$1`, [companyId]);
+          // Blobs are shared content addressed by hash and belong to no company,
+          // so they are removed only once nothing references them at all.
+          await db.query(`delete from blobs b where not exists
+            (select 1 from documents d where d.sha256 = b.sha256)`);
+        }
 
-      if (opts.agents) {
-        summary.agents = await count("agents", "company_id");
-        await db.query(`delete from agents where company_id=$1`, [companyId]);
+        if (opts.agents) {
+          summary.agents = await count("agents", "company_id");
+          await db.query(
+            `update issues set assignee_agent_id = null
+              where assignee_agent_id in (select id from agents where company_id=$1)`,
+            [companyId]);
+          await db.query(`delete from agents where company_id=$1`, [companyId]);
+        }
+        await db.query(`commit`);
+      } catch (err) {
+        await db.query(`rollback`).catch(() => { /* the failure below is the one worth reporting */ });
+        throw err;
       }
       return summary;
     },

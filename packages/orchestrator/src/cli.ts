@@ -244,6 +244,22 @@ async function main(): Promise<void> {
               `    the org from orchestrator.config.ts, discarding console edits`
             : `  keeping ${agents.length} agent(s) and .orchestrator/overrides.json`);
 
+          if (hard) {
+            // Named in the plan because it touches data outside the company
+            // being reset. The agents are re-seeded with new ids, so the
+            // pointer is dangling either way — but a person should be told.
+            const { rows } = await orch.db.query<{ n: string }>(
+              `select count(*)::text n from issues
+                where company_id <> $1
+                  and assignee_agent_id in (select id from agents where company_id=$1)`,
+              [orch.homeCompanyId]);
+            const n = Number(rows[0]?.n ?? 0);
+            if (n) {
+              console.log(`  ${n} issue(s) in OTHER organisations lose their agent pointer\n` +
+                          `    (kept, not deleted — the org chart is rebuilt with new ids)`);
+            }
+          }
+
           if (all) {
             const n = async (sql: string): Promise<string> =>
               (await orch.db.query<{ n: string }>(sql, [orch.homeCompanyId])).rows[0]?.n ?? "0";
@@ -260,6 +276,19 @@ async function main(): Promise<void> {
               `  ${await n(`select count(*)::text n from installations where company_id=$1`)} plugin installation(s), ` +
               `and every saved chat`);
             console.log(`\n  After this the installation is UNCLAIMED — run \`scyne init\` to set it up again.`);
+
+            // Scoped to ONE company, which is easy to miss when the message
+            // above says "the installation". Another organisation's projects
+            // and people survive a `--all`, so anyone expecting a blank
+            // database needs to be told what will still be in it.
+            const { rows: others } = await orch.db.query<{ name: string; slug: string }>(
+              `select name, slug from companies where id <> $1 order by name`, [orch.homeCompanyId]);
+            if (others.length) {
+              console.log(`\n  NOT touched — this resets one organisation, not the database:`);
+              for (const o of others) console.log(`    ${o.name} (${o.slug})`);
+              console.log(`    Remove those with \`scyne org archive <slug>\`, or delete`);
+              console.log(`    .orchestrator/pgdata for a genuinely empty database.`);
+            }
           } else {
             console.log(`  keeping every user, project and stored document (add --all to remove those too)`);
           }
@@ -286,6 +315,9 @@ async function main(): Promise<void> {
         console.log(`✓ deleted ${summary.issues} issue(s), ${summary.runs} run(s), ` +
                     `${summary.budgets} budget(s), ${logs.length} log file(s)`);
         if (hard) console.log(`✓ dropped the overrides overlay and rebuilt the org from the config file`);
+        if (summary.detachedIssues) {
+          console.log(`✓ detached ${summary.detachedIssues} issue(s) in other organisations from the old agent rows`);
+        }
         console.log(`✓ ${now.length} agent(s) present`);
         console.log(`  Skills are untouched — they are files under ` +
                     `${orch.config.skillsDir ?? "(no skillsDir configured)"}, not rows.`);

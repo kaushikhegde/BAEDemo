@@ -60,6 +60,7 @@ export async function loadAdo(overrides = {}) {
 
   return {
     org, project, pat,
+    workItemType: overrides.workItemType || env.ADO_WORK_ITEM_TYPE || null,
     auth: "Basic " + Buffer.from(`:${pat}`).toString("base64"),
   };
 }

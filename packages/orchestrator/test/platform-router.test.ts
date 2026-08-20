@@ -637,6 +637,73 @@ describe("the model price catalogue", () => {
     expect((await call("DELETE", "/models/refresh", { token })).status).toBe(200);
     expect((await call("GET", "/models/refresh", { token })).body).toBeNull();
   });
+
+  // A refresh submitted in the camelCase the rest of this API uses for writes
+  // was accepted with 200, diffed as "changes nothing", and applied as a no-op
+  // that answered `applied: 1`. Found by hand while walking the setup guide:
+  // the whole price-refresh flow was inert unless you happened to spell the
+  // fields the way the table does.
+  it("reads a refresh written in camelCase, not only snake_case", async () => {
+    const token = await bootstrap();
+    const res = await call("POST", "/models/refresh", {
+      token, body: { source: "pasted by hand", rows: [
+        { provider: "openai", model: "gpt-5.6-terra", inputPerMTok: 2.5, outputPerMTok: 14 },
+      ] },
+    });
+    expect(res.status).toBe(200);
+    // It changes two fields, and says so.
+    expect(res.body.diff).toHaveLength(2);
+
+    expect((await call("POST", "/models/refresh/apply", { token })).body.applied).toBe(1);
+    const after = (await call("GET", "/models", { token }))
+      .body.find((m: any) => m.model === "gpt-5.6-terra");
+    expect(Number(after.input_per_mtok)).toBe(2.5);
+    expect(Number(after.output_per_mtok)).toBe(14);
+  });
+
+  it("applies the sanity ceiling whichever way the rate is spelled", async () => {
+    const token = await bootstrap();
+    // The ceiling is what stands between a hallucinated rate and every cost
+    // budget in the install; it was reading a key camelCase rows never carry.
+    const res = await call("POST", "/models/refresh", {
+      token, body: { rows: [{ model: "gpt-5", inputPerMTok: 15_000 }] },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_rows");
+  });
+
+  it("refuses a row that names no price at all", async () => {
+    const token = await bootstrap();
+    // Otherwise a misspelled field is a proposal that reports "it changes
+    // nothing" and then applies successfully, having changed nothing.
+    const res = await call("POST", "/models/refresh", {
+      token, body: { rows: [{ model: "gpt-5", inputRate: 3 }] },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.problems.join(" ")).toContain("states no price");
+  });
+
+  it("keeps the cached rate when a hand correction does not mention it", async () => {
+    const token = await bootstrap();
+    const before = (await call("GET", "/models", { token }))
+      .body.find((m: any) => m.model === "gpt-5.6-terra");
+    expect(Number(before.cached_input_per_mtok)).toBeGreaterThan(0);
+
+    // `scyne models set gpt-5.6-terra --input 2 --output 12` — no --cached.
+    // This used to clear it, and since most of a long agent run's input is
+    // cached, that silently raised the recorded cost of every run afterwards.
+    const res = await call("PUT", "/models/openai/gpt-5.6-terra", {
+      token, body: { inputPerMTok: 2, outputPerMTok: 12 },
+    });
+    expect(res.status).toBe(200);
+    expect(Number(res.body.cached_input_per_mtok)).toBe(Number(before.cached_input_per_mtok));
+
+    // An EXPLICIT null still clears it — absent and null are different facts.
+    const cleared = await call("PUT", "/models/openai/gpt-5.6-terra", {
+      token, body: { cachedInputPerMTok: null },
+    });
+    expect(cleared.body.cached_input_per_mtok).toBeNull();
+  });
 });
 
 describe("the audit trail records organisation management where it can be seen", () => {

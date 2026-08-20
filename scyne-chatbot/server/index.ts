@@ -158,6 +158,10 @@ app.post("/api/trigger", async (req, res) => {
       ado_org: overrides.ado_org || process.env.ADO_ORG,
       ado_project: overrides.ado_project || process.env.ADO_PROJECT,
       ado_wiki: overrides.ado_wiki || process.env.ADO_WIKI || "",
+      // `Issue` is the Basic template's unit of deliverable work, which is
+      // what the current target runs. `npm run ado:verify` prints the types a
+      // project actually has.
+      ado_work_item_type: overrides.ado_work_item_type || process.env.ADO_WORK_ITEM_TYPE || "Issue",
     };
     const ws = WORKSPACE_PATH;
 
@@ -217,6 +221,7 @@ app.post("/api/trigger", async (req, res) => {
       `- ADO org: ${params.ado_org}`,
       `- ADO project: ${params.ado_project}`,
       `- ADO wiki: ${params.ado_wiki || "(the project's only wiki)"}`,
+      `- ADO work item type: ${params.ado_work_item_type}`,
       ``,
       `## Inputs`,
       `Read every file in every subfolder of:`,
@@ -900,8 +905,10 @@ app.post("/api/approve/:approvalId", async (req, res) => {
         const wikiRaw = grab("ADO wiki");
         const wiki = wikiRaw.startsWith("(") ? "" : wikiRaw;
         if (org && project) {
+          const typeRaw = grab("ADO work item type");
           const result = await verifyAdoTarget({
             org, project, wiki: wiki || undefined,
+            workItemType: typeRaw && !typeRaw.startsWith("(") ? typeRaw : undefined,
             // Only the requirements flow pushes work items; the rest publish a
             // page only, and failing them on a work-item scope they never use
             // would block an approval for no reason.

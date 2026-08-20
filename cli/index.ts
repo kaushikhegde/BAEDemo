@@ -3,12 +3,14 @@
 //
 // It lives at the repository root rather than inside packages/orchestrator
 // because it is a CONSUMER of that library: it knows what a project, a feature
-// and a stage are, and it reads scripts/pipeline.mjs to find out. The library
-// deliberately knows none of that, and importing a consumer's files into it
-// would end that separation (see CLAUDE.md).
+// and a stage are. The library deliberately knows none of that, and importing
+// a consumer's files into it would end that separation (see CLAUDE.md).
 //
 // Every command goes over HTTP to the same API the browser uses, so parity is
-// structural rather than maintained by hand.
+// structural rather than maintained by hand. That is also what lets this ship
+// as a standalone package: nothing here imports from the repository and
+// nothing here has an npm dependency, so `scripts/build-cli.mjs` can bundle
+// cli/ alone into one file a user installs without a clone.
 
 import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -17,8 +19,7 @@ import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts
 import {
   createProject, createFeature, uploadDocument, chatUrl, CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
-// @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
-import * as pipeline from "../scripts/pipeline.mjs";
+import { fetchStages, callerParams, type Stage } from "./stages.ts";
 
 const argv = process.argv.slice(2);
 
@@ -139,8 +140,6 @@ async function prompt(question: string, opts: { silent?: boolean } = {}): Promis
     rl.close();
   }
 }
-
-const STAGES = pipeline.STAGES as Record<string, { label: string; level: string; skill?: string }>;
 
 // ----------------------------------------------------------------- commands
 
@@ -625,28 +624,56 @@ async function cmdRun(client: Client, args: string[]): Promise<void> {
   if (stage === "pause" || stage === "cancel" || stage === "resume") {
     return cmdRunControl(client, stage, args.slice(1));
   }
-  if (!stage || !STAGES[stage]) {
+  // Asked of the server rather than read from a bundled copy — see stages.ts.
+  const stages = await fetchStages(client);
+  const def: Stage | undefined = stage ? stages[stage] : undefined;
+  if (!def) {
+    if (stage) out(`no stage '${stage}' on this server.`);
     out(`usage: scyne run <stage> [--project <p>] [--feature <f>]`);
     out(``); out(`Stages:`);
-    return table(Object.entries(STAGES).map(([k, s]) => ({ stage: k, level: s.level, produces: s.label })),
+    // Variants are the same stage in another mode, so listing all eighteen
+    // would bury the ten a caller picks from. They are still runnable, and the
+    // line below says so rather than leaving them undiscoverable.
+    table(Object.values(stages).filter(s => !s.variantOf)
+      .map(s => ({ stage: s.key, level: s.level, produces: s.label })),
       ["stage", "level", "produces"]);
+    out(``);
+    out(`  revise an artefact: scyne run revise-<stage> --instruction "…"`);
+    return;
   }
   const projectName = targetProject(client, flag("project"));
   const feature = flag("feature") ?? load().feature;
-  if (STAGES[stage].level === "feature" && !feature) {
+  if (def.level === "feature" && !feature) {
     throw new ApiError(400, `stage '${stage}' runs per feature. Pass --feature or \`scyne use <p> <f>\`.`);
   }
+
+  // Everything else the workflow interpolates, taken from `--name value`.
+  // Passing them through BY NAME rather than from a hard-coded list is what
+  // lets a stage that starts reading a new variable work with no CLI change —
+  // and is how `revise-*` receives its `--instruction`.
+  //
+  // Missing ones are refused here because the engine's own rule is that every
+  // placeholder must resolve: `interpolate` throws `unknown placeholder`, and
+  // it does so mid-run, after the issue exists. Refusing upfront turns that
+  // into a usage error, which is what it is.
+  const needed = callerParams(def);
+  const missing = needed.filter(name => flag(name) === undefined);
+  if (missing.length) {
+    throw new ApiError(400,
+      `stage '${stage}' needs ${missing.map(n => `--${n} <value>`).join(", ")}`);
+  }
+  const extra: Record<string, string> = {};
+  for (const name of needed) extra[name] = flag(name)!;
 
   const issue = await client.post<{ id: string; identifier: string }>("/issues", {
     workflow: stage,
     params: {
       project: projectName,
-      ...(STAGES[stage].level === "feature" ? { feature } : {}),
-      ...(flag("confluenceSpace") ? { confluenceSpace: flag("confluenceSpace") } : {}),
-      ...(flag("jiraProjectKey") ? { jiraProjectKey: flag("jiraProjectKey") } : {}),
+      ...(def.level === "feature" ? { feature } : {}),
+      ...extra,
     },
   });
-  out(`✓ started ${STAGES[stage].label} — ${issue.identifier}`);
+  out(`✓ started ${def.label} — ${issue.identifier}`);
   out(`  watch:   scyne status ${issue.identifier}`);
   out(`  approve: scyne gate list`);
 }
@@ -1077,6 +1104,7 @@ scyne — the Scyne pipeline, from the command line
   Setup
     init [--api URL]                 claim a new installation as its first administrator
     login [--api URL]                authenticate and store a CLI token
+    logout                           discard it
     whoami                           who you are, and what is currently pinned
     use <project> [feature]          pin what later commands act on
 
