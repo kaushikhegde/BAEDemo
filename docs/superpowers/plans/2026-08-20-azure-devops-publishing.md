@@ -12,7 +12,11 @@
 
 ## Global Constraints
 
-- **Never run `git commit`.** The user commits their own work. Every task ends at a review checkpoint instead.
+- **Commit inside this worktree, on branch `sdd/2026-08-20-codex-ado-admin`, and nowhere else.**
+  The user commits their own work on their own branch — `feat-paperclip` is never
+  touched. This branch exists so the review machinery (which is entirely
+  `git diff BASE HEAD`) has something to read; the user chooses at the end what,
+  if anything, is integrated.
 - Australian English in all generated content and user-facing strings.
 - **Auth:** HTTP Basic, username empty, password = PAT. `Authorization: Basic ` + `base64(":" + PAT)`. PAT read from `ADO_PAT`, falling back to `MCP_TOKEN_FOR_AZURE`, from the environment or the root `.env` — the same pattern `scripts/lib/atlassian.mjs` uses.
 - **API version is `7.1` on every call.** Omitting it makes ADO answer with an HTML sign-in page rather than JSON, which reads as a parse error rather than an auth error.

@@ -12,7 +12,11 @@
 
 ## Global Constraints
 
-- **Never run `git commit`.** The user commits their own work. Every task ends at a review checkpoint instead.
+- **Commit inside this worktree, on branch `sdd/2026-08-20-codex-ado-admin`, and nowhere else.**
+  The user commits their own work on their own branch — `feat-paperclip` is never
+  touched. This branch exists so the review machinery (which is entirely
+  `git diff BASE HEAD`) has something to read; the user chooses at the end what,
+  if anything, is integrated.
 - Nothing under `packages/orchestrator/` may import `scripts/pipeline.mjs`, `orchestrator.config.ts`, or anything under `projects/`. The library stays generic; consumer knowledge lives in `orchestrator.config.ts`.
 - Australian English in all user-facing strings ("behaviour", "authorise", "organisation").
 - Tests: `npm test` from the repo root (runs `vitest run` in `packages/orchestrator`). Type check: `npm run typecheck`.
@@ -65,7 +69,7 @@ Add to `packages/orchestrator/test/repo.test.ts`:
 ```ts
 it("records the adapter a run used", async () => {
   const issue = await repo.createIssue({
-    companyId, identifier: "SCY-900", title: "adapter round-trip", workflowKey: "requirements",
+    companyId, title: "adapter round-trip", workflowKey: "requirements",
   });
   const run = await repo.startRun({
     issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",
@@ -79,7 +83,7 @@ it("records the adapter a run used", async () => {
 
 it("leaves the adapter null when the caller does not supply one", async () => {
   const issue = await repo.createIssue({
-    companyId, identifier: "SCY-901", title: "no adapter", workflowKey: "requirements",
+    companyId, title: "no adapter", workflowKey: "requirements",
   });
   const run = await repo.startRun({
     issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate", logPath: "/tmp/y.jsonl",
@@ -171,7 +175,7 @@ it("groups spend by the adapter the run used, not the agent's pin", async () => 
   // every agent since migration 003, so grouping on it collapses both to one
   // null row — the bug this fixes.
   const issue = await repo.createIssue({
-    companyId, identifier: "SCY-910", title: "mixed adapters", workflowKey: "datamodel",
+    companyId, title: "mixed adapters", workflowKey: "datamodel",
   });
   for (const [adapter, cost] of [["claude_local", 1.5], ["codex", 0]] as const) {
     const run = await repo.startRun({
@@ -1044,7 +1048,7 @@ it("says how many runs reported no cost instead of summing them as zero", async 
   // A workflow that completed entirely on an adapter that does not price runs
   // must not close with a bare run count that reads as free.
   const issue = await repo.createIssue({
-    companyId, identifier: "SCY-920", title: "unpriced", workflowKey: "datamodel",
+    companyId, title: "unpriced", workflowKey: "datamodel",
   });
   const run = await repo.startRun({
     issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",

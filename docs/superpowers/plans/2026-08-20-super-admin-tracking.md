@@ -12,7 +12,11 @@
 
 ## Global Constraints
 
-- **Never run `git commit`.** The user commits their own work. Every task ends at a review checkpoint instead.
+- **Commit inside this worktree, on branch `sdd/2026-08-20-codex-ado-admin`, and nowhere else.**
+  The user commits their own work on their own branch — `feat-paperclip` is never
+  touched. This branch exists so the review machinery (which is entirely
+  `git diff BASE HEAD`) has something to read; the user chooses at the end what,
+  if anything, is integrated.
 - **Correction to the spec:** the spec says "session cookie". The auth layer is bearer-only — `bearerFrom()` reads `Authorization: Bearer` and `X-Scyne-Token`, never a cookie. `POST /auth/login` already returns a session token, so the console stores that and sends it as a bearer header. No cookie support is added, and no CSRF surface is created.
 - The spec's "migration 004" is split so each plan stands alone: the Codex plan owns `004_run_adapter.sql`, this plan owns `005_issue_attribution.sql`.
 - `openapi.yaml` is diffed against `ROUTES` **in both directions** by `test/openapi.test.ts`. Any route added or given a new query parameter means editing both.
@@ -67,13 +71,13 @@ it("records who created an issue, and leaves it null when nobody is known", asyn
   const user = await platform.createUser({ companyId, email: "ops@scyne.test", role: "admin" });
 
   const attributed = await repo.createIssue({
-    companyId, identifier: "SCY-930", title: "attributed",
+    companyId, title: "attributed",
     workflowKey: "datamodel", createdBy: user.id,
   });
   expect(attributed.created_by).toBe(user.id);
 
   const anonymous = await repo.createIssue({
-    companyId, identifier: "SCY-931", title: "anonymous", workflowKey: "datamodel",
+    companyId, title: "anonymous", workflowKey: "datamodel",
   });
   expect(anonymous.created_by).toBeNull();
 });
