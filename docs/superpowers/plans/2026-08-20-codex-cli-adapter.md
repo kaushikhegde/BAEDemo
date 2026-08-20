@@ -973,10 +973,14 @@ describe("filterRunLog on a codex transcript", () => {
     .map(l => JSON.stringify({ ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: l + "\n" }))
     .join("\n") + "\n";
 
-  it("produces assistant events rather than an empty transcript", () => {
+  it("produces framing events for its error content, rather than an empty transcript", () => {
+    // NOT `assistant`: this fixture is an error-only capture with zero
+    // agent_message items, so correctly-classified error lines are `framing`.
+    // Asserting `assistant` here would only pass if error text were being
+    // mislabelled as agent prose — which it was, until the fix.
     const { events } = filterRunLog(envelope, "codex");
     expect(events.length).toBeGreaterThan(0);
-    expect(events.some(e => e.kind === "assistant")).toBe(true);
+    expect(events.some(e => e.kind === "framing")).toBe(true);
   });
 
   it("keeps the Claude decoder as the default for callers that pass nothing", () => {
@@ -1044,32 +1048,50 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
   const kind = obj.type ?? obj.msg?.type ?? "";
   const body = obj.item ?? obj.msg ?? obj;
 
-  // Assistant prose, wherever this version puts it.
-  const text = body.text ?? body.message ?? body.delta ?? body.last_agent_message;
-  if (typeof text === "string" && text.trim() && !/token|usage/i.test(kind)) {
-    events.push({ ts, kind: "assistant", text: scrub(summarise(text, 600)) });
-    return;
-  }
+  // Errors and failures are checked FIRST, ahead of prose extraction below.
+  // Two reasons this has to come first rather than fall out of the generic
+  // checks further down:
+  //  - `turn.failed` is the one event that says WHY a run died. It would
+  //    otherwise be caught by the lifecycle-noise regex below (it matches
+  //    `^turn[._]`) and dropped silently whenever it carries no top-level
+  //    text/message/delta — the exact "nothing happened" failure mode this
+  //    decoder exists to prevent. It is deliberately NOT lifecycle noise.
+  //  - an error line's `message` field would otherwise be read as assistant
+  //    prose by the text-extraction branch below, mislabelling error text as
+  //    something the agent said to a UI that styles the two kinds differently.
+  // If no message can be found anywhere this looks, DO NOT return — fall
+  // through to the generic dump at the bottom so the event still appears
+  // rather than being silently lost.
+  if (kind === "error" || kind === "turn.failed" || body?.type === "error") {
+    const errMessage = obj.error?.message ?? (typeof obj.error === "string" ? obj.error : undefined);
+    const m = scrub(summarise(String(obj.message ?? errMessage ?? body?.message ?? ""), 300));
+    if (m) {
+      events.push({ ts, kind: "framing", text: m });
+      return;
+    }
+    // else fall through — no message found anywhere; try the generic dump below.
+  } else {
+    // Assistant prose, wherever this version puts it.
+    const text = body.text ?? body.message ?? body.delta ?? body.last_agent_message;
+    if (typeof text === "string" && text.trim() && !/token|usage/i.test(kind)) {
+      events.push({ ts, kind: "assistant", text: scrub(summarise(text, 600)) });
+      return;
+    }
 
-  // Shell commands Codex ran. `run_command` is this repo's own tool vocabulary
-  // in tools.ts, so the transcript reads the same across adapters.
-  const command = body.command ?? body.cmd;
-  if (command) {
-    const shown = Array.isArray(command) ? command.join(" ") : String(command);
-    events.push({ ts, kind: "tool_use", tool: "run_command", preview: scrub(summarise(shown)) });
-    return;
-  }
-
-  // An error is worth showing — a failed run whose transcript is blank tells an
-  // operator nothing about why.
-  if (kind === "error" || body?.type === "error") {
-    const m = scrub(summarise(String(obj.message ?? body?.message ?? ""), 300));
-    if (m) events.push({ ts, kind: "framing", text: m });
-    return;
+    // Shell commands Codex ran. `run_command` is this repo's own tool vocabulary
+    // in tools.ts, so the transcript reads the same across adapters.
+    const command = body.command ?? body.cmd;
+    if (command) {
+      const shown = Array.isArray(command) ? command.join(" ") : String(command);
+      events.push({ ts, kind: "tool_use", tool: "run_command", preview: scrub(summarise(shown)) });
+      return;
+    }
   }
 
   if (/token_count|usage|turn\.completed/i.test(kind)) return;   // usage.ts owns these
-  if (/^(session|thread|turn)[._]/i.test(kind)) return;           // lifecycle noise
+  // Lifecycle noise — `turn.failed` is excluded: it is handled (with a
+  // generic-dump fallback) by the error branch above, never here.
+  if (kind !== "turn.failed" && /^(session|thread|turn)[._]/i.test(kind)) return;
 
   // Unrecognised: show it rather than lose it.
   const dump = scrub(summarise(JSON.stringify(obj), 240));
