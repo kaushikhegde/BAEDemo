@@ -75,10 +75,16 @@ describe("filterRunLog on a codex transcript", () => {
     .map(l => JSON.stringify({ ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: l + "\n" }))
     .join("\n") + "\n";
 
-  it("produces assistant events rather than an empty transcript", () => {
+  it("produces framing events for its error content, rather than an empty transcript", () => {
+    // Fix round 1: every line in this fixture is an error/reconnect attempt (see
+    // the fixture's own header comment) — before the fix for finding (b) below,
+    // the text-extraction branch ran before the error check, so this line's
+    // `message` field was misread as assistant prose. Correctly classified, this
+    // fixture has no genuine agent prose to assert on; `framing` is what a
+    // corrected decoder actually produces for it.
     const { events } = filterRunLog(envelope, "codex");
     expect(events.length).toBeGreaterThan(0);
-    expect(events.some(e => e.kind === "assistant")).toBe(true);
+    expect(events.some(e => e.kind === "framing")).toBe(true);
   });
 
   it("keeps the Claude decoder as the default for callers that pass nothing", () => {
@@ -115,5 +121,31 @@ describe("filterRunLog on a codex transcript", () => {
     }) + "\n";
     const { events } = filterRunLog(odd, "codex");
     expect(events.some(e => "text" in e && e.text.includes("brand new thing"))).toBe(true);
+  });
+
+  it("renders a bare turn.failed rather than dropping it as lifecycle noise", () => {
+    // turn.failed is the one event that says WHY a run died. The lifecycle-noise
+    // regex (/^(session|thread|turn)[._]/i) also matches it, which previously
+    // swallowed it silently whenever it carried no top-level text/message/delta —
+    // exactly the "nothing happened" failure mode this decoder exists to avoid.
+    const failed = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({ type: "turn.failed", error: { message: "model call failed" } }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(failed, "codex");
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("renders an error line as framing, not assistant", () => {
+    // The text-extraction branch used to run before the explicit error check, so
+    // every Codex error line carrying a `message` was tagged kind: "assistant" —
+    // a UI that styles the two differently would show error text as agent prose.
+    const err = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({ type: "error", message: "Reconnecting... 1/5" }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(err, "codex");
+    expect(events).toContainEqual(expect.objectContaining({ kind: "framing" }));
+    expect(events.some(e => e.kind === "assistant")).toBe(false);
   });
 });
