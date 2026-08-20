@@ -497,6 +497,17 @@ describe("buildCodexArgs", () => {
     expect(joined).toContain('mcp_servers.ado.args=["-y","@azure-devops/mcp","scyne"]');
   });
 
+  it("encodes an MCP server's env as a TOML inline table, not a JSON object", () => {
+    // JSON.stringify is valid TOML for the args array and NOT for this map:
+    // `{"ADO_PAT":"x"}` is JSON object syntax, TOML wants `{ ADO_PAT = "x" }`.
+    // Codex uses a `-c` value that fails to parse as a raw string, so getting
+    // this wrong loses every credential in the map silently.
+    const servers = { ado: { command: "npx", env: { ADO_PAT: "x" } } };
+    const joined = buildCodexArgs({ ...base, agent: { key: "ba", mcpEnabled: true } }, servers).join(" ");
+    expect(joined).toContain('mcp_servers.ado.env={ ADO_PAT = "x" }');
+    expect(joined).not.toContain('"ADO_PAT":"x"');
+  });
+
   it("appends the agent's extraArgs last so an operator can override anything", () => {
     const a = buildCodexArgs({ ...base, agent: { key: "ba", extraArgs: ["--add-dir", "/extra"] } }, {});
     expect(a.slice(-2)).toEqual(["--add-dir", "/extra"]);
@@ -534,12 +545,30 @@ import type { RunRequest, RunResult, Runner } from "./runner.js";
 export interface McpServer { command: string; args?: string[]; env?: Record<string, string> }
 
 /**
- * Codex parses a `-c key=value` value as TOML, falling back to a raw string.
- * A bare `npx` parses as a TOML error and lands as the literal string, which
- * happens to be right — but an args ARRAY only works if it is real TOML. So
- * everything is emitted as explicit TOML: strings quoted, arrays bracketed.
+ * Codex parses a `-c key=value` value as TOML, falling back to a raw string
+ * when it fails to parse. This only ever has to encode three shapes for this
+ * file's call sites — a string, an array of strings, and a flat
+ * string-to-string map — so it is a small dispatcher, not a general TOML
+ * serialiser, and should not grow into one.
+ *
+ * `JSON.stringify` is correct for the first two: TOML and JSON agree on
+ * quoted-string and bracketed-array syntax, so `"npx"` and
+ * `["-y","@azure-devops/mcp","scyne"]` are valid TOML as well as valid JSON.
+ * It is NOT correct for the third. TOML's inline-table syntax is
+ * `{ key = "value" }` — braces, but `=` rather than `:` — so
+ * `JSON.stringify({ADO_PAT:"x"})` produces `{"ADO_PAT":"x"}`, which is JSON
+ * object syntax and fails to parse as TOML. A value that fails to parse falls
+ * back to being used as a raw string, so an `env` map encoded this way
+ * silently loses every credential in it rather than erroring loudly. The
+ * VALUES inside the table are still run through JSON.stringify so their
+ * quoting and escaping stay correct — only the separator and the surrounding
+ * punctuation change.
  */
-const toml = (v: unknown): string => JSON.stringify(v);
+const toml = (v: string | string[] | Record<string, string>): string => {
+  if (typeof v === "string" || Array.isArray(v)) return JSON.stringify(v);
+  const entries = Object.entries(v).map(([k, val]) => `${k} = ${JSON.stringify(val)}`);
+  return `{ ${entries.join(", ")} }`;
+};
 
 export function buildCodexArgs(req: RunRequest, mcpServers: Record<string, McpServer>): string[] {
   const a = [
@@ -613,19 +642,44 @@ The event vocabulary is **not** taken from documentation. `usage.ts`'s existing 
 - Consumes: `RunUsage` from `core/usage.js`.
 - Produces: `export function extractCodexUsage(jsonlLines: string): RunUsage | null`.
 
-- [ ] **Step 1: Capture the fixture (operator step)**
+- [ ] **Step 1: The fixture, and what is real about it**
 
-This needs `codex login` to have been run on the host. From the repo root:
+`codex` 0.148.0 is installed, but `codex login` has not been run on this host, so an
+authenticated capture is not available yet. A capture was taken anyway, against the
+unauthenticated CLI — it fails at the model call but emits the real event envelope
+first, and that envelope is already committed at
+`packages/orchestrator/test/fixtures/codex-envelope-unauthenticated.jsonl`:
+
+```
+{"type":"thread.started","thread_id":"01a01e12-51ae-7511-8831-6cf53921a902"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"…"}}
+{"type":"error","message":"…"}
+{"type":"turn.failed","error":{…}}
+```
+
+So the schema is **thread / turn / item**, the session id is a top-level `thread_id`,
+and items nest under `item`. That much is observed, not guessed.
+
+What is NOT observed is the usage line, because the run never reached the model. A
+successful run additionally emits `turn.completed`, which is where the token counts
+live. Build `test/fixtures/codex-run.jsonl` as the real envelope above **plus one
+synthetic `turn.completed` line**, and mark it in the file itself:
+
+```jsonl
+{"_comment":"UNVERIFIED — synthetic turn.completed. Every other line in this file is a real capture. Replace this one from an authenticated run; see Task 10."}
+{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":0,"output_tokens":56}}
+```
+
+Once `codex login` has been run, replace the whole file with a real capture:
 
 ```bash
-npm i -g @openai/codex
-codex login
 codex exec --json --ephemeral --skip-git-repo-check --sandbox read-only \
   --cd /tmp "Reply with the single word: ready." \
   > packages/orchestrator/test/fixtures/codex-run.jsonl
 ```
 
-- [ ] **Step 2: Read the fixture and write down the field names**
+- [ ] **Step 2: Confirm the field names off the fixture**
 
 ```bash
 python3 -c "
@@ -638,7 +692,10 @@ for l in open('packages/orchestrator/test/fixtures/codex-run.jsonl'):
 "
 ```
 
-Record the event kind that carries token counts and the exact key path to them. The parser in Step 4 is written against **those names**, not against the placeholders below. If the shape differs from what Step 4 assumes, change Step 4's code — not the fixture.
+Record the event kind that carries token counts and the exact key path to them. The
+parser in Step 4 is written against **those names**. If a later authenticated capture
+shows a different shape, change Step 4's code — not the fixture. The fallbacks in Step 4
+exist precisely because only the envelope is confirmed.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -704,12 +761,15 @@ export function extractCodexUsage(jsonlLines: string): RunUsage | null {
     let o: any;
     try { o = JSON.parse(trimmed); } catch { continue; }
 
-    // Session id, wherever it is announced.
-    sessionId ??= strOrNull(o.session_id ?? o.msg?.session_id ?? o.thread_id);
+    // Session id. `thread.started` carries a top-level `thread_id` — observed in a
+    // real capture. The others are fallbacks for versions that named it differently.
+    sessionId ??= strOrNull(o.thread_id ?? o.session_id ?? o.msg?.session_id);
 
-    // Token counts. Codex has moved these between shapes across versions, so
-    // every place it has put them is checked and the LAST one wins — a
-    // transcript carries a running total, and the final one is the aggregate.
+    // Token counts, carried on `turn.completed`. Codex has moved these between
+    // shapes across versions, so every place it has put them is checked and the LAST
+    // one wins — a transcript carries a running total, and the final one is the
+    // aggregate. Only the ENVELOPE is confirmed against a real capture; the usage
+    // key path is inferred, which is why the fallback chain is this wide.
     const u = o.usage ?? o.msg?.usage ?? o.info?.total_token_usage ?? o.item?.usage;
     if (u && typeof u === "object") {
       found = true;
@@ -931,6 +991,20 @@ describe("filterRunLog on a codex transcript", () => {
     expect(events).toContainEqual(expect.objectContaining({ kind: "assistant", text: "hello" }));
   });
 
+  it("renders the real captured envelope rather than an empty transcript", () => {
+    // codex-envelope-unauthenticated.jsonl is a genuine capture: the run failed at
+    // the model call, but a failed run whose transcript is blank is the worst
+    // possible output — an operator cannot tell it from a run that did nothing.
+    const real = readFileSync(
+      new URL("./fixtures/codex-envelope-unauthenticated.jsonl", import.meta.url), "utf8")
+      .split("\n").filter(Boolean)
+      .map(l => JSON.stringify({ ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: l + "\n" }))
+      .join("\n") + "\n";
+    const { events } = filterRunLog(real, "codex");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.some(e => "text" in e && /401|Unauthorized/i.test(e.text))).toBe(true);
+  });
+
   it("passes an unrecognised event through as text instead of dropping it", () => {
     // A Codex version bump must degrade the transcript, never empty it.
     const odd = JSON.stringify({
@@ -963,8 +1037,12 @@ In `packages/orchestrator/src/core/transcript.ts`, extract the existing inner cl
  * mode worth engineering against.
  */
 function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void {
+  // Envelope confirmed against a real capture: thread.started / turn.started /
+  // turn.completed / turn.failed / item.completed / error, with the payload of an
+  // item nested under `item` and its own kind on `item.type` (agent_message,
+  // command_execution, error). `msg` is a fallback for older builds.
   const kind = obj.type ?? obj.msg?.type ?? "";
-  const body = obj.msg ?? obj.item ?? obj;
+  const body = obj.item ?? obj.msg ?? obj;
 
   // Assistant prose, wherever this version puts it.
   const text = body.text ?? body.message ?? body.delta ?? body.last_agent_message;
@@ -982,8 +1060,16 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
     return;
   }
 
-  if (/token_count|usage/i.test(kind)) return;   // usage.ts owns these
-  if (/^(session|thread|turn)[._]/i.test(kind)) return;  // lifecycle noise
+  // An error is worth showing — a failed run whose transcript is blank tells an
+  // operator nothing about why.
+  if (kind === "error" || body?.type === "error") {
+    const m = scrub(summarise(String(obj.message ?? body?.message ?? ""), 300));
+    if (m) events.push({ ts, kind: "framing", text: m });
+    return;
+  }
+
+  if (/token_count|usage|turn\.completed/i.test(kind)) return;   // usage.ts owns these
+  if (/^(session|thread|turn)[._]/i.test(kind)) return;           // lifecycle noise
 
   // Unrecognised: show it rather than lose it.
   const dump = scrub(summarise(JSON.stringify(obj), 240));
