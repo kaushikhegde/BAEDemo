@@ -335,4 +335,34 @@ describe("spend", () => {
     expect(Number(byAdapter.claude_local.cost_usd)).toBeCloseTo(1.5);
     expect(byAdapter.codex.run_count).toBe("1");
   });
+
+  // IMPORTANT 3: `coalesce(sum(r.cost_usd),0)` turns "every run in this group
+  // was unpriced" into a `cost_usd` of "0" — indistinguishable from "every run
+  // in this group genuinely cost nothing". Task 8 taught `closingNote` (the
+  // issue-timeline total) to say "cost not reported for N runs" instead of a
+  // silent zero; this is the same fix for the spend-grouping query, which had
+  // no such signal at all.
+  it("reports how many of a group's runs were unpriced, instead of only a total that looks like zero", async () => {
+    const issue = await repo.createIssue({
+      companyId: company, title: "all-codex issue", workflowKey: "datamodel",
+    });
+    for (const [adapter, cost] of [["codex", null], ["codex", null]] as const) {
+      const run = await repo.startRun({
+        issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",
+        logPath: `/tmp/${adapter}-${Math.random()}.jsonl`, adapter,
+      });
+      await repo.finishRun(run.id, {
+        status: "succeeded", exitCode: 0, sessionId: null,
+        inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0,
+        costUsd: cost, durationMs: 1000, numTurns: 1,
+      });
+    }
+
+    const rows = await p.spend(company, "adapter");
+    const codexRow = rows.find(r => r.adapter === "codex")!;
+    expect(codexRow.run_count).toBe("2");
+    // Every run in the group was unpriced — the row must say so, not just
+    // report a `cost_usd` of "0" that reads identically to "free".
+    expect(codexRow.unpriced_run_count).toBe("2");
+  });
 });

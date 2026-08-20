@@ -52,6 +52,62 @@ describe("console", () => {
     expect(script).not.toMatch(/\$\{/);
   });
 
+  // IMPORTANT 3: the browser script used to sum `cost_usd` with a plain
+  // `+ (r.cost_usd || 0)` reduce, so an all-Codex issue (every run's cost_usd
+  // is null — Codex does not price its own runs) rendered "$0.0000", the
+  // exact "reads as a free run" outcome closingNote (core/engine.ts) was
+  // fixed to avoid for the issue timeline. `spendSummary` is the console's own
+  // fix for the same defect in its Issue and Agent detail views.
+  //
+  // Extracts the real function out of the rendered page (between its own
+  // `const money =` and the next top-level `const num =`) and calls it —
+  // proving the SHIPPED code behaves correctly, not just a reimplementation
+  // of it in the test.
+  it("spendSummary reports unpriced runs instead of summing them to a misleading $0.0000", () => {
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+    const start = script.indexOf("const money =");
+    const end = script.indexOf("const num =");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const src = script.slice(start, end);
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const spendSummary = new Function(src + "; return spendSummary;")();
+
+    // Every run in the set is unpriced: no dollar figure, and the count named.
+    expect(spendSummary([{ cost_usd: null }, { cost_usd: null }]))
+      .toEqual({ text: "—", unpriced: 2 });
+
+    // A mix: the total covers only what was actually priced, plus a count of
+    // what was not — never silently folded into the total as zero.
+    expect(spendSummary([{ cost_usd: 1.5 }, { cost_usd: null }]))
+      .toEqual({ text: "$1.5000", unpriced: 1 });
+
+    // Regression guard: an all-priced set behaves exactly as before.
+    expect(spendSummary([{ cost_usd: 1 }, { cost_usd: 2.5 }]))
+      .toEqual({ text: "$3.5000", unpriced: 0 });
+  });
+
+  // IMPORTANT 4: a cost budget cannot fire on a run whose adapter reports no
+  // cost (Codex does not price its own runs) — only its token and duration
+  // ceilings still can. The design called for a warning beside such a
+  // workflow (and, here, such an agent) on the Budgets tab; it never existed.
+  it("costCeilingWarning names an adapter that cannot honour a cost ceiling, and says nothing for one that can", () => {
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+    const start = script.indexOf("const esc =");
+    const end = script.indexOf("const mdlite =");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const src = script.slice(start, end);
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const costCeilingWarning = new Function(src + "; return costCeilingWarning;")();
+
+    expect(costCeilingWarning("codex")).toMatch(/cost ceiling/i);
+    expect(costCeilingWarning("codex")).toContain("codex");
+    // claude_local prices its own runs — no warning belongs beside it.
+    expect(costCeilingWarning("claude_local")).toBe("");
+    expect(costCeilingWarning(undefined)).toBe("");
+  });
+
   it("defines both light and dark palettes", () => {
     expect(html).toContain("prefers-color-scheme: dark");
   });

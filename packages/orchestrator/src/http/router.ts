@@ -141,6 +141,23 @@ async function getClaudeVersion(): Promise<string> {
   return cachedClaudeVersion;
 }
 
+// Same memoisation, same reasoning, for the other process adapter. Codex is
+// registered only when the binary is on PATH (orchestrator.config.ts), so a
+// failed probe here almost never happens in practice — but the fallback
+// keeps /health honest rather than throwing if the binary vanishes between
+// boot and this request.
+let cachedCodexVersion: string | undefined;
+async function getCodexVersion(): Promise<string> {
+  if (cachedCodexVersion) return cachedCodexVersion;
+  try {
+    const { stdout } = await execFileAsync("codex", ["--version"], { timeout: 3_000 });
+    cachedCodexVersion = stdout.trim() || "unknown";
+  } catch {
+    cachedCodexVersion = "unknown";
+  }
+  return cachedCodexVersion;
+}
+
 export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>>): Router {
   const r = Router();
 
@@ -196,11 +213,19 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     // the runtime is nailed down, which is exactly what the adapter registry
     // exists to avoid. Version probing is per-adapter; only the process ones
     // have a binary to ask, so the rest report what the registry knows.
+    //
+    // `_local` names Claude Code's own adapters (claude_local); `codex` is
+    // also a process adapter with its own `--version` — it just does not
+    // follow that naming convention, so it needs its own explicit branch
+    // rather than falling into the "n/a" bucket meant for the loop-driven
+    // adapters (gemini, azure_foundry), which have no binary to ask at all.
+    const versionOf = async (key: string): Promise<string> => {
+      if (key.endsWith("_local")) return getClaudeVersion();
+      if (key === "codex") return getCodexVersion();
+      return "n/a";
+    };
     const adapters = await Promise.all(
-      Object.keys(orch.config.adapters).map(async (key) => ({
-        key,
-        version: key.endsWith("_local") ? await getClaudeVersion() : "n/a",
-      })));
+      Object.keys(orch.config.adapters).map(async (key) => ({ key, version: await versionOf(key) })));
 
     const stale = await orch.repo.listUnfinishedRuns();
     const issues = await orch.repo.listIssues(orch.companyId);

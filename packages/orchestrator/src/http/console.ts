@@ -585,8 +585,33 @@ const dur = (ms) => {
 // Four decimals: a single cheap step really does cost $0.0043, and rounding it
 // to $0.00 is how a bill becomes a surprise.
 const money = (n) => n == null ? "—" : "$" + Number(n).toFixed(4);
+// Summing cost_usd over a mix of priced and unpriced runs (Codex does not
+// price its own runs) with a plain "+ (r.cost_usd || 0)" reduce used to render
+// as "$0.0000" for a run set that was NEVER free — only never reported. Same
+// discipline closingNote (core/engine.ts) already applies to one issue's own
+// timeline, compressed for a spot with little room: a dash instead of a
+// dollar figure when nothing here is priced, and the unpriced count named
+// rather than folded silently into a total that looks complete.
+const spendSummary = (runs) => {
+  const priced = runs.filter((r) => r.cost_usd !== null && r.cost_usd !== undefined);
+  const total = priced.reduce((n, r) => n + Number(r.cost_usd), 0);
+  const unpriced = runs.length - priced.length;
+  return { text: priced.length ? money(total) : "—", unpriced };
+};
 const num = (n) => Number(n == null ? 0 : n).toLocaleString("en-AU");
 const plain = (v) => (v === null || v === undefined || v === "") ? "" : String(Number(v));
+// Adapters known to never report a cost figure (core/usage.ts: Codex reports
+// tokens but does not price its own runs). A cost ceiling on a workflow whose
+// resolved adapter is one of these can never fire — only its token and
+// duration ceilings still can. IMPORTANT 4 in the branch review: the design
+// called for a warning beside such a workflow on the Budgets tab and it was
+// never carried into the plan.
+const UNPRICED_ADAPTERS = ["codex"];
+const costCeilingWarning = (adapter) =>
+  UNPRICED_ADAPTERS.indexOf(adapter) === -1 ? "" :
+    ' <span class="muted" title="' + esc(adapter) +
+    ' does not report a cost figure - its cost ceiling cannot fire; tokens and duration still can.">' +
+    '&#9888; cost ceiling inert (' + esc(adapter) + ')</span>';
 
 /* A deliberately tiny markdown renderer for agent and engine comments, which
    arrive as markdown (fenced stderr, inline code paths). Escapes FIRST, then
@@ -911,7 +936,7 @@ async function renderIssue(id) {
   const agentName = {}, agentKey = {};
   agents.forEach(a => { agentName[a.id] = a.name; agentKey[a.id] = a.key; });
   const wf = workflowOf(issue.workflow_key);
-  const spend = runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0);
+  const spend = spendSummary(runs);
   const pending = gates.filter(g => g.status === "pending");
   const params = (issue.params && typeof issue.params === "object") ? issue.params : {};
 
@@ -974,7 +999,9 @@ async function renderIssue(id) {
               '<td>' + st(r.status) + '</td><td class="num">' + esc(dur(r.duration_ms)) + '</td>' +
               '<td class="num">' + esc(money(r.cost_usd)) + '</td></tr>').join("") +
             '</tbody></table></div></div>' +
-            '<p class="hint">' + esc(money(spend)) + ' across ' + num(runs.length) + ' run(s) on this issue.</p>'
+            '<p class="hint">' + esc(spend.text) +
+              (spend.unpriced ? ' (' + num(spend.unpriced) + ' unpriced)' : '') +
+              ' across ' + num(runs.length) + ' run(s) on this issue.</p>'
           : '<div class="empty"><b>No runs</b>This issue has not reached an agent step yet.</div>') +
       '</div>' +
 
@@ -984,7 +1011,8 @@ async function renderIssue(id) {
           detailRow("workflow", (issue.workflow_key ? wfLink(issue.workflow_key) : "—") +
             (wf ? ' <span class="muted">' + esc(wf.label) + '</span>' : "")) +
           detailRow("assignee", esc(agentName[issue.assignee_agent_id] || "—")) +
-          detailRow("spend", esc(money(spend))) +
+          detailRow("spend", esc(spend.text) +
+            (spend.unpriced ? ' <span class="muted">(' + num(spend.unpriced) + ' unpriced)</span>' : '')) +
           detailRow("created", esc(when(issue.created_at))) +
           detailRow("updated", esc(when(issue.updated_at))) +
           detailRow("id", esc(issue.id)) +
@@ -1308,7 +1336,7 @@ async function renderAgent(key, target) {
   // the Developer runs a renderer, the CEO runs nothing.
   const myWorkflows = cfg.workflows.filter(w => w.assignee === key).map(w => w.key);
   const b = budgets.find(x => x.scope === "agent" && x.scope_key === key) || {};
-  const spend = runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0);
+  const spend = spendSummary(runs);
   const sel = (opts, cur) => opts.map(o =>
     '<option value="' + esc(o) + '"' + (o === cur ? " selected" : "") + '>' + esc(o || "default") + '</option>').join("");
 
@@ -1323,8 +1351,9 @@ async function renderAgent(key, target) {
           (agent.bundle_path ? "Edit instructions" : "Instructions") + '</button>' +
       '</div></div>' +
       '<div class="grid" style="margin-top:.9rem">' +
-        '<div class="metric"><div class="l">spend</div><div class="v">' + esc(money(spend)) + '</div>' +
-          '<div class="s">' + num(runs.length) + ' run(s)</div></div>' +
+        '<div class="metric"><div class="l">spend</div><div class="v">' + esc(spend.text) + '</div>' +
+          '<div class="s">' + num(runs.length) + ' run(s)' +
+            (spend.unpriced ? ' · ' + num(spend.unpriced) + ' unpriced' : '') + '</div></div>' +
         '<div class="metric"><div class="l">mcp</div><div class="v" style="font-size:1rem">' +
           (agent.mcp_enabled ? "enabled" : "off") + '</div></div>' +
         '<div class="metric"><div class="l">effective model</div><div class="v" style="font-size:.95rem">' +
@@ -1694,6 +1723,14 @@ async function renderBudgets() {
     const runs = await api("/agents/" + a.key + "/runs").catch(() => []);
     return { key: a.key, runs: runs.length, cost: runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0) };
   }));
+  // The same step -> agent -> defaults chain resolveRuntime uses for adapter,
+  // as far as this page can see it: the console has no view of per-project
+  // scoped settings (those are CLI-only, via "scyne adapter set --project")
+  // or a per-step override, so this is a best-effort read of what a person
+  // can actually see and change from here — the agent's own pin, or the
+  // global default.
+  const agentAdapter = {};
+  agents.forEach(a => { agentAdapter[a.key] = a.adapter || cfg.defaults.adapter; });
 
   // Each parent immediately followed by its own variants, so a ceiling and the
   // ceilings related to it are read together.
@@ -1736,7 +1773,8 @@ async function renderBudgets() {
     '<th class="num">Max min</th><th></th></tr></thead><tbody>' +
     agents.map(a => {
       const p = perAgent.find(x => x.key === a.key);
-      return limitRow("agent", a.key, agentLink(a.key) + ' <span class="muted">' + esc(a.name) + '</span>',
+      return limitRow("agent", a.key, agentLink(a.key) + ' <span class="muted">' + esc(a.name) + '</span>' +
+          costCeilingWarning(agentAdapter[a.key]),
         '<td class="mono">' + esc(money(p.cost)) + ' <span class="muted">(' + num(p.runs) + ')</span></td>');
     }).join("") + '</tbody></table></div></div>' +
 
@@ -1748,7 +1786,8 @@ async function renderBudgets() {
     // genuinely separate ceilings — and a revision is a small diff that should
     // be allowed less than a fresh generation, not the same.
     orderedWf.map(w => limitRow("workflow", w.key,
-      (w.variantOf ? '<span class="muted">&#8627;</span> ' : "") + wfLink(w.key),
+      (w.variantOf ? '<span class="muted">&#8627;</span> ' : "") + wfLink(w.key) +
+        costCeilingWarning(agentAdapter[w.assignee] || cfg.defaults.adapter),
       '<td class="mono muted">' + esc(w.assignee) + '</td>')).join("") +
     '</tbody></table></div></div>' +
     '<p class="hint">A variant carries its own ceiling. The engine reads the budget by workflow key, so setting ' +

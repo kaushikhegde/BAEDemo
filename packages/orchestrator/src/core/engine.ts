@@ -200,7 +200,7 @@ export function createEngine(deps: {
    * (`model?: string`) — null and undefined are different types under
    * strict mode. Converted once, here, rather than at every call site.
    */
-  function toRuntimeAgent(agent: AgentRow | null): { adapter?: string; model?: string; effort?: string } | null {
+  function toRuntimeAgent(agent: AgentRow | null): { adapter?: string; model?: string; effort?: string; fallbackModel?: string[] } | null {
     if (!agent) return null;
     // `?? undefined` on the adapter is load-bearing, not tidying. A null
     // adapter means the agent expresses no preference, and resolveRuntime
@@ -211,6 +211,10 @@ export function createEngine(deps: {
       adapter: agent.adapter ?? undefined,
       model: agent.model ?? undefined,
       effort: agent.effort ?? undefined,
+      // Raw off the row — resolveRuntime is what decides whether this
+      // actually reaches the runner (only when the FINAL resolved adapter is
+      // claude_local; see its own doc comment for why).
+      fallbackModel: agent.fallback_model,
     };
   }
 
@@ -400,7 +404,11 @@ export function createEngine(deps: {
             },
             model: rt.model,
             effort: rt.effort,
-            fallbackModel: agentRow?.fallback_model ?? [],
+            // Resolved by resolveRuntime, NOT read straight off agentRow: a
+            // Claude fallback list configured on the agent row must not ride
+            // along when the run's resolved adapter is codex (or anything
+            // else) — see resolveRuntime's doc comment.
+            fallbackModel: rt.fallbackModel ?? [],
             prompt,
             // Passed so a non-Claude adapter can load the SKILL.md itself;
             // createClaudeRunner ignores it and discovers the skill as before.

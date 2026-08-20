@@ -443,6 +443,12 @@ or a step can pin its own.
 API key, so there is nothing in the environment to detect. Install with
 `npm i -g @openai/codex && codex login`.
 
+`CODEX_MODEL` is optional and only read when the org-wide default adapter is
+`codex` (`SCYNE_ADAPTER=codex`) — it names the model `codex exec` is called
+with (`--model`). Leave it unset to run Codex's own default model; naming one
+this install has not verified it serves is how an entire org's runs die on
+their first request.
+
 > **Codex reports no cost.** `core/usage.ts` records `total_cost_usd` verbatim
 > from Claude Code's result event; Codex emits token counts and no dollar
 > figure, so its runs show `—` rather than `$0.00`, the closing comment says

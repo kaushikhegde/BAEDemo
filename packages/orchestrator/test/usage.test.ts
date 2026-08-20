@@ -32,7 +32,15 @@ describe("extractCodexUsage", () => {
   const codexFixture = readFileSync(
     new URL("./fixtures/codex-run.jsonl", import.meta.url), "utf8");
 
-  it("reads token counts off a real captured run", () => {
+  // MINOR 5 (branch review): this used to claim "off a real captured run",
+  // which is not what it tests. Every line in codex-run.jsonl is a real
+  // capture from codex-envelope-unauthenticated.jsonl EXCEPT the
+  // `turn.completed` usage line these assertions actually read — that one is
+  // a synthetic stand-in, and the fixture says so itself in its own
+  // `_comment` line: "UNVERIFIED — synthetic turn.completed. ... Replace this
+  // one from an authenticated run; see Task 10." The title asserted the
+  // opposite of the truth in green test output.
+  it("reads token counts off the fixture's synthetic turn.completed line (not yet a real capture — see Task 10)", () => {
     const u = extractCodexUsage(codexFixture);
     expect(u).not.toBeNull();
     expect(u!.inputTokens).toBeGreaterThan(0);
