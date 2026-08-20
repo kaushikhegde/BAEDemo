@@ -674,7 +674,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       notFound(res, `log file at '${run.log_path}' (${err instanceof Error ? err.message : String(err)})`);
       return;
     }
-    const { events, consumed } = filterRunLog(raw);
+    const { events, consumed } = filterRunLog(raw, run.adapter);
     ok(res, { events, nextOffset: offset + consumed });
   }));
 
