@@ -1,4 +1,5 @@
 import { newId } from "./ids.js";
+import type { ModelPrice } from "./usage.js";
 import type { Db } from "./db.js";
 
 export interface AgentBudget {
@@ -37,6 +38,19 @@ export interface IssueRow {
   title: string; description: string | null; status: string;
   assignee_agent_id: string | null; workflow_key: string | null;
   step_index: number; params: Record<string, unknown>;
+  /** `pause` | `pause_now` | `cancel`, or null. A REQUEST, not a status — see 006. */
+  control_request: string | null;
+  control_requested_by: string | null;
+  control_requested_at: string | null;
+  /**
+   * The user who started this issue, or null.
+   *
+   * Null for every issue created before attribution existed, and for one
+   * started by an internal caller with no principal. Rendered as '—' rather
+   * than back-filled: "started before we tracked this" is true, and inventing
+   * an attribution would be inventing evidence.
+   */
+  created_by: string | null;
 }
 
 export interface RunRow {
@@ -47,6 +61,12 @@ export interface RunRow {
   cache_read_tokens: string | null; cache_creation_tokens: string | null;
   cost_usd: string | null; duration_ms: string | null; num_turns: number | null;
   adapter: string | null;
+  /** Which model ran. Written from resolveRuntime — the only place that knows. */
+  model: string | null;
+  /** Our arithmetic, when the CLI reported none. NEVER mixed into cost_usd. */
+  est_cost_usd: string | null;
+  /** `reported` | `estimated` | null. Which of the two columns above to trust. */
+  cost_source: string | null;
 }
 
 export interface GateRow {
@@ -78,6 +98,8 @@ export interface CreateIssueInput {
   companyId: string; title: string; description?: string; workflowKey?: string | null;
   params?: Record<string, unknown>; parentId?: string | null;
   assigneeAgentId?: string | null; status?: string;
+  /** Who asked for this. Null when an internal caller has no principal. */
+  createdBy?: string | null;
 }
 
 export interface UpdateIssuePatch {
@@ -105,6 +127,12 @@ export interface StartRunInput {
    * outside the engine (a test, a backfill) may genuinely not know.
    */
   adapter?: string | null;
+  /**
+   * The model that will run, resolved the same way. Recorded because a price
+   * needs one and nothing else knows it — the Codex transcript carries no
+   * model field, so this is the only record of what a run was billed at.
+   */
+  model?: string | null;
 }
 
 export interface FinishRunResult {
@@ -112,6 +140,12 @@ export interface FinishRunResult {
   inputTokens?: number | null; outputTokens?: number | null;
   cacheReadTokens?: number | null; cacheCreationTokens?: number | null;
   costUsd?: number | null; durationMs?: number | null; numTurns?: number | null;
+  /**
+   * OUR arithmetic, for a CLI that reports no cost of its own. Stored beside
+   * `costUsd` rather than in it, so "reported" and "estimated" never merge
+   * into one unauditable figure. `cost_source` is derived from the pair.
+   */
+  estCostUsd?: number | null;
 }
 
 export interface SettingRow {
@@ -130,7 +164,15 @@ export function createRepo(db: Db) {
       const found = await db.query<{ id: string }>(`select id from companies where name=$1`, [name]);
       if (found.rows[0]) return found.rows[0].id;
       const id = newId();
-      await db.query(`insert into companies (id, name) values ($1,$2)`, [id, name]);
+      // `slug` is NOT NULL since 005 and there is no way to default it from
+      // another column, so every writer supplies it. Derived the same way the
+      // migration's backfill derives it — see core/platform.ts's slugify(),
+      // which is the shared implementation; this one call site predates the
+      // platform repo and must not import it (repo.ts is the ENGINE's store
+      // and platform.ts is the product's; the dependency only goes one way).
+      const slug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+        || `org-${id.slice(0, 8)}`;
+      await db.query(`insert into companies (id, name, slug) values ($1,$2,$3)`, [id, name, slug]);
       return id;
     },
 
@@ -202,15 +244,17 @@ export function createRepo(db: Db) {
         id, input.companyId, input.parentId ?? null, input.title,
         input.description ?? null, input.status ?? "todo", input.assigneeAgentId ?? null,
         input.workflowKey ?? null, 0, JSON.stringify(input.params ?? {}),
+        input.createdBy ?? null,
       ];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const { rows } = await db.query<IssueRow>(
             `insert into issues (id, company_id, identifier, parent_id, title, description,
-                                 status, assignee_agent_id, workflow_key, step_index, params)
+                                 status, assignee_agent_id, workflow_key, step_index, params,
+                                 created_by)
              values ($1, $2,
                      'SCY-' || (select count(*) + 1 from issues where company_id = $2),
-                     $3, $4, $5, $6, $7, $8, $9, $10)
+                     $3, $4, $5, $6, $7, $8, $9, $10, $11)
              returning *`,
             params);
           return parseIssueRow(rows[0]);
@@ -339,10 +383,10 @@ export function createRepo(db: Db) {
     async startRun(input: StartRunInput): Promise<RunRow> {
       const id = newId();
       const { rows } = await db.query<RunRow>(
-        `insert into runs (id, issue_id, agent_id, step_index, phase, status, log_path, adapter)
-         values ($1,$2,$3,$4,$5,'running',$6,$7) returning *`,
+        `insert into runs (id, issue_id, agent_id, step_index, phase, status, log_path, adapter, model)
+         values ($1,$2,$3,$4,$5,'running',$6,$7,$8) returning *`,
         [id, input.issueId, input.agentId ?? null, input.stepIndex ?? null,
-         input.phase ?? null, input.logPath, input.adapter ?? null]);
+         input.phase ?? null, input.logPath, input.adapter ?? null, input.model ?? null]);
       return rows[0];
     },
 
@@ -350,13 +394,41 @@ export function createRepo(db: Db) {
       const { rows } = await db.query<RunRow>(
         `update runs set status=$1, exit_code=$2, session_id=$3, finished_at=now(),
            input_tokens=$4, output_tokens=$5, cache_read_tokens=$6, cache_creation_tokens=$7,
-           cost_usd=$8, duration_ms=$9, num_turns=$10
-         where id=$11 returning *`,
+           cost_usd=$8, duration_ms=$9, num_turns=$10,
+           est_cost_usd=$11, cost_source=$12
+         where id=$13 returning *`,
         [result.status, result.exitCode ?? null, result.sessionId ?? null,
          result.inputTokens ?? null, result.outputTokens ?? null,
          result.cacheReadTokens ?? null, result.cacheCreationTokens ?? null,
-         result.costUsd ?? null, result.durationMs ?? null, result.numTurns ?? null, id]);
+         result.costUsd ?? null, result.durationMs ?? null, result.numTurns ?? null,
+         result.estCostUsd ?? null,
+         // Provenance, decided here rather than by the caller so the two can
+         // never disagree: a reported figure wins whenever there is one.
+         result.costUsd != null ? "reported" : (result.estCostUsd != null ? "estimated" : null),
+         id]);
       return rows[0] ?? null;
+    },
+
+    /**
+     * The published rates for one model, or null when we hold none.
+     *
+     * `provider` is not taken from the caller: a model id is unique across the
+     * catalogue in practice, and asking every call site to know that
+     * `gpt-5.6-terra` is an OpenAI model would be handing out a fact they have
+     * no way to be sure of.
+     */
+    async getModelPrice(model: string): Promise<ModelPrice | null> {
+      const { rows } = await db.query<{
+        input_per_mtok: string | null; cached_input_per_mtok: string | null; output_per_mtok: string | null;
+      }>(`select input_per_mtok, cached_input_per_mtok, output_per_mtok
+            from model_prices where model = $1 limit 1`, [model]);
+      if (!rows[0]) return null;
+      const n = (v: string | null) => (v === null ? null : Number(v));
+      return {
+        inputPerMTok: n(rows[0].input_per_mtok),
+        cachedInputPerMTok: n(rows[0].cached_input_per_mtok),
+        outputPerMTok: n(rows[0].output_per_mtok),
+      };
     },
 
     async getRun(id: string): Promise<RunRow | null> {
@@ -540,6 +612,88 @@ export function createRepo(db: Db) {
         `update agents set status=$3, updated_at=now() where company_id=$1 and key=$2 returning *`,
         [companyId, key, status]);
       return rows[0] ? { ...rows[0], fallback_model: rows[0].fallback_model ?? [], extra_args: rows[0].extra_args ?? [] } : null;
+    },
+
+    /**
+     * Issue counts by status across EVERY organisation.
+     *
+     * `/health` is unauthenticated and install-wide, so scoping its queue
+     * depth to the home organisation would silently under-report the moment a
+     * second organisation existed — an operator watching a healthy-looking
+     * queue while another tenant's work piled up. Counts only: no names, no
+     * ids, nothing tenant-identifying leaves this.
+     */
+    /**
+     * Ask the engine to stop an issue at its next opportunity.
+     *
+     * Writes a REQUEST, never a status. The engine owns every status
+     * transition (see the Engine's contract), and a route that set `paused`
+     * itself would be lying for however long the in-flight step still has to
+     * run — or would have its write overwritten the moment that step finished.
+     */
+    /**
+     * A person's email for a timeline comment, or a neutral phrase.
+     *
+     * Users are the platform repo's table, not this one's — but `issues` now
+     * carries two references to it (`created_by`, `control_requested_by`) and
+     * the engine has to render them. One read-only lookup is a smaller cost
+     * than the engine reaching across to a second repo, and it never fails a
+     * narration: an unknown or deleted user is "a user", not an error.
+     */
+    async describeUser(userId: string): Promise<string> {
+      try {
+        const { rows } = await db.query<{ email: string }>(
+          `select email from users where id=$1`, [userId]);
+        return rows[0]?.email ?? "a user";
+      } catch {
+        return "a user";
+      }
+    },
+
+    async requestControl(issueId: string, verb: "pause" | "pause_now" | "cancel", byUserId?: string | null):
+      Promise<IssueRow | null> {
+      const { rows } = await db.query<IssueRow>(
+        `update issues
+            set control_request=$2, control_requested_by=$3, control_requested_at=now(), updated_at=now()
+          where id=$1 returning *`,
+        [issueId, verb, byUserId ?? null]);
+      return rows[0] ? parseIssueRow(rows[0]) : null;
+    },
+
+    /** Honoured, or withdrawn. Either way the request is spent. */
+    async clearControl(issueId: string): Promise<void> {
+      await db.query(
+        `update issues set control_request=null, control_requested_by=null,
+                           control_requested_at=null, updated_at=now()
+          where id=$1`, [issueId]);
+    },
+
+    /** The run this issue currently has in flight, if any — what a kill targets. */
+    async runningRunFor(issueId: string): Promise<RunRow | null> {
+      const { rows } = await db.query<RunRow>(
+        `select * from runs where issue_id=$1 and finished_at is null
+          order by started_at desc limit 1`, [issueId]);
+      return rows[0] ?? null;
+    },
+
+    async queueDepth(): Promise<Record<string, number>> {
+      const { rows } = await db.query<{ status: string; n: string }>(
+        `select status, count(*)::text as n from issues group by status`);
+      return Object.fromEntries(rows.map(r => [r.status, Number(r.n)]));
+    },
+
+    /**
+     * Open issues assigned to an agent, across every organisation.
+     *
+     * Agents are install-wide — the org chart is reconciled into the home
+     * organisation and shared — so a company-scoped check would happily let
+     * someone disable an agent that still owns live work for another tenant.
+     */
+    async openIssuesForAgent(agentId: string): Promise<Array<{ identifier: string }>> {
+      const { rows } = await db.query<{ identifier: string }>(
+        `select identifier from issues
+          where assignee_agent_id=$1 and status <> 'done' order by identifier`, [agentId]);
+      return rows;
     },
 
     async listUnfinishedRuns(): Promise<RunRow[]> {

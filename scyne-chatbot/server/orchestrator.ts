@@ -8,17 +8,38 @@
 // wipe.
 
 import * as pipeline from "../../scripts/pipeline.mjs";
+import { currentToken } from "./auth.js";
 
 const BASE = process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100";
 
 async function call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+  // The token belongs to the person whose request is in flight, read from
+  // AsyncLocalStorage rather than from a module global — a global would serve
+  // one user's credential on another user's request as soon as two people use
+  // the app at once, and that would not show up in single-user testing.
+  //
+  // SCYNE_API_TOKEN is the fallback for server-side work that belongs to NO
+  // user: the staleness sweep, a scheduled refresh. It is never what serves a
+  // browser request, because then every run would be attributed to it.
+  const token = currentToken() ?? process.env.SCYNE_API_TOKEN ?? null;
   const res = await fetch(BASE + path, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    throw new Error(`Orchestrator ${method} ${path} → ${res.status}: ${await res.text()}`);
+    const text = await res.text();
+    // 401 has one cause and one fix, and the generic message sends people to
+    // the orchestrator's logs instead of to their own login.
+    if (res.status === 401) {
+      throw new Error(
+        `Orchestrator ${method} ${path} → 401. The signed-in session is not valid ` +
+        `for the orchestrator — sign in again. (${text.slice(0, 200)})`);
+    }
+    throw new Error(`Orchestrator ${method} ${path} → ${res.status}: ${text}`);
   }
   return res.json() as Promise<T>;
 }
@@ -30,7 +51,7 @@ async function call<T = any>(method: string, path: string, body?: unknown): Prom
 // than rewriting index.ts's five call sites keeps the swap to one file — and the
 // description format is stable, being generated a few lines above each call.
 
-/** `- Confluence space key: SADA` → `confluenceSpace: "SADA"`. */
+/** `- ADO project: Scyne AI Project` → `adoProject: "Scyne AI Project"`. */
 const PARAM_LABELS: Record<string, string> = {
   "project": "project",
   "feature": "feature",
@@ -39,10 +60,10 @@ const PARAM_LABELS: Record<string, string> = {
   "process l3": "processL3",
   "process l4": "processL4",
   "starting story number": "startingStoryNumber",
-  "parent epic key": "parentEpicKey",
-  "jira project key": "jiraProjectKey",
-  "confluence space key": "confluenceSpace",
-  "confluence page title": "confluencePageTitle",
+  "ado parent epic id": "adoParentEpicId",
+  "ado org": "adoOrg",
+  "ado project": "adoProject",
+  "ado wiki": "adoWiki",
 };
 
 export function parseParams(description: string): Record<string, string> {
@@ -53,10 +74,16 @@ export function parseParams(description: string): Record<string, string> {
     const key = PARAM_LABELS[m[1].trim().toLowerCase()];
     if (!key) continue;
     const value = m[2].trim();
-    // "(none — create stories without a parent epic)" is index.ts's way of
-    // saying empty. Passing it through would set a Jira parent literally named
-    // "(none".
-    if (!value || value.startsWith("(none")) continue;
+    // A value WRAPPED IN PARENTHESES is index.ts's way of writing "not set":
+    // "(none — create work items without a parent)", "(the project's only
+    // wiki)". Passing one through literally would parent every work item under
+    // an item called "(none", or send a publish looking for a wiki named "(the
+    // project's only wiki)".
+    //
+    // Matched on the shape rather than on the words, because the words are
+    // written at the call site and get reworded; the parentheses are the
+    // convention. A real value never starts with "(".
+    if (!value || (value.startsWith("(") && value.endsWith(")"))) continue;
     params[key] = value;
   }
   // The instruction block on a revision: everything under `## instruction` up to
@@ -126,6 +153,20 @@ export const orchestrator = {
   deliveryLeadId(): string { return "pm"; },
 
   getIssue: (id: string) => call("GET", `/issues/${id}`),
+
+  // ---- stopping and restarting a run ---------------------------------------
+  //
+  // All three return 202: a graceful pause takes effect when the step in
+  // flight ends, which can be tens of minutes away. The UI polls
+  // /api/status/:issueId anyway, so the status catches up on its own.
+
+  /** `force` kills the agent now; without it, the step in flight finishes first. */
+  pauseIssue: (id: string, force = false) =>
+    call("POST", `/issues/${id}/pause`, force ? { force: true } : {}),
+
+  cancelIssue: (id: string) => call("POST", `/issues/${id}/cancel`, {}),
+
+  resumeIssue: (id: string) => call("POST", `/issues/${id}/resume`, {}),
 
   async getIssueByIdentifier(identifier: string) {
     const all = await call<any[]>("GET", "/issues").catch(() => [] as any[]);

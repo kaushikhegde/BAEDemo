@@ -40,7 +40,7 @@ const scope = (s: Stage): string => (isProject(s) ? "{project}" : "{project} / {
 
 const MINUTES = 60_000;
 
-/** The primary document of a stage — the one that becomes a Confluence page. */
+/** The primary document of a stage — the one that becomes a wiki page. */
 const primaryDoc = (s: Stage): string =>
   `${root(s)}${s.produces.find(f => f.endsWith(".md")) ?? s.produces[0]}`;
 
@@ -79,70 +79,93 @@ function approvalSummary(s: Stage): string {
     ...attachFiles(s).map(f => `- ${f}`),
     ``,
     s.publishes
-      ? `Approving publishes it to Confluence. Rejecting sends it back to the ${s.agentKey} to regenerate.`
+      ? `Approving publishes it to the Azure DevOps wiki. Rejecting sends it back to the ${s.agentKey} to regenerate.`
       : `Approving completes this stage. Rejecting sends it back to the ${s.agentKey} to regenerate.`,
   ].join("\n");
 }
 
+/**
+ * The wiki path a stage's document lives at.
+ *
+ * Identity is the PATH, not a title lookup plus a remembered id — which is
+ * what makes republishing a revision idempotent. Project and feature are both
+ * in it so two features cannot collide on a stage name.
+ */
+const wikiPathTpl = (s: Stage): string =>
+  isProject(s) ? `/Scyne/{project}/${s.label}` : `/Scyne/{project}/{feature}/${s.label}`;
+
 function publishPrompt(key: string, s: Stage): string {
-  const jira = key === "requirements";
+  const stories = key === "requirements";
   return [
-    `A human has APPROVED the ${s.label} for ${scope(s)}. Publish it to Confluence.`,
+    `A human has APPROVED the ${s.label} for ${scope(s)}. Publish it to the`,
+    `Azure DevOps wiki.`,
     ``,
-    `## Do it with one command`,
+    `## Where`,
     ``,
-    `From the workspace root:`,
+    `- **Organisation**: the \`adoOrg\` parameter below if one is listed, otherwise`,
+    `  \`ADO_ORG\` from the environment.`,
+    `- **Project**: the \`adoProject\` parameter, otherwise \`ADO_PROJECT\`.`,
+    `- **Wiki**: the \`adoWiki\` parameter. If none is listed, use the project's`,
+    `  only wiki; if it has more than one, STOP and say so rather than guessing`,
+    `  which of a client's wikis to write into.`,
+    `- **Page path**: \`${wikiPathTpl(s)}\``,
+    `  Keep it identical between runs. The page is identified BY PATH, which is`,
+    `  what makes a revision update the same page instead of creating a second`,
+    `  copy. Do not "tidy" the path.`,
     ``,
-    `    node scripts/confluence-publish.mjs \\`,
-    `      ${primaryDoc(s)} \\`,
-    `      --space <SPACE> --title "<TITLE>" --render-mermaid \\`,
+    `## How`,
+    ``,
+    `Use the Azure DevOps MCP tools. Create or update the page at that path with`,
+    `the contents of:`,
+    ``,
+    `    ${primaryDoc(s)}`,
+    ``,
+    `ADO wiki takes **markdown natively** and renders \`\`\`mermaid fences itself,`,
+    `so publish the file as it is. Do not convert it, do not render diagrams to`,
+    `images, and do not attach anything.`,
+    ``,
+    `**If that document is larger than about 40 KB, do not pass it through a tool`,
+    `call.** Run this instead, which streams it straight from disk:`,
+    ``,
+    `    node scripts/ado-publish.mjs ${primaryDoc(s)} \\`,
+    `      --path "${wikiPathTpl(s)}" \\`,
     `      --published-json projects/{project}/.published.json \\`,
     `      --artefact-key "${artefactKeyTpl(key, s)}"`,
     ``,
-    `That single command renders every \`mermaid\` block to PNG, converts the`,
-    `markdown to Confluence storage format, creates or updates the page, uploads`,
-    `the diagrams, and records the page id. **Do not do any of those steps`,
-    `yourself.** In particular, never read the document in order to pass it to`,
-    `an MCP tool as a page body: these documents run to 110 KB, and doing that`,
-    `burns the context window, triggers a compaction mid-task, and ends in a`,
-    `loop that publishes nothing. That is measured behaviour, not a caution.`,
+    `That threshold is not a style preference. Measured on run SCY-6: a 110 KB`,
+    `document passed to a publishing tool call was read three times while the`,
+    `call was assembled, triggered a context compaction thirteen minutes in, and`,
+    `ended in a loop that published nothing — $2.73 for no page. Moving bytes is`,
+    `not a reasoning task.`,
     ``,
-    `## The two values you choose`,
+    `## Record where it went`,
     ``,
-    `- **SPACE**: the \`confluenceSpace\` parameter below if one is listed,`,
-    `  otherwise the project name. If the space does not exist the script says`,
-    `  so and exits non-zero — report that verbatim and stop. Do not substitute`,
-    `  another space; publishing a client's document into the wrong place is`,
-    `  worse than not publishing it.`,
-    `- **TITLE**: "{project} — ${s.label}"${isProject(s) ? "." : ' with " — {feature}" appended.'}`,
-    `  Keep it identical between runs — the script finds an existing page by`,
-    `  title and updates it, which is what stops a revision creating a second`,
-    `  copy.`,
-    ``,
-    `If \`projects/{project}/.published.json\` already holds an entry under`,
-    `\`${artefactKeyTpl(key, s)}\`, add \`--page-id <that pageId>\` so the update`,
-    `is exact even if the title has drifted.`,
-    ...(jira ? [
+    `Write the page path and URL into \`projects/{project}/.published.json\` under`,
+    `\`ado.${artefactKeyTpl(key, s)}\`, so a later revision updates this page`,
+    `rather than creating a second one. (\`ado-publish.mjs\` does this itself when`,
+    `you use it.)`,
+    ...(stories ? [
       ``,
-      `## Then push the stories to Jira`,
+      `## Then push the stories as work items`,
       ``,
-      `Read \`projects/{project}/{feature}/outputs/stories.json\`. Confirm the Jira`,
-      `project key (the \`jiraProjectKey\` parameter, else the project name) exists`,
-      `with \`getVisibleJiraProjects\`; if it does not, stop and say so.`,
+      `Run:`,
       ``,
-      `For each story: replace \`{{PRODUCT_SUMMARY_URL}}\` in the description with`,
-      `the Confluence URL the script printed; set \`fields.parent.key\` to the`,
-      `\`parentEpicKey\` parameter ONLY if one is listed and non-empty (omit`,
-      `\`fields.parent\` entirely otherwise); create the issue. Descriptions are`,
-      `Atlassian Document Format, which is what REST v3 requires.`,
+      `    node scripts/ado-workitems.mjs projects/{project}/{feature}/outputs/stories.json \\`,
+      `      --summary-url "<the wiki page URL you just published>" \\`,
+      `      --parent <adoParentEpicId>          # only if that parameter is listed`,
       ``,
-      `Stories are small enough to pass through a tool call. The page body is not.`,
+      `Use the script rather than the MCP for this. It discovers the right work`,
+      `item type for the project's process template — "User Story" exists only in`,
+      `the Agile template, and a Basic project has Epic → Issue → Task with no`,
+      `User Story at all — it substitutes the summary URL so it cannot be`,
+      `forgotten, and it writes the created ids back so a re-run updates rather`,
+      `than duplicating a client's backlog.`,
     ] : []),
     ``,
     `## Finish`,
     ``,
-    `Print the Confluence URL on a line of its own as the last thing you`,
-    `output${jira ? ", preceded by a markdown table of story_number | jira_key | jira_url" : ""}.`,
+    `Print the wiki page URL on a line of its own as the last thing you`,
+    `output${stories ? ", preceded by the table the work item script prints" : ""}.`,
     `Do not change any issue status — the orchestrator moves the issue on when`,
     `you exit cleanly.`,
   ].join("\n");
@@ -240,7 +263,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
       `thing that changed, plus its genuine consequences.`,
       ``,
       s.publishes
-        ? `Approving UPDATES the existing Confluence page rather than creating a second one.`
+        ? `Approving UPDATES the existing wiki page rather than creating a second one.`
         : `Approving completes the revision.`,
     ].join("\n"),
   });
@@ -259,7 +282,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
 
 // Reporting lines mirror `scripts/bootstrap.mjs`'s org chart. `mcpEnabled` is
 // granted ONLY to agents that publish — an Atlassian tool surface on an agent
-// with nothing to push is a way to reach a client's Confluence by accident.
+// with nothing to push is a way to reach a client's wiki by accident.
 export const ORG: AgentSpec[] = [
   { key: "ceo",          name: "CEO",               title: "Chief Executive",   icon: "crown" },
   { key: "pm",           name: "Delivery Lead",     title: "Delivery Lead",     icon: "rocket",        reportsTo: "ceo" },

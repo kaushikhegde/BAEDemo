@@ -68,6 +68,15 @@ export interface FailureVerdict {
 export function classifyFailure(res: RunResult, elapsedMs: number): FailureVerdict {
   if (res.status === "succeeded") return { retry: false, reason: "succeeded" };
 
+  // A person stopped this. Checked FIRST, and before the transient-window
+  // rule in particular: a cancel two seconds in with no `result` event matches
+  // "died cheaply, retry it" exactly, so without this branch pressing Cancel
+  // would spawn the agent again — the precise opposite of what was asked for,
+  // and something that costs a full run to discover.
+  if (res.status === "cancelled") {
+    return { retry: false, reason: "the run was stopped deliberately — a retry would undo that" };
+  }
+
   // Over budget is the one failure that is definitionally expensive. The
   // ceiling was reached once; a retry reaches it again and bills for it.
   if (res.status === "over_budget") {

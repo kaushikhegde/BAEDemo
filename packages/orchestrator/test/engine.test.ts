@@ -687,3 +687,122 @@ describe("engine (fix round 1: idempotent wait steps, interpolate() throws don't
     expect(line).not.toContain("$0.0000");
   });
 });
+
+describe("costing a run whose CLI reports no cost", () => {
+  /** A runner shaped like Codex: real token counts, no dollar figure at all. */
+  const codexLike = (inTok = 1_000_000, outTok = 1_000_000) => ({
+    run: async () => { calls.push("run"); return {
+      exitCode: 0, status: "succeeded" as const, stderrTail: "",
+      usage: { inputTokens: inTok, outputTokens: outTok, cacheReadTokens: 0,
+               cacheCreationTokens: 0, costUsd: null, durationMs: 100, numTurns: 1,
+               sessionId: "s" } }; },
+  });
+
+  function pricedConfig(workspace: string, runner: any, model: string) {
+    const c = config(workspace, runner) as any;
+    c.defaults = { ...c.defaults, model };
+    c.org = [{ key: "ba", name: "BA", model }];
+    return c;
+  }
+
+  it("records which model ran, so the run can be priced at all", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({ repo, config: pricedConfig(dir, codexLike(), "gpt-5.6-terra"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    await engine.advance(issue.id);
+    const run = (await repo.listRuns(issue.id))[0];
+    expect(run.model).toBe("gpt-5.6-terra");
+  });
+
+  it("estimates the cost, and says the figure is ours", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({ repo, config: pricedConfig(dir, codexLike(), "gpt-5.6-terra"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    await engine.advance(issue.id);
+
+    const run = (await repo.listRuns(issue.id))[0];
+    // gpt-5.6-terra: 1M in at $2 + 1M out at $12
+    expect(Number(run.est_cost_usd)).toBeCloseTo(14, 4);
+    expect(run.cost_source).toBe("estimated");
+    // The reported column stays empty. Merging the two would make the total
+    // unauditable, which is the whole reason they are separate columns.
+    expect(run.cost_usd).toBeNull();
+  });
+
+  it("leaves an UNPRICED model with no figure rather than with zero", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({
+      repo, config: pricedConfig(dir, codexLike(), "gpt-5.3-codex-spark"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    await engine.advance(issue.id);
+
+    const run = (await repo.listRuns(issue.id))[0];
+    expect(run.est_cost_usd).toBeNull();
+    expect(run.cost_source).toBeNull();
+  });
+
+  it("leaves a model nobody has priced alone", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({
+      repo, config: pricedConfig(dir, codexLike(), "some-model-we-never-heard-of"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    await engine.advance(issue.id);
+    expect((await repo.listRuns(issue.id))[0].est_cost_usd).toBeNull();
+  });
+
+  it("does NOT overwrite a cost the CLI did report", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    // fakeRunner reports costUsd: 0.01
+    const engine = createEngine({ repo, config: pricedConfig(dir, fakeRunner, "gpt-5.6-terra"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    await engine.advance(issue.id);
+
+    const run = (await repo.listRuns(issue.id))[0];
+    expect(Number(run.cost_usd)).toBeCloseTo(0.01, 6);
+    expect(run.est_cost_usd).toBeNull();
+    expect(run.cost_source).toBe("reported");
+  });
+
+  it("fires a cost budget on the ESTIMATE — the whole point of pricing Codex", async () => {
+    // Before this, a cost ceiling could not fire on a Codex run at all,
+    // because the runner checks the CLI's own reported figure and Codex
+    // reports none. Moving the org onto Codex silently removed the dollar cap.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({
+      repo, config: pricedConfig(dir, codexLike(), "gpt-5.6-terra"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    // This suite does not seed the org chart, so `upsertAgent` never wrote a
+    // budget row. Set it directly, against the company the issue landed in.
+    const started = (await repo.getIssue(issue.id))!;
+    await repo.setBudget(started.company_id, "agent", "ba", { maxCostUsd: 1 });
+    await engine.advance(issue.id);
+
+    const run = (await repo.listRuns(issue.id))[0];
+    expect(run.status).toBe("over_budget");
+
+    const comments = await repo.listComments(issue.id);
+    const said = comments.map(c => c.body).join("\n");
+    // Being stopped by an arithmetic nobody can see is worse than not being
+    // stopped, so the comment has to say whose figure it is.
+    expect(said).toMatch(/estimated/i);
+    expect(said).toMatch(/gpt-5\.6-terra/);
+  });
+
+  it("does not fire a budget the estimate is under", async () => {
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# s");
+    const engine = createEngine({
+      repo, config: pricedConfig(dir, codexLike(1000, 1000), "gpt-5.6-terra"), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P" });
+    const started = (await repo.getIssue(issue.id))!;
+    await repo.setBudget(started.company_id, "agent", "ba", { maxCostUsd: 5 });
+    await engine.advance(issue.id);
+    expect((await repo.listRuns(issue.id))[0].status).toBe("succeeded");
+  });
+});

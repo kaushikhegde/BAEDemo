@@ -589,6 +589,43 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /issues/{id}/pause:
+    post:
+      operationId: pauseIssue
+      summary: "Pause a running issue. `{force: true}` kills the agent now; otherwise the step in flight finishes first."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: The request was recorded. Poll GET /issues/{id} — a graceful pause takes effect at the next step boundary.
+        "400": { description: The issue is already done or cancelled }
+        "401": { description: Authentication required }
+        "404": { description: No such issue in this organisation }
+  /issues/{id}/cancel:
+    post:
+      operationId: cancelIssue
+      summary: Stop an issue for good, killing any agent in flight. It does not resume.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: The request was recorded
+        "400": { description: The issue is already done }
+        "401": { description: Authentication required }
+        "404": { description: No such issue in this organisation }
+  /issues/{id}/resume:
+    post:
+      operationId: resumeIssue
+      summary: Carry a paused issue on from where it stopped. Steps that already succeeded are not re-run.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: Resuming in the background
+        "400": { description: The issue is already done }
+        "401": { description: Authentication required }
+        "404": { description: No such issue in this organisation }
+        "409": { description: The issue was cancelled and does not resume }
   /issues/{id}/comments:
     get:
       operationId: listIssueComments
@@ -1151,6 +1188,54 @@ paths:
         "200":
           description: OK
         "401": { description: Authentication required }
+  /orgs:
+    get:
+      operationId: listOrgs
+      summary: Organisations the caller may act in — every one for a superadmin, their own otherwise.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: createOrg
+      summary: Create an organisation. Superadmin only.
+      responses:
+        "201":
+          description: OK
+        "401": { description: Authentication required }
+        "403": { description: Superadmin only }
+  /orgs/{id}:
+    get:
+      operationId: getOrg
+      summary: One organisation with its user, project, feature and issue counts.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: No such organisation, or not visible to the caller }
+    patch:
+      operationId: updateOrg
+      summary: Rename or suspend an organisation. Superadmin only. The slug never changes.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "403": { description: Superadmin only }
+    delete:
+      operationId: archiveOrg
+      summary: Archive an organisation. Superadmin only. Never a hard delete, and never the home organisation.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "400": { description: The home organisation cannot be archived }
+        "401": { description: Authentication required }
+        "403": { description: Superadmin only }
   /users:
     get:
       operationId: listUsers
@@ -1370,6 +1455,62 @@ paths:
         "201":
           description: OK
         "401": { description: Authentication required }
+  /models:
+    get:
+      operationId: listModels
+      summary: The model price catalogue, with run counts and retirement flags.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+  /models/{provider}/{model}:
+    put:
+      operationId: setModelPrice
+      summary: Set one model's rates by hand. Administrators only.
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: model, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "400": { description: A rate is negative, non-finite or implausibly large }
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+  /models/refresh:
+    get:
+      operationId: getModelPriceProposal
+      summary: The outstanding price proposal and the diff it would apply, or null.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+    post:
+      operationId: proposeModelPrices
+      summary: Propose a new price table. Validated and stored; never written straight through.
+      responses:
+        "200":
+          description: The proposal, with the diff it would apply
+        "400": { description: One or more rows failed validation }
+        "401": { description: Authentication required }
+        "403": { description: Administrators only }
+    delete:
+      operationId: discardModelPriceProposal
+      summary: Discard the outstanding proposal. Administrators only.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: No proposal outstanding }
+  /models/refresh/apply:
+    post:
+      operationId: applyModelPriceProposal
+      summary: Apply the outstanding proposal. Superadmin only — it changes what every future run records as costing.
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "403": { description: Superadmin only }
+        "404": { description: No proposal outstanding }
   /spend:
     get:
       operationId: getSpend

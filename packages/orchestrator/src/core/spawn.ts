@@ -40,6 +40,42 @@ export const BACKSTOP_DURATION_MS = 60 * 60 * 1000;
 /** Cap on how much stderr we keep in memory for the result's `stderrTail`. */
 export const STDERR_TAIL_CHARS = 4_000;
 
+/**
+ * Every child currently running, by run id, so an operator can stop one.
+ *
+ * In-process, which is correct rather than a limitation. PGlite is
+ * single-writer, so exactly ONE process owns the engine at a time; the CLI and
+ * the console both reach it over HTTP, and a CLI holding the database directly
+ * cannot also have a live child belonging to the server. A registry in the
+ * database would therefore describe processes this process cannot signal.
+ */
+const live = new Map<string, { child: ReturnType<typeof spawn>; kill: () => void }>();
+
+/**
+ * Stop a running child. Returns false when there is no such run — already
+ * finished, never started, or an id nobody issued.
+ *
+ * Reuses the bounded SIGTERM → SIGKILL escalation the budget kill already
+ * has, so there is ONE kill path rather than two that can drift.
+ */
+export function killRun(runId: string, grace: number = BUDGET_KILL_GRACE_MS): boolean {
+  const entry = live.get(runId);
+  if (!entry) return false;
+  entry.kill();
+  entry.child.kill("SIGTERM");
+  setTimeout(() => {
+    // `live` is checked again rather than captured: by now the child may have
+    // exited cleanly on the SIGTERM and its id been reused by nothing at all.
+    if (live.has(runId)) entry.child.kill("SIGKILL");
+  }, grace).unref?.();
+  return true;
+}
+
+/** The ids of every run with a live child. What the console's Runs tab marks. */
+export function liveRuns(): string[] {
+  return [...live.keys()];
+}
+
 /** Splits `buf` into complete (`\n`-terminated) lines and leftover residue. */
 function takeCompleteLines(buf: string): { lines: string[]; rest: string } {
   const lines: string[] = [];
@@ -69,6 +105,7 @@ export function runChild(req: RunRequest, spec: SpawnSpec): Promise<RunResult> {
     let stdoutLineBuf = "";  // stdout bytes not yet resolved into a complete \n-terminated line
     let stderrLineBuf = "";  // same, for stderr
     let killedForBudget = false;
+    let killedByOperator = false;
     let durationTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
 
@@ -129,6 +166,7 @@ export function runChild(req: RunRequest, spec: SpawnSpec): Promise<RunResult> {
       if (settled) return;
       settled = true;
       clearTimers();
+      if (req.runId) live.delete(req.runId);
       resolve(result);
     };
 
@@ -169,6 +207,14 @@ export function runChild(req: RunRequest, spec: SpawnSpec): Promise<RunResult> {
           stdio: ["pipe", "pipe", "pipe"],
           env: process.env,
         });
+
+        // Registered as soon as it exists, so a kill arriving a moment later
+        // finds it. Deregistration happens in `resolveOnce`, which every exit
+        // path funnels through — including the error paths, so a failed spawn
+        // cannot leave a phantom in the registry.
+        if (req.runId) {
+          live.set(req.runId, { child, kill: () => { killedByOperator = true; } });
+        }
 
         child.stdout.on("data", onData("stdout"));
         child.stderr.on("data", onData("stderr"));
@@ -219,6 +265,11 @@ export function runChild(req: RunRequest, spec: SpawnSpec): Promise<RunResult> {
 
           let status: RunResult["status"] = code === 0 ? "succeeded" : "failed";
           if (killedForBudget) status = "over_budget";
+          // An operator kill outranks the budget kill: if somehow both fired,
+          // the person pressing the button is the more useful explanation, and
+          // "over_budget" would send someone to look at a ceiling that was not
+          // the reason.
+          if (killedByOperator) status = "cancelled";
           // Token/cost budgets can only be checked post-hoc, once the
           // final `result` event has arrived — unlike maxDurationMs, they
           // are never a live kill, just a status flag on an otherwise-

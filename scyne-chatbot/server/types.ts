@@ -7,10 +7,12 @@ export interface RequirementParams {
   process_l3?: string;
   process_l4?: string;
   starting_story_number?: string;
-  parent_epic_key?: string;
-  jira_project_key?: string;
-  confluence_space_key?: string;
-  confluence_page_title?: string;
+  /** The work item every story is created under. Optional — omit for none. */
+  ado_parent_epic_id?: string;
+  ado_org?: string;
+  ado_project?: string;
+  /** Which wiki. Omit when the project has exactly one; required when it has more. */
+  ado_wiki?: string;
 }
 export interface TriggerBody {
   feature_name: string;

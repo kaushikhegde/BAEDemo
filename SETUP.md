@@ -397,8 +397,9 @@ Also outstanding:
   so `scyne project list` starts empty.
 - Admin console tabs (installs, people, spend) — data and endpoints exist, the
   screens do not.
-- The web chatbot still uses its own hardcoded login (`admin` / `scyne2026`,
-  checked client-side only) and reads the filesystem.
+- The web chatbot authenticates against the orchestrator's user table — the same
+  accounts the CLI and console use, with the session held in an httpOnly cookie.
+  `scyne init` creates the first one, as the installation's superadmin.
 - Chats and run logs have database tables, but the runner still writes `.jsonl`
   files.
 - Jira publishing still needs the Atlassian MCP, so it works on Claude only.

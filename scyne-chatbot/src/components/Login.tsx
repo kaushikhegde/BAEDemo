@@ -14,32 +14,42 @@ const LOGIN_BG_CANDIDATES = [
 ];
 const LOGIN_BG_FALLBACK = "/login-bg.svg";
 
-// Hardcoded credentials for the demo. Replace with real auth when wiring up SSO.
-const VALID_USER = "admin";
-const VALID_PASS = "scyne2026";
+// Identity belongs to the orchestrator, for the whole install. This screen
+// posts to the chatbot server, which forwards the credentials and stores the
+// resulting session in an httpOnly cookie — so there is no token here to read,
+// and nothing to keep in localStorage.
 
+/** The signed-in person, exactly as `GET /api/auth/whoami` returns them. */
 export interface LoginSession {
-  user: string;
-  ts: number;
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  company: { id: string; name: string; slug: string } | null;
+  isSuperadmin: boolean;
 }
 
-const SESSION_KEY = "scyne_session";
-
-export function loadSession(): LoginSession | null {
-  if (typeof window === "undefined") return null;
+/**
+ * Ask the server who we are. The cookie is httpOnly, so this is the ONLY way
+ * the app can find out — which is the point: a credential JavaScript cannot
+ * read is a credential an injected script cannot steal.
+ */
+export async function loadSession(): Promise<LoginSession | null> {
   try {
-    const raw = window.localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LoginSession;
-    if (!parsed?.user || !parsed?.ts) return null;
-    return parsed;
+    const res = await fetch("/api/auth/whoami", { credentials: "include" });
+    if (!res.ok) return null;
+    return (await res.json()) as LoginSession;
   } catch {
     return null;
   }
 }
 
-export function clearSession() {
-  if (typeof window !== "undefined") window.localStorage.removeItem(SESSION_KEY);
+export async function clearSession(): Promise<void> {
+  try {
+    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+  } catch {
+    /* the cookie is the server's to clear; a network failure here is not fatal */
+  }
 }
 
 interface LoginProps {
@@ -83,25 +93,36 @@ export function Login({ onAuthenticated }: LoginProps) {
     setError(null);
 
     if (!user.trim() || !pass) {
-      setError("Enter your username and password.");
+      setError("Enter your email and password.");
       triggerShake();
       return;
     }
 
     setSubmitting(true);
-    // Simulate a brief network round-trip so the loading state is visible.
-    await new Promise((r) => setTimeout(r, 320));
-
-    if (user.trim() === VALID_USER && pass === VALID_PASS) {
-      const session: LoginSession = { user: user.trim(), ts: Date.now() };
-      window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      onAuthenticated(session);
-      return;
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // `include`, or the browser discards the Set-Cookie the server sends.
+        credentials: "include",
+        body: JSON.stringify({ email: user.trim(), password: pass }),
+      });
+      if (res.ok) {
+        onAuthenticated((await res.json()) as LoginSession);
+        return;
+      }
+      const body = await res.json().catch(() => ({ error: "" }));
+      setSubmitting(false);
+      // The server deliberately gives one message for an unknown address and a
+      // wrong password. Show its wording rather than inventing a friendlier
+      // one that might imply which of the two it was.
+      setError(String(body.error) || "Those credentials don't match. Try again.");
+      triggerShake();
+    } catch {
+      setSubmitting(false);
+      setError("Cannot reach the Scyne server. Is it running?");
+      triggerShake();
     }
-
-    setSubmitting(false);
-    setError("Those credentials don't match. Try again.");
-    triggerShake();
   }
 
   function triggerShake() {
@@ -150,15 +171,15 @@ export function Login({ onAuthenticated }: LoginProps) {
             </p>
           </div>
 
-          {/* Username */}
+          {/* Email */}
           <div className="flex flex-col gap-1.5">
             <label htmlFor="login-user" className="text-[12px] font-medium text-foreground">
-              Username
+              Email
             </label>
             <input
               ref={userInputRef}
               id="login-user"
-              type="text"
+              type="email"
               autoComplete="username"
               spellCheck={false}
               value={user}
@@ -167,7 +188,7 @@ export function Login({ onAuthenticated }: LoginProps) {
               aria-describedby={error ? "login-error" : undefined}
               disabled={submitting}
               className="h-11 px-3 rounded-lg bg-white border border-scyne-line text-[14px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-scyne-ink/40 focus:border-scyne-ink/40 transition-shadow disabled:opacity-60"
-              placeholder="admin"
+              placeholder="you@yourorg.com"
             />
           </div>
 

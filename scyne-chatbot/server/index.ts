@@ -15,7 +15,7 @@ import { orchestrator as paperclip } from "./orchestrator.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
-import { ensureAtlassianTargets, provisioningConfigured } from "./services/atlassianProvision.js";
+import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
 // rather than kept as a second local copy. This chatbot previously carried a
 // stale, Claude-vocabulary-only fork (services/runTranscript.ts) that had
@@ -34,16 +34,83 @@ import { MeetingSession } from "./services/geminiLive.js";
 // the CLI would happily run.
 // @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
 import * as pipeline from "../../scripts/pipeline.mjs";
+import {
+  carryAuth, requireSession, login, logout, whoami,
+  tokenFor, setSessionCookie, clearSessionCookie,
+} from "./auth.js";
 
 const app = express();
-app.use(cors());
+// `credentials: true` and an explicit origin, not the bare default: the
+// browser will not send an httpOnly cookie cross-origin under a wildcard
+// origin, and Vite serves the app on 5173 while this listens on 4000.
+app.use(cors({
+  origin: (process.env.CHATBOT_ORIGIN || "http://127.0.0.1:5173,http://localhost:5173").split(","),
+  credentials: true,
+}));
 app.use(express.json({ limit: "10mb" }));
+
+// Every request carries its caller's credential into server/orchestrator.ts,
+// so a run started from chat is attributed to the person who started it.
+// Mounted before the routes, including the unauthenticated ones — carrying a
+// null token is correct and lets each route decide for itself.
+app.use(carryAuth);
+
+// ---- identity ---------------------------------------------------------------
+//
+// The chatbot holds no user table. It forwards credentials to the
+// orchestrator, which owns identity for the whole install, and keeps the
+// session in an httpOnly cookie so a token is never readable from JavaScript.
+
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
+  if (!email || !password) { res.status(400).json({ error: "email and password are required" }); return; }
+  const result = await login(String(email), String(password));
+  // One message for an unknown address and a wrong password alike —
+  // distinguishing them turns this form into a directory of who has an account.
+  if (!result) { res.status(401).json({ error: "invalid email or password" }); return; }
+  setSessionCookie(res, result.token);
+  const me = await whoami(result.token);
+  res.json(me ?? { ...result.user, company: null, isSuperadmin: false });
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  const token = tokenFor(req);
+  if (token) await logout(token);
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/api/auth/whoami", async (req, res) => {
+  const token = tokenFor(req);
+  const me = token ? await whoami(token) : null;
+  if (!me) {
+    // A cookie the orchestrator no longer honours is worse than no cookie: it
+    // makes the app look logged in and then fail every action. Clear it.
+    clearSessionCookie(res);
+    res.status(401).json({ error: "not_authenticated" });
+    return;
+  }
+  res.json(me);
+});
+
+// Everything else under /api needs a session. Registered AFTER the auth routes
+// so they stay reachable, and before every other route so none can be added
+// later that quietly escapes it.
+app.use("/api", (req, res, next) => {
+  if (req.path.startsWith("/auth/")) { next(); return; }
+  requireSession(req, res, next);
+});
 
 // Pull Confluence page + Jira issue URLs out of a set of comment bodies.
 // Shared by /api/status (single run) and /api/history (all completed runs).
 function extractLinks(bodies: string[]): { confluence: string[]; jira: string[] } {
-  const confluenceRe = /https?:\/\/[\w.-]+\.atlassian\.net\/wiki\/[^\s)>\]"']+/g;
-  const jiraRe = /https?:\/\/[\w.-]+\.atlassian\.net\/browse\/[A-Z]+-\d+/g;
+  // The KEYS stay `confluence`/`jira` because the frontend's LinksPanel and the
+  // /api/history consumers both read them by those names; what they hold is now
+  // an Azure DevOps wiki page and its work items. Renaming the wire format is a
+  // separate change from moving the destination, and doing both at once is how
+  // a links panel silently goes empty.
+  const confluenceRe = /https?:\/\/dev\.azure\.com\/[^\s)>\]"']*_wiki\/[^\s)>\]"']+/g;
+  const jiraRe = /https?:\/\/dev\.azure\.com\/[^\s)>\]"']*_workitems\/edit\/\d+/g;
   const confluence = new Set<string>();
   const jira = new Set<string>();
   for (const body of bodies) {
@@ -78,20 +145,19 @@ app.post("/api/trigger", async (req, res) => {
     const feature_name = overrides.feature_name || process.env.DEFAULT_FEATURE_NAME || "Untitled Feature";
     const project = overrides.project || "SADA";
     const feature = overrides.feature || "interim-benefit";
-    // Default the Jira project + Confluence space keys to the PROJECT name, not a
-    // fixed .env value — so picking "RTWSA" pushes to RTWSA, not SADA. The .env
-    // DEFAULT_* keys (and the parent epic) only apply when they belong to THIS
-    // project (the original SADA demo). The BA verifies these exist before pushing.
-    const projectKey = deriveProjectKey(project);
-    const envIsThisProject = (process.env.DEFAULT_JIRA_PROJECT_KEY || "").toUpperCase() === projectKey;
+    // The Azure DevOps target is ONE organisation and ONE project for the whole
+    // install, unlike the Atlassian arrangement this replaced, where the space
+    // key was derived per Scyne project. A wiki page path carries the project
+    // and feature instead, so a single ADO project holds every client's work
+    // without collision — and there is nothing to derive from a name.
     const params: RequirementParams = {
       process_l3: overrides.process_l3 || process.env.DEFAULT_PROCESS_L3,
       process_l4: overrides.process_l4 || process.env.DEFAULT_PROCESS_L4,
       starting_story_number: overrides.starting_story_number || process.env.DEFAULT_STARTING_STORY_NUMBER,
-      parent_epic_key: overrides.parent_epic_key || (envIsThisProject ? process.env.DEFAULT_PARENT_EPIC_KEY : ""),
-      jira_project_key: overrides.jira_project_key || projectKey,
-      confluence_space_key: overrides.confluence_space_key || projectKey,
-      confluence_page_title: overrides.confluence_page_title || (envIsThisProject ? process.env.DEFAULT_CONFLUENCE_PAGE_TITLE : feature_name),
+      ado_parent_epic_id: overrides.ado_parent_epic_id || process.env.ADO_PARENT_EPIC_ID || "",
+      ado_org: overrides.ado_org || process.env.ADO_ORG,
+      ado_project: overrides.ado_project || process.env.ADO_PROJECT,
+      ado_wiki: overrides.ado_wiki || process.env.ADO_WIKI || "",
     };
     const ws = WORKSPACE_PATH;
 
@@ -147,10 +213,10 @@ app.post("/api/trigger", async (req, res) => {
       `- Process L3: ${params.process_l3}`,
       `- Process L4: ${params.process_l4}`,
       `- Starting story number: ${params.starting_story_number}`,
-      `- Parent epic key: ${params.parent_epic_key || "(none — create stories without a parent epic)"}`,
-      `- Jira project key: ${params.jira_project_key}`,
-      `- Confluence space key: ${params.confluence_space_key}`,
-      `- Confluence page title: ${params.confluence_page_title}`,
+      `- ADO parent epic id: ${params.ado_parent_epic_id || "(none — create work items without a parent)"}`,
+      `- ADO org: ${params.ado_org}`,
+      `- ADO project: ${params.ado_project}`,
+      `- ADO wiki: ${params.ado_wiki || "(the project's only wiki)"}`,
       ``,
       `## Inputs`,
       `Read every file in every subfolder of:`,
@@ -339,7 +405,7 @@ function stageTrigger(stage: {
   // `docs` is only populated for stages with no gateFile — it lets the message
   // say WHY the feature has nothing readable.
   gateMessage: (project: string, feature: string, docs?: { md: number; other: number }) => string;
-  confluence?: boolean; // include the Confluence space key in the description
+  publishes?: boolean; // include the Azure DevOps target in the description
   inputs: (project: string, feature: string) => string[];
 }) {
   const isProject = stage.level === "project";
@@ -384,7 +450,9 @@ function stageTrigger(stage: {
       // name (same derivation as /api/trigger). Both overridable via the body
       // for runs whose requirements used custom values.
       const feature_name = String(req.body?.feature_name || "").trim() || feature;
-      const confluence_space_key = String(req.body?.confluence_space_key || "").trim() || deriveProjectKey(project);
+      const ado_org = String(req.body?.ado_org || "").trim() || process.env.ADO_ORG || "";
+      const ado_project = String(req.body?.ado_project || "").trim() || process.env.ADO_PROJECT || "";
+      const ado_wiki = String(req.body?.ado_wiki || "").trim() || process.env.ADO_WIKI || "";
       // Only stages that publish carry Atlassian keys — /api/approve keys its
       // auto-provisioning off the "Confluence space key" line, so a local-only
       // stage must not emit one or approval would try to create a space.
@@ -397,10 +465,12 @@ function stageTrigger(stage: {
           `- Feature: ${feature}`,
           `- Feature name: ${feature_name}`,
         ]),
-        ...(stage.confluence === false ? [] : [
+        ...(stage.publishes === false ? [] : [
           ``,
           `## Parameters`,
-          `- Confluence space key: ${confluence_space_key}`,
+          `- ADO org: ${ado_org}`,
+          `- ADO project: ${ado_project}`,
+          `- ADO wiki: ${ado_wiki || "(the project's only wiki)"}`,
         ]),
         ``,
         `## Inputs`,
@@ -558,7 +628,7 @@ app.post("/api/capability-map/trigger", stageTrigger({
 
 // 2h. UI mockups — the UX Designer turns everything the feature has produced into
 // a screen specification, rendered as themed HTML pages linked from the companion
-// app's UI tab. It publishes nothing (confluence: false) — unlike the capability
+// app's UI tab. It publishes nothing (publishes: false) — unlike the capability
 // map, which does.
 // Gated on documents rather than the product summary: the skill needs "the product
 // summary OR the discovery documents", and a feature with documents but no
@@ -575,7 +645,7 @@ app.post("/api/ui-mockups/trigger", stageTrigger({
     docs && docs.other > 0
       ? `No readable documents for ${p}/${f}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
       : `No documents found for ${p}/${f}. Upload at least one SOP, transcript or note — or generate the requirements first — before designing the screens.`,
-  confluence: false,
+  publishes: false,
   inputs: (p, f) => [
     `Working folder: projects/${p}/${f}/solutions/UI/ — stage the inputs there, then run the skill.`,
     `- projects/${p}/description.md (the project definition — read it before any discovery document)`,
@@ -811,35 +881,46 @@ app.post("/api/approve/:approvalId", async (req, res) => {
     if (!parentIssueId) {
       return res.status(400).json({ error: "parentIssueId is required to locate the interaction" });
     }
-    // Provision whatever Atlassian targets the flow declares in its description —
-    // keyed on the DATA, not the issue title. The requirements flow carries both
-    // a Jira project key and a Confluence space key (both ensured); the
-    // Confluence-only downstream stages (data model, solution design) carry only
-    // the space key (so just the space is ensured — this also heals the case
-    // where the requirements gate was rejected and the space never got created);
-    // the Build UI flow carries neither (skipped entirely).
-    if (provisioningConfigured()) {
+    // Confirm the Azure DevOps target BEFORE resolving the gate, keyed on the
+    // DATA in the issue description rather than on its title. A flow that
+    // declares no ADO org is not a publishing flow (the UI build, for one) and
+    // is skipped entirely.
+    //
+    // VERIFY, never create — see services/adoVerify.ts. Creating an ADO project
+    // is a long-running asynchronous operation and a half-created one is worse
+    // to hand a client than a clear refusal.
+    if (adoConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
         const desc = String(issue?.description || "");
         const grab = (label: string) =>
           (desc.match(new RegExp(`-\\s*${label}:\\s*(.+)`)) || [])[1]?.trim() || "";
-        const project = grab("Project");
-        const jiraKey = grab("Jira project key");
-        const confKey = grab("Confluence space key");
-        const pageTitle = grab("Confluence page title");
-        if (confKey) {
-          const result = await ensureAtlassianTargets({
-            jiraKey: jiraKey || undefined,
-            jiraName: project || jiraKey,
-            confluenceKey: confKey,
-            confluenceName: pageTitle || project || confKey,
+        const org = grab("ADO org") || process.env.ADO_ORG || "";
+        const project = grab("ADO project") || process.env.ADO_PROJECT || "";
+        const wikiRaw = grab("ADO wiki");
+        const wiki = wikiRaw.startsWith("(") ? "" : wikiRaw;
+        if (org && project) {
+          const result = await verifyAdoTarget({
+            org, project, wiki: wiki || undefined,
+            // Only the requirements flow pushes work items; the rest publish a
+            // page only, and failing them on a work-item scope they never use
+            // would block an approval for no reason.
+            needsWorkItems: Boolean(grab("ADO parent epic id")) || /requirement/i.test(String(issue?.title || "")),
           });
-          console.log("[approve] ensureAtlassianTargets:", JSON.stringify(result));
+          console.log("[approve] verifyAdoTarget:", JSON.stringify({ ok: result.ok, summary: result.summary }));
+          if (!result.ok) {
+            return res.status(502).json({
+              error: "ado_target_unavailable",
+              message:
+                `Approving would publish to Azure DevOps, and the target is not ready:\n  ${result.summary}\n\n` +
+                `Nothing has been approved. Fix the target and approve again — it is far cheaper ` +
+                `to discover this now than after the publish step has built a document.`,
+              checks: result.checks,
+            });
+          }
         }
       } catch (e: any) {
-        // Don't resolve the gate if we couldn't prepare the targets — surface it.
-        return res.status(502).json({ error: "provision_failed", message: e?.message ?? String(e) });
+        return res.status(502).json({ error: "ado_verify_failed", message: e?.message ?? String(e) });
       }
     }
     const interactionIssueId = await findInteractionIssueId(parentIssueId, approvalId);
@@ -921,6 +1002,40 @@ app.post("/api/request-changes/:approvalId", async (req, res) => {
 // "Generate …" issues and extracts links from each run's comment tree. Build UI
 // runs stay excluded — they publish no Atlassian links.
 const HISTORY_PREFIXES = FLOWS.filter((f) => f.flow.key !== "ui").map((f) => f.prefix);
+// ---- stopping a run ---------------------------------------------------------
+//
+// The chatbot is where most runs are started, so it is where most of them need
+// stopping. The orchestrator owns the semantics; these routes only forward,
+// carrying the signed-in user's credential so the audit trail names a person.
+
+app.post("/api/issues/:issueId/pause", async (req, res) => {
+  try {
+    const force = Boolean((req.body ?? {}).force);
+    res.json(await paperclip.pauseIssue(req.params.issueId, force));
+  } catch (err: any) {
+    res.status(502).json({ error: "pause_failed", message: String(err?.message ?? err) });
+  }
+});
+
+app.post("/api/issues/:issueId/cancel", async (req, res) => {
+  try {
+    res.json(await paperclip.cancelIssue(req.params.issueId));
+  } catch (err: any) {
+    res.status(502).json({ error: "cancel_failed", message: String(err?.message ?? err) });
+  }
+});
+
+app.post("/api/issues/:issueId/resume", async (req, res) => {
+  try {
+    res.json(await paperclip.resumeIssue(req.params.issueId));
+  } catch (err: any) {
+    // A cancelled issue answers 409 upstream, which is a legible refusal
+    // rather than a fault — pass the reason through rather than flattening
+    // every failure into "something went wrong".
+    res.status(502).json({ error: "resume_failed", message: String(err?.message ?? err) });
+  }
+});
+
 app.get("/api/history", async (_req, res) => {
   try {
     const raw = await paperclip.listCompanyIssues();

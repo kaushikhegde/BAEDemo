@@ -4,6 +4,11 @@
 **Status:** Design, awaiting review
 **Sibling specs:** `2026-08-20-codex-cli-adapter-design.md`, `2026-08-20-super-admin-tracking-design.md`
 
+> **Superseded in part, 2026-08-20** by
+> `2026-08-20-multitenant-platform-design.md`, which was written after the
+> user chose a MULTI-ORGANISATION model with a super-admin above it, and chose MCP-based publishing over the REST-scripts-only recommendation in §3 below.
+> Read that spec first; this one is kept for the reasoning it records.
+
 ---
 
 ## 1. Why

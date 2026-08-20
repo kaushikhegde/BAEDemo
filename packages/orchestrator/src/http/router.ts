@@ -18,6 +18,8 @@ import type {
 } from "../core/repo.js";
 import { resolveTheme } from "./theme.js";
 import { createPlatformRouter, PLATFORM_ROUTES } from "./platform-router.js";
+import { createPlatformRepo } from "../core/platform.js";
+import { createAuth, type AuthedRequest } from "./auth-middleware.js";
 import { loadOverrides, saveOverrides, withAgentPatch } from "../core/overrides.js";
 import { listSkills, skillFilePath } from "../core/skills.js";
 import { createDocsHandlers } from "./docs.js";
@@ -54,6 +56,9 @@ const CORE_ROUTES = [
   { method: "PATCH", path: "/issues/{id}" },
   { method: "DELETE", path: "/issues/{id}" },
   { method: "POST",  path: "/issues/{id}/advance" },
+  { method: "POST",  path: "/issues/{id}/pause" },
+  { method: "POST",  path: "/issues/{id}/cancel" },
+  { method: "POST",  path: "/issues/{id}/resume" },
   { method: "GET",   path: "/issues/{id}/comments" },
   { method: "POST",  path: "/issues/{id}/comments" },
   { method: "GET",   path: "/issues/{id}/work-products" },
@@ -169,6 +174,46 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
 
   // Mounted first so the platform's own paths resolve before any of this
   // router's parameterised ones could shadow them.
+  // Every engine route below authenticates. Until this existed, /issues,
+  // /runs, /agents, /config and /gates were open to anything that could
+  // reach the port — the console rendered them with no login, and the
+  // platform routes beside them were the only ones asking for a credential.
+  //
+  // The SAME middleware the platform router uses. Two implementations of an
+  // authorisation check drift, and the one that drifts is unwatched.
+  const platform = createPlatformRepo(orch.db);
+  const auth = createAuth(platform, orch.homeCompanyId);
+  const guard = auth.requireAuth();
+  const org = (req: unknown): string => (req as AuthedRequest).principal!.companyId;
+
+  /**
+   * Resolve an issue the caller is allowed to see, or answer 404.
+   *
+   * Every one of these routes took a raw uuid and fetched it with no
+   * organisation check, which was harmless while there was one organisation
+   * and a cross-tenant read the moment there were two. 404 rather than 403,
+   * for the reason platform-router.ts's header gives: a 403 confirms the
+   * issue exists, which is exactly what a caller without access must not be
+   * able to learn.
+   *
+   * Returns null HAVING ALREADY RESPONDED, so a handler reads as
+   * `const issue = await issueFor(req, res, id); if (!issue) return;`.
+   */
+  const issueFor = async (req: Request, res: Response, id: string) => {
+    const issue = await orch.repo.getIssue(id).catch(() => null);
+    if (!issue || issue.company_id !== org(req)) { notFound(res, `issue '${id}'`); return null; }
+    return issue;
+  };
+
+  /** The same rule for a run, reached through the issue that owns it. */
+  const runFor = async (req: Request, res: Response, id: string) => {
+    const run = await orch.repo.getRun(id).catch(() => null);
+    if (!run) { notFound(res, `run '${id}'`); return null; }
+    const issue = await orch.repo.getIssue(run.issue_id).catch(() => null);
+    if (!issue || issue.company_id !== org(req)) { notFound(res, `run '${id}'`); return null; }
+    return run;
+  };
+
   r.use(createPlatformRouter(orch));
 
   const wrap = (fn: (req: Request, res: Response) => Promise<void>) =>
@@ -188,7 +233,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   async function toAgentSpec(row: AgentRow): Promise<AgentSpec> {
     let reportsTo: string | null = null;
     if (row.reports_to) {
-      const all = await orch.repo.listAgents(orch.companyId);
+      const all = await orch.repo.listAgents(orch.homeCompanyId);
       reportsTo = all.find(a => a.id === row.reports_to)?.key ?? null;
     }
     return {
@@ -228,17 +273,20 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       Object.keys(orch.config.adapters).map(async (key) => ({ key, version: await versionOf(key) })));
 
     const stale = await orch.repo.listUnfinishedRuns();
-    const issues = await orch.repo.listIssues(orch.companyId);
+    // Install-wide, not home-organisation-wide: /health is unauthenticated and
+    // describes the whole process, and a per-org count here would read as
+    // healthy while another tenant's queue backed up.
+    const depth = await orch.repo.queueDepth();
 
     ok(res, {
       ok: true,
       db: `${orch.config.db.driver} / ${short}`,
       adapters,
       queue: {
-        todo: issues.filter(i => i.status === "todo").length,
-        inProgress: issues.filter(i => i.status === "in_progress").length,
-        awaitingApproval: issues.filter(i => i.status === "in_review").length,
-        blocked: issues.filter(i => i.status === "blocked").length,
+        todo: depth.todo ?? 0,
+        inProgress: depth.in_progress ?? 0,
+        awaitingApproval: depth.in_review ?? 0,
+        blocked: depth.blocked ?? 0,
       },
       unfinishedRuns: stale.length,
       // Kept for the chatbot and anything else already reading it.
@@ -248,20 +296,20 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
 
   // ---- agents ---------------------------------------------------------------
 
-  r.get("/agents", wrap(async (_req, res) => {
-    ok(res, await orch.repo.listAgents(orch.companyId));
+  r.get("/agents", guard, wrap(async (_req, res) => {
+    ok(res, await orch.repo.listAgents(orch.homeCompanyId));
   }));
 
-  r.get("/agents/:key", wrap(async (req, res) => {
+  r.get("/agents/:key", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    const agent = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
     ok(res, agent);
   }));
 
-  r.patch("/agents/:key", wrap(async (req, res) => {
+  r.patch("/agents/:key", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const existing = await orch.repo.getAgentByKey(orch.companyId, key);
+    const existing = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!existing) { notFound(res, `agent '${key}'`); return; }
 
     const patch = (req.body ?? {}) as AgentPatchBody;
@@ -278,7 +326,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     if (patch.budget !== undefined) spec.budget = patch.budget;
     if (patch.bundlePath !== undefined) spec.bundlePath = patch.bundlePath ?? undefined;
 
-    await orch.repo.upsertAgent(orch.companyId, spec);
+    await orch.repo.upsertAgent(orch.homeCompanyId, spec);
 
     // Persist to the overlay, or the next boot reconciles this away from the
     // config file and the operator's change silently vanishes. Only fields the
@@ -295,7 +343,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       await saveOverrides(orch.config.workspace,
         withAgentPatch(await loadOverrides(orch.config.workspace), key, overlay));
     }
-    ok(res, await orch.repo.getAgentByKey(orch.companyId, key));
+    ok(res, await orch.repo.getAgentByKey(orch.homeCompanyId, key));
   }));
 
   /**
@@ -303,14 +351,14 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * config file is re-read on every boot and an agent that exists only in the
    * database would disappear on restart.
    */
-  r.post("/agents", wrap(async (req, res) => {
+  r.post("/agents", guard, wrap(async (req, res) => {
     const spec = (req.body ?? {}) as AgentSpec;
     if (!spec.key || !spec.name) { badRequest(res, "key and name are required"); return; }
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(spec.key)) {
       badRequest(res, `key '${spec.key}' must start with a letter and contain only letters, digits, - or _`);
       return;
     }
-    if (await orch.repo.getAgentByKey(orch.companyId, spec.key)) {
+    if (await orch.repo.getAgentByKey(orch.homeCompanyId, spec.key)) {
       badRequest(res, `agent '${spec.key}' already exists`);
       return;
     }
@@ -323,7 +371,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       badRequest(res, `effort must be one of ${EFFORTS.join(", ")}`);
       return;
     }
-    await orch.repo.upsertAgent(orch.companyId, { ...spec, adapter });
+    await orch.repo.upsertAgent(orch.homeCompanyId, { ...spec, adapter });
 
     const o = await loadOverrides(orch.config.workspace);
     await saveOverrides(orch.config.workspace, {
@@ -331,7 +379,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       added: [...(o.added ?? []).filter(a => a.key !== spec.key), { ...spec, adapter }],
       removed: (o.removed ?? []).filter(k => k !== spec.key),
     });
-    res.status(201).json(await orch.repo.getAgentByKey(orch.companyId, spec.key));
+    res.status(201).json(await orch.repo.getAgentByKey(orch.homeCompanyId, spec.key));
   }));
 
   /**
@@ -339,20 +387,21 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * has done work is part of the audit trail — deleting the row would either
    * fail on the foreign key or orphan the history that explains a spend figure.
    */
-  r.delete("/agents/:key", wrap(async (req, res) => {
+  r.delete("/agents/:key", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    const agent = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
 
-    const assigned = (await orch.repo.listIssues(orch.companyId, { assigneeAgentId: agent.id }))
-      .filter(i => i.status !== "done");
+    // Across every organisation — agents are install-wide, so a home-scoped
+    // check would let this disable an agent still working for another tenant.
+    const assigned = await orch.repo.openIssuesForAgent(agent.id);
     if (assigned.length) {
       badRequest(res, `agent '${key}' still owns ${assigned.length} open issue(s): ` +
         assigned.map(i => i.identifier).join(", "));
       return;
     }
 
-    await orch.repo.setAgentStatus(orch.companyId, key, "disabled");
+    await orch.repo.setAgentStatus(orch.homeCompanyId, key, "disabled");
     const o = await loadOverrides(orch.config.workspace);
     await saveOverrides(orch.config.workspace, {
       ...o,
@@ -362,9 +411,9 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, { ok: true, key, status: "disabled" });
   }));
 
-  r.get("/agents/:key/runs", wrap(async (req, res) => {
+  r.get("/agents/:key/runs", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    const agent = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
     // No repo.listRunsByAgent() exists (Task 2's repo is scoped to
     // per-issue reads) — a direct query is the least-worst option that
@@ -379,9 +428,9 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * Read from disk on every request rather than cached: editing a bundle and
    * re-reading it is the loop this endpoint exists to serve.
    */
-  r.get("/agents/:key/bundle", wrap(async (req, res) => {
+  r.get("/agents/:key/bundle", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    const agent = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
     if (!agent.bundle_path) { ok(res, { path: null, content: "" }); return; }
     const absRead = safeBundlePath(agent.bundle_path);
@@ -415,9 +464,9 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * every subsequent run fail in a way nobody attributes to a browser tab
    * closing mid-save.
    */
-  r.put("/agents/:key/bundle", wrap(async (req, res) => {
+  r.put("/agents/:key/bundle", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
-    const agent = await orch.repo.getAgentByKey(orch.companyId, key);
+    const agent = await orch.repo.getAgentByKey(orch.homeCompanyId, key);
     if (!agent) { notFound(res, `agent '${key}'`); return; }
     if (!agent.bundle_path) {
       badRequest(res, `agent '${key}' declares no bundlePath — set one with PATCH /agents/${key} before editing`);
@@ -458,14 +507,14 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * `unused` (a file that reads like part of the pipeline but is invoked by
    * nothing).
    */
-  r.get("/skills", wrap(async (_req, res) => {
+  r.get("/skills", guard, wrap(async (_req, res) => {
     ok(res, {
       dir: orch.config.skillsDir ?? null,
       skills: listSkills(orch.config.workspace, orch.config.skillsDir, orch.config.workflows),
     });
   }));
 
-  r.get("/skills/:name", wrap(async (req, res) => {
+  r.get("/skills/:name", guard, wrap(async (req, res) => {
     const name = pathParam(req.params.name);
     const rows = listSkills(orch.config.workspace, orch.config.skillsDir, orch.config.workflows);
     const row = rows.find(s2 => s2.name === name);
@@ -494,7 +543,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * link with a regular file, quietly severing it from the file the team
    * actually edits. The next `link-skills` would look like it did nothing.
    */
-  r.put("/skills/:name", wrap(async (req, res) => {
+  r.put("/skills/:name", guard, wrap(async (req, res) => {
     if (!orch.config.skillsDir) { badRequest(res, "no skillsDir is configured"); return; }
     const name = pathParam(req.params.name);
     const { content } = (req.body ?? {}) as { content?: unknown };
@@ -517,18 +566,22 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     }
   }));
 
-  r.get("/runners", wrap(async (_req, res) => {
+  r.get("/runners", guard, wrap(async (_req, res) => {
     ok(res, Object.keys(orch.config.adapters));
   }));
 
   // ---- issues ---------------------------------------------------------------
 
-  r.post("/issues", wrap(async (req, res) => {
+  r.post("/issues", guard, wrap(async (req, res) => {
     const { workflow, params } = (req.body ?? {}) as { workflow?: string; params?: Record<string, unknown> };
     if (!workflow) { badRequest(res, "workflow is required"); return; }
     let issue;
     try {
-      issue = await orch.engine.start(workflow, (params ?? {}) as Record<string, string>);
+      const principal = (req as AuthedRequest).principal!;
+      issue = await orch.engine.start(workflow, (params ?? {}) as Record<string, string>, {
+        companyId: principal.companyId,
+        createdBy: principal.user.id,
+      });
     } catch (err) {
       badRequest(res, err instanceof Error ? err.message : String(err));
       return;
@@ -551,7 +604,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     res.status(201).json(issue);
   }));
 
-  r.get("/issues", wrap(async (req, res) => {
+  r.get("/issues", guard, wrap(async (req, res) => {
     const filter: ListIssuesFilter = {};
     if (typeof req.query.status === "string") filter.status = req.query.status;
     if (req.query.parentId !== undefined) {
@@ -560,18 +613,18 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     if (req.query.assigneeAgentId !== undefined) {
       filter.assigneeAgentId = req.query.assigneeAgentId === "null" ? null : String(req.query.assigneeAgentId);
     }
-    ok(res, await orch.repo.listIssues(orch.companyId, filter));
+    ok(res, await orch.repo.listIssues(org(req), filter));
   }));
 
-  r.get("/issues/:id", wrap(async (req, res) => {
-    const id = pathParam(req.params.id);
-    const issue = await orch.repo.getIssue(id);
-    if (!issue) { notFound(res, `issue '${id}'`); return; }
+  r.get("/issues/:id", guard, wrap(async (req, res) => {
+    const issue = await issueFor(req, res, pathParam(req.params.id));
+    if (!issue) return;
     ok(res, issue);
   }));
 
-  r.patch("/issues/:id", wrap(async (req, res) => {
+  r.patch("/issues/:id", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
     const updated = await orch.repo.updateIssue(id, (req.body ?? {}) as UpdateIssuePatch);
     if (!updated) { notFound(res, `issue '${id}'`); return; }
     ok(res, updated);
@@ -583,13 +636,88 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * takes tens of minutes — holding the request open would time out every
    * proxy between here and the browser. Poll GET /issues/{id} for progress.
    */
-  r.post("/issues/:id/advance", wrap(async (req, res) => {
+  r.post("/issues/:id/advance", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
-    const issue = await orch.repo.getIssue(id);
-    if (!issue) { notFound(res, `issue '${id}'`); return; }
+    const issue = await issueFor(req, res, id);
+    if (!issue) return;
     if (issue.status === "done") { badRequest(res, `issue ${issue.identifier} is already done`); return; }
     orch.engine.retry(id).catch((err: unknown) => {
       console.error(`[orchestrator] retry(${id}) failed:`, err);
+    });
+    res.status(202).json({ ok: true, issueId: id });
+  }));
+
+  // ---- stopping a run ---------------------------------------------------
+  //
+  // All three return 202 with the issue as it stands. A graceful pause may
+  // wait as long as an agent run before it takes effect, so a response that
+  // waited for the status to change would hold the connection open for twenty
+  // minutes on a request that had already succeeded. Poll GET /issues/{id}.
+
+  r.post("/issues/:id/pause", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    const issue = await issueFor(req, res, id);
+    if (!issue) return;
+    const force = Boolean((req.body ?? {}).force);
+    const principal = (req as AuthedRequest).principal!;
+    let updated;
+    try {
+      updated = await orch.engine.pause(id, { force, by: principal.user.id });
+    } catch (err) {
+      badRequest(res, err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await platform.recordAction({
+      companyId: issue.company_id, issueId: id, userId: principal.user.id,
+      verb: force ? "issue.pause_now" : "issue.pause", targetType: "issue", targetId: id,
+    });
+    res.status(202).json(updated);
+  }));
+
+  r.post("/issues/:id/cancel", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    const issue = await issueFor(req, res, id);
+    if (!issue) return;
+    const principal = (req as AuthedRequest).principal!;
+    let updated;
+    try {
+      updated = await orch.engine.cancel(id, { by: principal.user.id });
+    } catch (err) {
+      badRequest(res, err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await platform.recordAction({
+      companyId: issue.company_id, issueId: id, userId: principal.user.id,
+      verb: "issue.cancel", targetType: "issue", targetId: id,
+    });
+    res.status(202).json(updated);
+  }));
+
+  r.post("/issues/:id/resume", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    const issue = await issueFor(req, res, id);
+    if (!issue) return;
+    const principal = (req as AuthedRequest).principal!;
+    // Refused synchronously so the caller learns "this was cancelled" now,
+    // rather than getting a 202 for something that will never move.
+    if (issue.status === "cancelled") {
+      res.status(409).json({
+        error: "cancelled",
+        message: `${issue.identifier} was cancelled and does not resume. ` +
+                 `Start the workflow again if it is still wanted.`,
+      });
+      return;
+    }
+    if (issue.status === "done") { badRequest(res, `${issue.identifier} is already done`); return; }
+
+    // Fire-and-forget: resuming runs an agent step. Same reason POST /issues
+    // and the gate decisions return 202.
+    orch.engine.resume(id).catch((err: unknown) => {
+      console.error(`[orchestrator] resume(${id}) failed:`, err);
+    });
+    await platform.recordAction({
+      companyId: issue.company_id, issueId: id, userId: principal.user.id,
+      verb: "issue.resume", targetType: "issue", targetId: id,
     });
     res.status(202).json({ ok: true, issueId: id });
   }));
@@ -599,10 +727,10 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * the child process would keep writing to a log whose run row no longer
    * exists, and its cost would vanish from the spend figures.
    */
-  r.delete("/issues/:id", wrap(async (req, res) => {
+  r.delete("/issues/:id", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
-    const issue = await orch.repo.getIssue(id);
-    if (!issue) { notFound(res, `issue '${id}'`); return; }
+    const issue = await issueFor(req, res, id);
+    if (!issue) return;
     const live = (await orch.repo.listRuns(id)).filter(r2 => !r2.finished_at);
     if (live.length) {
       badRequest(res, `issue ${issue.identifier} has a run in flight — wait for it, or stop the process first`);
@@ -612,30 +740,39 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, { ok: true, deleted: issue.identifier });
   }));
 
-  r.get("/issues/:id/comments", wrap(async (req, res) => {
-    ok(res, await orch.repo.listComments(pathParam(req.params.id)));
+  r.get("/issues/:id/comments", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
+    ok(res, await orch.repo.listComments(id));
   }));
 
-  r.post("/issues/:id/comments", wrap(async (req, res) => {
+  r.post("/issues/:id/comments", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
     const { body, authorAgentId, authorUser } =
       (req.body ?? {}) as { body?: string; authorAgentId?: string; authorUser?: string };
     if (!body) { badRequest(res, "body is required"); return; }
+    if (!(await issueFor(req, res, id))) return;
     const comment = await orch.repo.addComment(
       id, body, { agentId: authorAgentId ?? null, user: authorUser ?? "api" });
     res.status(201).json(comment);
   }));
 
-  r.get("/issues/:id/work-products", wrap(async (req, res) => {
-    ok(res, await orch.repo.listWorkProducts(pathParam(req.params.id)));
+  r.get("/issues/:id/work-products", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
+    ok(res, await orch.repo.listWorkProducts(id));
   }));
 
-  r.get("/issues/:id/gates", wrap(async (req, res) => {
-    ok(res, await orch.repo.listGates(pathParam(req.params.id)));
+  r.get("/issues/:id/gates", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
+    ok(res, await orch.repo.listGates(id));
   }));
 
-  r.get("/issues/:id/runs", wrap(async (req, res) => {
-    ok(res, await orch.repo.listRuns(pathParam(req.params.id)));
+  r.get("/issues/:id/runs", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
+    ok(res, await orch.repo.listRuns(id));
   }));
 
   // ---- gates ------------------------------------------------------------
@@ -650,8 +787,14 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    */
   const decide = (status: "approved" | "rejected") => wrap(async (req: Request, res: Response) => {
     const id = pathParam(req.params.id);
-    const gate = await orch.repo.getGate(id);
-    if (!gate) { notFound(res, `gate '${id}'`); return; }
+    const gate = await orch.repo.getGate(id).catch(() => null);
+    // Scoped through the issue that owns it: approving another organisation's
+    // gate would publish their document, which is about as consequential as a
+    // cross-tenant action gets.
+    if (!gate || !(await issueFor(req, res, gate.issue_id))) {
+      if (!gate) notFound(res, `gate '${id}'`);
+      return;
+    }
     const { note, by } = (req.body ?? {}) as { note?: string; by?: string };
     const { issueId } = await orch.engine.decideGate(id, status, note, by, { advance: false });
     orch.engine.advance(issueId).catch((err: unknown) => {
@@ -660,22 +803,22 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     res.status(202).json({ ok: true, issueId });
   });
 
-  r.post("/gates/:id/approve", decide("approved"));
-  r.post("/gates/:id/reject", decide("rejected"));
+  r.post("/gates/:id/approve", guard, decide("approved"));
+  r.post("/gates/:id/reject", guard, decide("rejected"));
 
   // ---- runs ---------------------------------------------------------------
 
-  r.get("/runs/:id", wrap(async (req, res) => {
+  r.get("/runs/:id", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
-    const run = await orch.repo.getRun(id);
-    if (!run) { notFound(res, `run '${id}'`); return; }
+    const run = await runFor(req, res, id);
+    if (!run) return;
     ok(res, run);
   }));
 
-  r.get("/runs/:id/log", wrap(async (req, res) => {
+  r.get("/runs/:id/log", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
-    const run = await orch.repo.getRun(id);
-    if (!run) { notFound(res, `run '${id}'`); return; }
+    const run = await runFor(req, res, id);
+    if (!run) return;
     const offset = Number(req.query.offset ?? 0);
     let raw: string;
     try {
@@ -687,10 +830,10 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, { content: raw.slice(offset), nextOffset: raw.length });
   }));
 
-  r.get("/runs/:id/transcript", wrap(async (req, res) => {
+  r.get("/runs/:id/transcript", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
-    const run = await orch.repo.getRun(id);
-    if (!run) { notFound(res, `run '${id}'`); return; }
+    const run = await runFor(req, res, id);
+    if (!run) return;
     const offset = Number(req.query.offset ?? 0);
     let raw: string;
     try {
@@ -705,8 +848,8 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
 
   // ---- usage / config -----------------------------------------------------
 
-  r.get("/budgets", wrap(async (_req, res) => {
-    ok(res, await orch.repo.listBudgets(orch.companyId));
+  r.get("/budgets", guard, wrap(async (req, res) => {
+    ok(res, await orch.repo.listBudgets(org(req)));
   }));
 
   /**
@@ -714,7 +857,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * reads the WORKFLOW budget first and falls back to the agent's, so a limit
    * set here takes effect on the next run with no restart.
    */
-  r.post("/budgets", wrap(async (req, res) => {
+  r.post("/budgets", guard, wrap(async (req, res) => {
     const { scope, scopeKey, maxTokens, maxCostUsd, maxDurationMs } =
       (req.body ?? {}) as { scope?: string; scopeKey?: string;
                             maxTokens?: number; maxCostUsd?: number; maxDurationMs?: number };
@@ -724,15 +867,15 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       return;
     }
     if (maxTokens == null && maxCostUsd == null && maxDurationMs == null) {
-      await orch.repo.clearBudget(orch.companyId, scope, scopeKey);
+      await orch.repo.clearBudget(org(req), scope, scopeKey);
       ok(res, { ok: true, cleared: true, scope, scopeKey });
       return;
     }
-    await orch.repo.setBudget(orch.companyId, scope, scopeKey, { maxTokens, maxCostUsd, maxDurationMs });
+    await orch.repo.setBudget(org(req), scope, scopeKey, { maxTokens, maxCostUsd, maxDurationMs });
     ok(res, { ok: true, scope, scopeKey, maxTokens, maxCostUsd, maxDurationMs });
   }));
 
-  r.get("/usage", wrap(async (_req, res) => {
+  r.get("/usage", guard, wrap(async (req, res) => {
     const { rows } = await orch.db.query<{
       run_count: string; input_tokens: string | null; output_tokens: string | null;
       cache_read_tokens: string | null; cache_creation_tokens: string | null; cost_usd: string | null;
@@ -746,7 +889,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
          from runs r
          join issues i on i.id = r.issue_id
         where i.company_id = $1`,
-      [orch.companyId]);
+      [org(req)]);
     const row = rows[0];
     ok(res, {
       runCount: Number(row?.run_count ?? 0),
@@ -758,7 +901,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     });
   }));
 
-  r.get("/config", wrap(async (_req, res) => {
+  r.get("/config", guard, wrap(async (_req, res) => {
     ok(res, {
       workspace: orch.config.workspace,
       company: orch.config.company ?? "Scyne",
@@ -800,7 +943,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
    * hand-maintained and a later pipeline change would stop reaching it. The
    * layers meant to be edited — the agent's bundle and the skill — already are.
    */
-  r.get("/workflows/:key", wrap(async (req, res) => {
+  r.get("/workflows/:key", guard, wrap(async (req, res) => {
     const key = pathParam(req.params.key);
     const wf = orch.config.workflows.find(w => w.key === key);
     if (!wf) { notFound(res, `workflow '${key}'`); return; }

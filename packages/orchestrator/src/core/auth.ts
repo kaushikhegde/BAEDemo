@@ -128,9 +128,39 @@ export function bearerFrom(headers: Record<string, unknown>): string | null {
 
 // ------------------------------------------------------------------- roles
 
-/** Global roles: what KIND of thing a user may do, anywhere. */
-export const GLOBAL_ROLES = ["admin", "member", "viewer"] as const;
+/**
+ * Global roles: what KIND of thing a user may do, anywhere.
+ *
+ * `superadmin` is the operator of the whole install and is the ONLY role that
+ * crosses organisations. It works by BYPASSING the company filter rather than
+ * by holding a membership of every org: a role implemented as N memberships is
+ * a role that breaks silently the day someone deletes one of them, and the
+ * breakage looks like a permissions bug rather than like missing data.
+ *
+ * Ordered strongest-first, so the array doubles as documentation of the rank.
+ */
+export const GLOBAL_ROLES = ["superadmin", "admin", "member", "viewer"] as const;
 export type GlobalRole = (typeof GLOBAL_ROLES)[number];
+
+/**
+ * Ranked so a check can ask "at least this much" rather than enumerating
+ * roles, exactly as PROJECT_RANK does below for project roles. Without this a
+ * new role has to be added to every `role === "admin" || role === "…"` in the
+ * codebase, and the one that gets missed is the security hole.
+ */
+const GLOBAL_RANK: Record<GlobalRole, number> = {
+  superadmin: 4, admin: 3, member: 2, viewer: 1,
+};
+
+export function atLeastGlobal(held: string | null | undefined, required: GlobalRole): boolean {
+  if (!held || !isGlobalRole(held)) return false;
+  return GLOBAL_RANK[held] >= GLOBAL_RANK[required];
+}
+
+/** Narrow, so no call site has to spell the magic string. */
+export function isSuperadmin(role: string | null | undefined): boolean {
+  return role === "superadmin";
+}
 
 /** Per-project roles: which projects they may do it to. */
 export const PROJECT_ROLES = ["owner", "editor", "viewer"] as const;
@@ -158,7 +188,8 @@ export function isProjectRole(v: string): v is ProjectRole {
 /**
  * The effective role a user holds on a project.
  *
- * An `admin` holds `owner` everywhere — otherwise an administrator could not
+ * An `admin` (and a `superadmin`) holds `owner` everywhere — otherwise an
+ * administrator could not
  * repair a project whose only owner has left, which is exactly when
  * administration is needed. A global `viewer` is capped at `viewer` however
  * they are granted, because that role exists to be a read-only account and a
@@ -167,7 +198,7 @@ export function isProjectRole(v: string): v is ProjectRole {
 export function effectiveProjectRole(
   globalRole: string, membership: ProjectRole | null,
 ): ProjectRole | null {
-  if (globalRole === "admin") return "owner";
+  if (globalRole === "superadmin" || globalRole === "admin") return "owner";
   if (globalRole === "viewer") return membership ? "viewer" : null;
   return membership;
 }

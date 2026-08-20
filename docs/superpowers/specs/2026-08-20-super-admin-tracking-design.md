@@ -4,6 +4,11 @@
 **Status:** Design, awaiting review
 **Sibling specs:** `2026-08-20-codex-cli-adapter-design.md`, `2026-08-20-azure-devops-publishing-design.md`
 
+> **Superseded in part, 2026-08-20** by
+> `2026-08-20-multitenant-platform-design.md`, which was written after the
+> user chose a MULTI-ORGANISATION model with a super-admin above it (this spec assumed a single company throughout).
+> Read that spec first; this one is kept for the reasoning it records.
+
 ---
 
 ## 1. Why

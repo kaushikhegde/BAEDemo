@@ -42,6 +42,26 @@ let orch: Orchestrator;
 let server: Server;
 let baseUrl: string;
 
+/**
+ * Every engine route requires a credential now.
+ *
+ * Rather than thread a bearer token through seventy-odd call sites, this
+ * module SHADOWS the global `fetch` with a wrapper that adds the bootstrapped
+ * superadmin's token. `rawFetch` is the unauthenticated one, kept for the
+ * tests that have to assert what happens WITHOUT a credential — which is the
+ * whole point of the boundary and so must be tested with the real thing.
+ */
+const rawFetch = globalThis.fetch;
+let token = "";
+const fetch = (url: string | URL, init: RequestInit = {}): Promise<Response> =>
+  rawFetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers as Record<string, string> | undefined),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-http-"));
   orch = await createOrchestrator(config(dir));
@@ -54,9 +74,19 @@ beforeEach(async () => {
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   baseUrl = `http://127.0.0.1:${port}`;
+
+  // Claim the installation and keep the credential. /auth/bootstrap is one of
+  // the few unauthenticated routes, so it goes through rawFetch.
+  const claimed = await rawFetch(`${baseUrl}/auth/bootstrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "root@scyne.co", password: "pw-root" }),
+  });
+  token = (await claimed.json()).token;
 });
 
 afterEach(async () => {
+  token = "";
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await orch.close();
   rmSync(dir, { recursive: true, force: true });
@@ -641,3 +671,215 @@ describe("router: org and budget control", () => {
   });
 });
 
+
+describe("the engine routes are not public", () => {
+  const CLOSED: ReadonlyArray<readonly [string, string]> = [
+    ["GET", "/issues"], ["POST", "/issues"], ["GET", "/agents"], ["GET", "/config"],
+    ["GET", "/runners"], ["GET", "/skills"], ["GET", "/budgets"], ["GET", "/usage"],
+    ["GET", "/workflows/requirements"],
+  ];
+
+  it.each(CLOSED)("401s %s %s without a credential", async (method, path) => {
+    const res = await rawFetch(`${baseUrl}${path}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: method === "POST" ? JSON.stringify({ workflow: "requirements", params: {} }) : undefined,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s a fabricated token rather than trusting its shape", async () => {
+    const res = await rawFetch(`${baseUrl}/issues`, { headers: { authorization: "Bearer scy_made_up" } });
+    expect(res.status).toBe(401);
+  });
+
+  it("still answers /health — a health check that needs a credential is not one", async () => {
+    expect((await rawFetch(`${baseUrl}/health`)).status).toBe(200);
+  });
+
+  it("serves the console shell unauthenticated; the DATA behind it is what is gated", async () => {
+    // The shell calls /auth/whoami and renders a login form until it succeeds.
+    expect((await rawFetch(`${baseUrl}/orch`)).status).toBe(200);
+    expect((await rawFetch(`${baseUrl}/docs`)).status).toBe(200);
+    expect((await rawFetch(`${baseUrl}/openapi.json`)).status).toBe(200);
+  });
+
+  it("answers every one of them WITH a credential", async () => {
+    for (const [method, path] of CLOSED) {
+      if (method !== "GET") continue;
+      const res = await fetch(`${baseUrl}${path}`);
+      expect([200, 404], `${method} ${path} returned ${res.status}`).toContain(res.status);
+    }
+  });
+
+  it("reports an install-wide queue depth, not just the home organisation's", async () => {
+    await createAndSettle();
+    const body = await (await rawFetch(`${baseUrl}/health`)).json();
+    const total = Object.values(body.queue as Record<string, number>).reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(0);
+  });
+});
+
+describe("attribution", () => {
+  it("records the person who started an issue", async () => {
+    const me = await (await fetch(`${baseUrl}/auth/whoami`)).json();
+    const res = await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    });
+    const issue = await res.json();
+    expect(res.status).toBe(201);
+    expect(issue.created_by).toBe(me.id);
+  });
+
+  it("tolerates not knowing, rather than inventing an attribution", async () => {
+    // An internal caller — the CLI running the engine directly, a resumed
+    // workflow — has no principal, and that is a legitimate null.
+    const issue = await orch.engine.start("requirements", { project: "P" });
+    expect((await orch.repo.getIssue(issue.id))!.created_by).toBeNull();
+  });
+
+  it("files the issue in the organisation the caller was acting in", async () => {
+    const made = await fetch(`${baseUrl}/orgs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Elsewhere Ltd" }),
+    });
+    const other = await made.json();
+    expect(made.status).toBe(201);
+
+    const res = await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-scyne-org": "elsewhere-ltd" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    });
+    const issue = await res.json();
+    expect(res.status).toBe(201);
+    expect(issue.company_id).toBe(other.id);
+
+    // and it is invisible from the home organisation's listing
+    const home = await (await fetch(`${baseUrl}/issues`)).json();
+    expect(home.map((i: { id: string }) => i.id)).not.toContain(issue.id);
+  });
+
+  it("still resolves the assignee for an issue started in another organisation", async () => {
+    await fetch(`${baseUrl}/orgs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Assignee Test Co" }),
+    });
+    const res = await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-scyne-org": "assignee-test-co" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    });
+    const issue = await res.json();
+    // The agent org chart lives in the home organisation; an issue elsewhere
+    // must still find its assignee rather than silently owning nobody.
+    expect(issue.assignee_agent_id).not.toBeNull();
+  });
+});
+
+describe("stopping a run over HTTP", () => {
+  const post = (path: string, body?: unknown) =>
+    fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it("records a graceful pause and parks the issue", async () => {
+    const { issue } = await createAndSettle();
+    const res = await post(`/issues/${issue.id}/pause`);
+    expect(res.status).toBe(202);
+    const after = await (await fetch(`${baseUrl}/issues/${issue.id}`)).json();
+    expect(["paused", "in_review"]).toContain(after.status);
+  });
+
+  it("cancels, and then refuses to resume", async () => {
+    const { issue } = await createAndSettle();
+    expect((await post(`/issues/${issue.id}/cancel`)).status).toBe(202);
+    await orch.engine.advance(issue.id);
+
+    const after = await (await fetch(`${baseUrl}/issues/${issue.id}`)).json();
+    expect(after.status).toBe("cancelled");
+
+    const resumed = await post(`/issues/${issue.id}/resume`);
+    expect(resumed.status).toBe(409);
+    expect((await resumed.json()).error).toBe("cancelled");
+  });
+
+  it("resumes a paused issue", async () => {
+    const { issue } = await createAndSettle();
+    await post(`/issues/${issue.id}/pause`);
+    await orch.engine.advance(issue.id);
+    const resumed = await post(`/issues/${issue.id}/resume`);
+    expect(resumed.status).toBe(202);
+  });
+
+  it("401s all three without a credential", async () => {
+    const { issue } = await createAndSettle();
+    for (const verb of ["pause", "cancel", "resume"]) {
+      const res = await rawFetch(`${baseUrl}/issues/${issue.id}/${verb}`, { method: "POST" });
+      expect(res.status, verb).toBe(401);
+    }
+  });
+
+  it("records who asked, in the audit trail", async () => {
+    const { issue } = await createAndSettle();
+    await post(`/issues/${issue.id}/pause`, { force: true });
+    const actions = await (await fetch(`${baseUrl}/actions`)).json();
+    expect(actions.some((a: { verb: string }) => a.verb === "issue.pause_now")).toBe(true);
+  });
+});
+
+describe("one organisation cannot reach another's issues", () => {
+  /** An issue belonging to a DIFFERENT organisation than the caller's default. */
+  async function issueElsewhere(): Promise<string> {
+    await fetch(`${baseUrl}/orgs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Far Away Co" }),
+    });
+    const res = await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-scyne-org": "far-away-co" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    });
+    return (await res.json()).id;
+  }
+
+  it("404s a read, rather than 403 — a 403 would confirm it exists", async () => {
+    const id = await issueElsewhere();
+    // No org header: we are acting as the home organisation.
+    expect((await fetch(`${baseUrl}/issues/${id}`)).status).toBe(404);
+  });
+
+  it("404s its comments, work products, gates and runs", async () => {
+    const id = await issueElsewhere();
+    for (const sub of ["comments", "work-products", "gates", "runs"]) {
+      expect((await fetch(`${baseUrl}/issues/${id}/${sub}`)).status, sub).toBe(404);
+    }
+  });
+
+  it("404s an attempt to pause, cancel, resume, advance or delete it", async () => {
+    const id = await issueElsewhere();
+    for (const verb of ["pause", "cancel", "resume", "advance"]) {
+      const res = await fetch(`${baseUrl}/issues/${id}/${verb}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+      });
+      expect(res.status, verb).toBe(404);
+    }
+    expect((await fetch(`${baseUrl}/issues/${id}`, { method: "DELETE" })).status).toBe(404);
+  });
+
+  it("404s a run belonging to it", async () => {
+    const id = await issueElsewhere();
+    const runs = await (await fetch(`${baseUrl}/issues/${id}/runs`, {
+      headers: { "x-scyne-org": "far-away-co" },
+    })).json();
+    if (!runs.length) return;   // nothing ran; the assertion above already covers the listing
+    expect((await fetch(`${baseUrl}/runs/${runs[0].id}`)).status).toBe(404);
+  });
+});

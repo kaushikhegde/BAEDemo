@@ -21,7 +21,7 @@
 //
 // The install's own material — scripts/, skills/, examples/ — is LINKED in
 // rather than copied, because an agent's prompt tells it to run
-// `node scripts/confluence-publish.mjs` from its working directory. Links are
+// `node scripts/ado-publish.mjs` from its working directory. Links are
 // never harvested: they are the install's content, not the project's.
 //
 // Harvest is non-destructive on purpose. A file that vanished from the tree is

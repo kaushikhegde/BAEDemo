@@ -21,7 +21,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 async function resolveIssueId(orch: Orchestrator, given: string): Promise<string> {
   if (UUID_RE.test(given)) return given;
-  const issues = await orch.repo.listIssues(orch.companyId);
+  const issues = await orch.repo.listIssues(orch.homeCompanyId);
   const match = issues.find(i => i.identifier === given);
   if (!match) throw new Error(`issue '${given}' not found (tried as both a uuid and an identifier like 'SCY-7')`);
   return match.id;
@@ -197,8 +197,8 @@ async function main(): Promise<void> {
   try {
     switch (verb) {
       case "seed": {
-        const agents = await orch.repo.listAgents(orch.companyId);
-        console.log(`✓ ${agents.length} agent(s) reconciled for company ${orch.companyId}`);
+        const agents = await orch.repo.listAgents(orch.homeCompanyId);
+        console.log(`✓ ${agents.length} agent(s) reconciled for company ${orch.homeCompanyId}`);
         break;
       }
 
@@ -226,8 +226,8 @@ async function main(): Promise<void> {
         const hard = rest.includes("--hard") || all;
         const confirmed = rest.includes("--yes");
 
-        const agents = await orch.repo.listAgents(orch.companyId);
-        const issues = await orch.repo.listIssues(orch.companyId);
+        const agents = await orch.repo.listAgents(orch.homeCompanyId);
+        const issues = await orch.repo.listIssues(orch.homeCompanyId);
         const logDir = join(orch.config.workspace, ".orchestrator", "runs");
         let logs: string[] = [];
         try { logs = (await readdir(logDir)).filter(f => f.endsWith(".jsonl")); } catch { logs = []; }
@@ -235,7 +235,7 @@ async function main(): Promise<void> {
         if (!confirmed) {
           // Destructive by request only: the bare verb is a dry run, so a
           // half-remembered command cannot cost anyone their history.
-          console.log(`Would delete, for company ${orch.companyId}:`);
+          console.log(`Would delete, for company ${orch.homeCompanyId}:`);
           console.log(`  ${issues.length} issue(s) and every comment, work product, gate and run under them`);
           console.log(`  every budget`);
           console.log(`  ${logs.length} raw run log(s) in .orchestrator/runs/`);
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
 
           if (all) {
             const n = async (sql: string): Promise<string> =>
-              (await orch.db.query<{ n: string }>(sql, [orch.companyId])).rows[0]?.n ?? "0";
+              (await orch.db.query<{ n: string }>(sql, [orch.homeCompanyId])).rows[0]?.n ?? "0";
             console.log(
               `  ${await n(`select count(*)::text n from users where company_id=$1`)} user(s), ` +
               `every API token and session`);
@@ -268,7 +268,7 @@ async function main(): Promise<void> {
           break;
         }
 
-        const summary = await orch.repo.resetCompany(orch.companyId, { agents: hard, platform: all });
+        const summary = await orch.repo.resetCompany(orch.homeCompanyId, { agents: hard, platform: all });
 
         // The logs are referenced by run rows that no longer exist; leaving
         // them behind is orphaned disk that no console view can reach.
@@ -279,10 +279,10 @@ async function main(): Promise<void> {
           // Put the org back immediately rather than waiting for the next boot,
           // so `reset --hard` leaves a usable orchestrator rather than an empty
           // one that only works after a restart.
-          for (const spec of orch.config.org) await orch.repo.upsertAgent(orch.companyId, spec);
+          for (const spec of orch.config.org) await orch.repo.upsertAgent(orch.homeCompanyId, spec);
         }
 
-        const now = await orch.repo.listAgents(orch.companyId);
+        const now = await orch.repo.listAgents(orch.homeCompanyId);
         console.log(`✓ deleted ${summary.issues} issue(s), ${summary.runs} run(s), ` +
                     `${summary.budgets} budget(s), ${logs.length} log file(s)`);
         if (hard) console.log(`✓ dropped the overrides overlay and rebuilt the org from the config file`);
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
               if (g.status === "pending") rows.push({ gate: g, issueLabel: issue.identifier });
             }
           } else {
-            for (const iss of await orch.repo.listIssues(orch.companyId)) {
+            for (const iss of await orch.repo.listIssues(orch.homeCompanyId)) {
               for (const g of await orch.repo.listGates(iss.id)) {
                 if (g.status === "pending") rows.push({ gate: g, issueLabel: iss.identifier });
               }

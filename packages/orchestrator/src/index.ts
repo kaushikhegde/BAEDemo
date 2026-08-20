@@ -42,14 +42,15 @@ export {
   type Manifest, type HarvestResult, type MaterialiseInput, type FeatureRef,
 } from "./core/materialise.js";
 export {
-  createPlatformRepo,
-  type PlatformRepo, type UserRow, type ProjectRow, type FeatureRow,
+  createPlatformRepo, slugify,
+  type PlatformRepo, type CompanyRow, type UserRow, type ProjectRow, type FeatureRow,
   type InstallationRow, type ActionRow, type ConversationRow, type MessageRow,
   type Principal, type SpendRow,
 } from "./core/platform.js";
 export {
   hashPassword, verifyPassword, mintToken, hashToken, looksLikeToken, bearerFrom,
-  atLeast, effectiveProjectRole, isGlobalRole, isProjectRole, sessionExpiry,
+  atLeast, atLeastGlobal, effectiveProjectRole, isGlobalRole, isProjectRole,
+  isSuperadmin, sessionExpiry,
   GLOBAL_ROLES, PROJECT_ROLES, TOKEN_PREFIX,
   type GlobalRole, type ProjectRole, type MintedToken,
 } from "./core/auth.js";
@@ -73,7 +74,17 @@ export interface Orchestrator {
   org: ReturnType<typeof applyOverrides>;
   repo: ReturnType<typeof createRepo>;
   engine: ReturnType<typeof createEngine>;
-  companyId: string;
+  /**
+   * The organisation named by `config.company`.
+   *
+   * This is where the AGENT ORG CHART is reconciled on every boot, and the
+   * default for an internal caller that has no principal. It is NOT the only
+   * organisation: a request acts within `principal.companyId`, which a
+   * superadmin can retarget with `X-Scyne-Org`. The rename from `companyId`
+   * was the point of the multi-tenancy change — the old name read as "the
+   * company", and it was being used as though there were only one.
+   */
+  homeCompanyId: string;
   config: OrchestratorConfig;
   close: () => Promise<void>;
 }
@@ -122,7 +133,7 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   await engine.recoverOrphans();
 
   return {
-    db, repo, engine, companyId, config, org,
+    db, repo, engine, homeCompanyId: companyId, config, org,
     close: () => db.close(),
   };
 }

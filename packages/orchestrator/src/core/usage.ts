@@ -98,10 +98,15 @@ export function extractUsage(streamJsonLines: string): RunUsage | null {
  * discipline `extractUsage` above was written with — the field names are
  * observed, not remembered.
  *
- * `costUsd` is ALWAYS null: Codex reports tokens and does not price them, and
- * this repository deliberately holds no price table (see CLAUDE.md — a figure
- * in the console is the CLI's own arithmetic, never ours). Null renders as `—`;
- * returning 0 would render as `$0.0000` and read as a free run.
+ * `costUsd` is ALWAYS null, and stays that way: Codex reports tokens and does
+ * not price them. `runs.cost_usd` means REPORTED BY THE CLI and nothing else,
+ * so a figure there is always the CLI's own arithmetic rather than ours.
+ *
+ * Since migration 007 an estimate is computed separately by `priceRun` below
+ * and stored in `runs.est_cost_usd`, with `runs.cost_source` recording which
+ * of the two a reader is looking at. Returning a computed figure from HERE
+ * would collapse that distinction at the one point where it is still cheap to
+ * keep. Null renders as `—`; 0 would render as `$0.0000` and read as a free run.
  */
 export function extractCodexUsage(jsonlLines: string): RunUsage | null {
   let input = 0, output = 0, cachedInput = 0;
@@ -144,4 +149,69 @@ export function extractCodexUsage(jsonlLines: string): RunUsage | null {
     numTurns: null,
     sessionId,
   };
+}
+
+// ---------------------------------------------------------------- pricing
+
+/**
+ * The rates for one model, in dollars per MILLION tokens.
+ *
+ * Every field is nullable because "no published price" and "free" are
+ * different facts. A model with no input and no output rate is unpriced and
+ * computes nothing; a model missing only its CACHED rate simply has no cache
+ * discount, which is a real and common state (gpt-5-pro publishes none).
+ */
+export interface ModelPrice {
+  inputPerMTok: number | null;
+  cachedInputPerMTok: number | null;
+  outputPerMTok: number | null;
+}
+
+const PER_MTOK = 1_000_000;
+const rate = (v: number | null | undefined): number =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+
+/**
+ * What a run cost, computed from its token counts.
+ *
+ * Pure and I/O-free so the arithmetic can be tested exactly — which matters
+ * more here than usual, because this figure is allowed to trip a cost budget
+ * and stop somebody's work.
+ *
+ * Returns null when the model is unknown or genuinely unpriced. NOT zero:
+ * `$0.00` renders as a run that cost nothing, and the honest rendering of "we
+ * do not know" is `—`.
+ *
+ * **Cached input is subtracted from the input count, not added to it.** Codex
+ * reports `input_tokens` as the TOTAL with cached tokens included; billing all
+ * of it at the full rate and then charging the cached tokens again would
+ * over-report every cached run, and on a long agent session most of the input
+ * is cached.
+ */
+export function priceRun(usage: RunUsage, price: ModelPrice | null): number | null {
+  if (!price) return null;
+
+  const inRate = price.inputPerMTok;
+  const outRate = price.outputPerMTok;
+  // Unpriced: neither side has a rate. One side alone is enough to price a run
+  // — a model with only an output rate still bills its output.
+  if ((inRate === null || inRate === undefined) && (outRate === null || outRate === undefined)) {
+    return null;
+  }
+
+  // Clamped to the reported input: a transcript that reports more cached
+  // tokens than input tokens is malformed, and the alternative to clamping is
+  // a negative uncached count, i.e. issuing a credit.
+  const reportedIn = Math.max(0, rate(usage.inputTokens));
+  const cached = Math.min(Math.max(0, rate(usage.cacheReadTokens)), reportedIn);
+  const uncachedIn = reportedIn - cached;
+
+  const cost =
+    (uncachedIn / PER_MTOK) * rate(inRate) +
+    (cached / PER_MTOK) * rate(price.cachedInputPerMTok) +
+    (rate(usage.outputTokens) / PER_MTOK) * rate(outRate);
+
+  // A non-finite result can only come from a nonsense token count; reporting
+  // nothing beats reporting Infinity to a budget check.
+  return Number.isFinite(cost) ? cost : null;
 }

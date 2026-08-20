@@ -1,9 +1,32 @@
+// Every call in this file goes through `apiFetch`, never `fetch` directly.
+//
+// Two reasons. `credentials: "include"` sends the httpOnly session cookie —
+// same-origin requests would send it by default under Vite's proxy, but that
+// makes the app quietly dependent on being served from the same origin as its
+// API, and it is not worth a class of bug that only appears in deployment.
+//
+// And a 401 means one specific thing — the session has expired — with one
+// specific remedy. Announcing it once here returns the user to the login
+// screen, instead of every caller separately rendering "request failed" for
+// someone who simply needs to sign in again.
+
+/** Fired when the server rejects our session. App.tsx listens and signs out. */
+export const UNAUTHENTICATED_EVENT = "scyne:unauthenticated";
+
+async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(input, { credentials: "include", ...init });
+  if (res.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+  }
+  return res;
+}
+
 export async function postChat(
   messages: { role: "user" | "assistant"; content: any }[],
   target?: { project: string | null; feature: string | null },
   uiContext?: { active: boolean; project: string | null; feature: string | null },
 ) {
-  const r = await fetch("/api/chat", {
+  const r = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, target, uiContext }),
@@ -13,7 +36,7 @@ export async function postChat(
 }
 
 export async function postTrigger(overrides: Record<string, string> = {}) {
-  const r = await fetch("/api/trigger", {
+  const r = await apiFetch("/api/trigger", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(overrides),
@@ -29,7 +52,7 @@ export async function postTrigger(overrides: Record<string, string> = {}) {
 }
 
 export async function getStatus(issueId: string) {
-  const r = await fetch(`/api/status/${issueId}`);
+  const r = await apiFetch(`/api/status/${issueId}`);
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const err = new Error(body?.message || (await r.text().catch(() => r.statusText)));
@@ -45,7 +68,7 @@ export async function getStatus(issueId: string) {
 // The companion app is ONE page per project, so the registry is keyed by
 // project; the `/:feature` form is only an alias. Feature is optional here.
 export async function hasPreview(project: string, feature?: string | null): Promise<boolean> {
-  const r = await fetch(previewUrl(project, feature));
+  const r = await apiFetch(previewUrl(project, feature));
   return r.ok;
 }
 
@@ -55,7 +78,7 @@ export function previewUrl(project: string, feature?: string | null): string {
 }
 
 export async function createTarget(project: string, feature: string) {
-  const r = await fetch("/api/projects", {
+  const r = await apiFetch("/api/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project, feature }),
@@ -68,7 +91,7 @@ export async function createTarget(project: string, feature: string) {
 }
 
 export async function triggerUiBuild(project: string, feature: string) {
-  const r = await fetch("/api/ui-agent/trigger", {
+  const r = await apiFetch("/api/ui-agent/trigger", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project, feature }),
@@ -88,7 +111,7 @@ export async function triggerUiBuild(project: string, feature: string) {
 // `feature` is omitted for PROJECT stages — the capability map and personas
 // describe the client, not one slice of work.
 async function postStageTrigger(path: string, label: string, project: string, feature?: string) {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(feature ? { project, feature } : { project }),
@@ -162,7 +185,7 @@ export type BrandResult = {
 // agent — because it is a file write the user needs to see the result of straight
 // away in order to correct it.
 export async function extractBrand(url: string, project: string): Promise<BrandResult> {
-  const r = await fetch("/api/brand/extract", {
+  const r = await apiFetch("/api/brand/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url, project }),
@@ -177,7 +200,7 @@ export async function extractBrand(url: string, project: string): Promise<BrandR
 }
 
 export async function postUiComment(issueId: string, body: string) {
-  const r = await fetch("/api/ui-agent/comment", {
+  const r = await apiFetch("/api/ui-agent/comment", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ issueId, body }),
@@ -187,7 +210,7 @@ export async function postUiComment(issueId: string, body: string) {
 }
 
 export async function approve(approvalId: string, parentIssueId?: string, note?: string) {
-  const r = await fetch(`/api/approve/${approvalId}`, {
+  const r = await apiFetch(`/api/approve/${approvalId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parentIssueId, note }),
@@ -204,7 +227,7 @@ export async function approve(approvalId: string, parentIssueId?: string, note?:
 // Send reviewer feedback back to the BA: marks the gate revision_requested and
 // re-fires the BA's issue so it regenerates and raises a fresh gate.
 export async function requestChanges(approvalId: string, issueId: string, feedback: string) {
-  const r = await fetch(`/api/request-changes/${approvalId}`, {
+  const r = await apiFetch(`/api/request-changes/${approvalId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ issueId, feedback }),
@@ -223,7 +246,7 @@ export interface HistoryEntry {
 }
 
 export async function getHistory(): Promise<HistoryEntry[]> {
-  const r = await fetch("/api/history");
+  const r = await apiFetch("/api/history");
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -237,7 +260,7 @@ export interface RunSummary {
 }
 
 export async function getRuns(issueId: string): Promise<RunSummary[]> {
-  const r = await fetch(`/api/runs/${issueId}`);
+  const r = await apiFetch(`/api/runs/${issueId}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -246,13 +269,13 @@ export async function getRuns(issueId: string): Promise<RunSummary[]> {
 import type { AgentRunsSnapshot, TranscriptTail } from "./types";
 
 export async function getAgentRuns(issueId: string): Promise<AgentRunsSnapshot> {
-  const r = await fetch(`/api/runs/${issueId}/agent-runs`);
+  const r = await apiFetch(`/api/runs/${issueId}/agent-runs`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
 export async function getTranscriptTail(runId: string, offset: number): Promise<TranscriptTail> {
-  const r = await fetch(`/api/runs/${runId}/transcript?offset=${offset}`);
+  const r = await apiFetch(`/api/runs/${runId}/transcript?offset=${offset}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -290,7 +313,7 @@ export async function uploadFile(
   form.append("feature", feature);
   if (hint) form.append("hint", hint);
   form.append("file", file);
-  const r = await fetch("/api/upload", { method: "POST", body: form });
+  const r = await apiFetch("/api/upload", { method: "POST", body: form });
   if (r.status === 409) {
     const body = await r.json();
     if (body?.error === "ambiguous_kind") {
@@ -310,7 +333,7 @@ export function recordingSocketUrl(): string {
 
 /** Write projects/<project>/description.md — the project definition every skill reads. */
 export async function saveProjectDefinition(project: string, description: string): Promise<{ ok: boolean; project: string; path: string; bytes: number }> {
-  const r = await fetch("/api/project-description", {
+  const r = await apiFetch("/api/project-description", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project, description }),
@@ -321,7 +344,7 @@ export async function saveProjectDefinition(project: string, description: string
 
 /** Read it back, for showing the current definition in chat. */
 export async function getProjectDefinition(project: string): Promise<{ project: string; exists: boolean; content: string }> {
-  const r = await fetch(`/api/project-description/${encodeURIComponent(project)}`);
+  const r = await apiFetch(`/api/project-description/${encodeURIComponent(project)}`);
   if (!r.ok) throw new Error(`read failed (${r.status})`);
   return r.json();
 }
@@ -330,7 +353,7 @@ export async function getProjectDefinition(project: string): Promise<{ project: 
 // --- Project + feature creation, suggestions, revision ---------------------
 
 async function postJson(path: string, label: string, body: unknown) {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -374,7 +397,7 @@ export async function fetchSuggestions(project?: string | null, feature?: string
   if (project) qs.set("project", project);
   if (feature) qs.set("feature", feature);
   try {
-    const r = await fetch(`/api/suggestions?${qs.toString()}`);
+    const r = await apiFetch(`/api/suggestions?${qs.toString()}`);
     if (!r.ok) return [];
     const body = await r.json();
     return Array.isArray(body?.chips) ? body.chips : [];
@@ -399,7 +422,7 @@ export async function fetchStaleness(project: string, feature?: string | null): 
     const path = feature
       ? `/api/staleness/${encodeURIComponent(project)}/${encodeURIComponent(feature)}`
       : `/api/staleness/${encodeURIComponent(project)}`;
-    const r = await fetch(path);
+    const r = await apiFetch(path);
     if (!r.ok) return [];
     const body = await r.json();
     return Array.isArray(body?.stale) ? body.stale : [];
@@ -413,7 +436,7 @@ export async function uploadProjectFile(project: string, file: File) {
   const form = new FormData();
   form.append("project", project);
   form.append("file", file);
-  const r = await fetch("/api/upload/project", { method: "POST", body: form });
+  const r = await apiFetch("/api/upload/project", { method: "POST", body: form });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err: any = new Error(body?.message || body?.error || `Upload failed (${r.status})`);
@@ -421,4 +444,35 @@ export async function uploadProjectFile(project: string, file: File) {
     throw err;
   }
   return body as { filename: string; converted: boolean; relativePath: string };
+}
+
+// ---- stopping a run ---------------------------------------------------------
+
+/**
+ * Pause a running workflow.
+ *
+ * `force` is the difference between "let the current step finish" and "stop
+ * the agent now". The first discards nothing and may take as long as an agent
+ * run to take effect; the second is immediate and loses that step's work.
+ */
+export async function pauseIssue(issueId: string, force = false) {
+  const r = await apiFetch(`/api/issues/${issueId}/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `Pause failed (${r.status})`);
+  return r.json();
+}
+
+export async function cancelIssue(issueId: string) {
+  const r = await apiFetch(`/api/issues/${issueId}/cancel`, { method: "POST" });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `Cancel failed (${r.status})`);
+  return r.json();
+}
+
+export async function resumeIssue(issueId: string) {
+  const r = await apiFetch(`/api/issues/${issueId}/resume`, { method: "POST" });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `Resume failed (${r.status})`);
+  return r.json();
 }

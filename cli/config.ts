@@ -18,6 +18,14 @@ import { createHash } from "node:crypto";
 export interface CliConfig {
   apiUrl: string;
   token?: string;
+  /**
+   * The organisation `scyne org use` pinned, by slug.
+   *
+   * Only a superadmin may act as another organisation — the server refuses the
+   * header from anyone else rather than ignoring it, so a stale pin fails
+   * loudly instead of silently doing nothing.
+   */
+  org?: string;
   /** The project `scyne use` pinned, by name. */
   project?: string;
   feature?: string;

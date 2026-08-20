@@ -6,7 +6,7 @@
 //     || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 //
 // which conflated two different questions, and two scripts then went on to
-// answer the wrong one: `convert-to-md.mjs` and `confluence-publish.mjs` both
+// answer the wrong one: `convert-to-md.mjs` and `ado-publish.mjs` both
 // resolve a node dependency through
 // `createRequire(<root>/scyne-chatbot/package.json)`, and that lookup has to
 // land on the INSTALL, not on whatever project tree the run is operating in.

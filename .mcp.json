@@ -1,8 +1,17 @@
 {
   "mcpServers": {
-    "atlassian": {
+    "azure-devops": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/mcp/authv2"]
+      "args": [
+        "-y",
+        "@azure-devops/mcp",
+        "Scyne-AI-Lab",
+        "--authentication",
+        "pat"
+      ],
+      "env": {
+        "PERSONAL_ACCESS_TOKEN": "${MCP_TOKEN_FOR_AZURE}"
+      }
     }
   }
 }

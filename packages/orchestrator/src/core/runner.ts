@@ -13,6 +13,14 @@ import { runChild } from "./spawn.js";
 
 export interface RunRequest {
   agent: { key: string; bundlePath?: string; mcpEnabled?: boolean; extraArgs?: string[] };
+  /**
+   * The run row's id, so a live child can be found and stopped by one.
+   *
+   * Optional because a caller with nothing to address the run by is still a
+   * valid caller — it simply cannot be interrupted, which is honest rather
+   * than a silent half-registration under a made-up key.
+   */
+  runId?: string;
   /** Already resolved by the engine through step → agent → defaults. */
   model?: string;
   effort?: string;
@@ -35,7 +43,14 @@ export interface RunRequest {
 
 export interface RunResult {
   exitCode: number;
-  status: "succeeded" | "failed" | "over_budget";
+  /**
+   * `cancelled` is distinct from `failed` on purpose: a run a person stopped
+   * did not fail on its own terms, and core/retry.ts must never spend money
+   * re-running one. The dangerous case is precisely a cancel a few seconds in
+   * with no usage recorded, which the transient-retry rule would otherwise
+   * treat as a free failure worth retrying.
+   */
+  status: "succeeded" | "failed" | "over_budget" | "cancelled";
   usage: RunUsage | null;
   stderrTail: string;
 }
@@ -45,7 +60,7 @@ export interface Runner {
 }
 
 /** Re-exported so existing importers of the backstop constant keep working. */
-export { BACKSTOP_DURATION_MS } from "./spawn.js";
+export { BACKSTOP_DURATION_MS, killRun, liveRuns } from "./spawn.js";
 
 /**
  * Build the argv for a headless Claude Code invocation. Exported so the

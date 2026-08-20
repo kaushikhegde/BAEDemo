@@ -49,7 +49,7 @@ function positionals(): string[] {
   }
   return out;
 }
-const BOOLEAN_FLAGS = new Set(["all", "follow", "json", "yes", "help", "quiet"]);
+const BOOLEAN_FLAGS = new Set(["all", "follow", "json", "yes", "help", "quiet", "clear", "force"]);
 
 const out = (s = ""): void => { process.stdout.write(s + "\n"); };
 const json = (v: unknown): void => out(JSON.stringify(v, null, 2));
@@ -175,10 +175,11 @@ async function cmdInit(): Promise<void> {
   // Say which server, before asking for anything. `init` claims an entire
   // installation and cannot be undone by running it again.
   out(`This claims the Scyne installation at ${apiUrl}`);
-  out(`as its first administrator. It can only be done once.`);
+  out(`as its SUPERADMIN — the operator of the whole installation, who can`);
+  out(`create organisations and see every one of them. It can only be done once.`);
   out(``);
 
-  const email = flag("email") ?? await prompt("Administrator email: ");
+  const email = flag("email") ?? await prompt("Superadmin email: ");
   const password = flag("password") ?? await prompt("Password: ", { silent: true });
 
   const client = createClient({ apiUrl, token: undefined });
@@ -212,6 +213,77 @@ async function cmdUse(client: Client, args: string[]): Promise<void> {
   }
   patch({ project: project.name, feature: feature ?? undefined });
   out(`✓ working on ${project.name}${feature ? ` / ${feature}` : ""}`);
+}
+
+/**
+ * Organisations. Superadmin territory — an ordinary administrator sees their
+ * own as a list of one, which is the honest answer to "which may I act in"
+ * and keeps a switcher from being an error state for most users.
+ */
+async function cmdOrg(client: Client, args: string[]): Promise<void> {
+  const [verb, name] = args;
+  switch (verb) {
+    case "list": case undefined: {
+      const orgs = await client.get<Array<{
+        id: string; name: string; slug: string; status: string;
+        stats: { users: string; projects: string; features: string; issues: string };
+      }>>("/orgs");
+      if (has("json")) return json(orgs);
+      const pinned = load().org;
+      table(orgs.map(o => ({
+        "": o.slug === pinned ? "*" : " ",
+        name: o.name, slug: o.slug, status: o.status,
+        users: o.stats.users, projects: o.stats.projects,
+        features: o.stats.features, issues: o.stats.issues,
+      })));
+      return;
+    }
+    case "create": {
+      if (!name) throw new ApiError(400, "usage: scyne org create <name> [--slug <slug>]");
+      const org = await client.post<{ name: string; slug: string }>(
+        "/orgs", { name, ...(flag("slug") ? { slug: flag("slug") } : {}) });
+      out(`✓ created ${org.name} (${org.slug})`);
+      out(`  Work in it with \`scyne org use ${org.slug}\``);
+      return;
+    }
+    case "use": {
+      if (has("clear")) { patch({ org: undefined }); out("✓ acting as your own organisation"); return; }
+      if (!name) throw new ApiError(400, "usage: scyne org use <slug> | scyne org use --clear");
+      // Resolved BEFORE it is pinned: a typo discovered on the next command
+      // looks like a permissions problem rather than like a typo.
+      const orgs = await client.get<Array<{ slug: string; name: string }>>("/orgs");
+      const hit = orgs.find(o => o.slug === name.toLowerCase());
+      if (!hit) {
+        throw new ApiError(404,
+          `no organisation '${name}'.\n` +
+          `  You can act as: ${orgs.map(o => o.slug).join(", ") || "(none)"}`);
+      }
+      patch({ org: hit.slug });
+      out(`✓ acting as ${hit.name} (${hit.slug})`);
+      return;
+    }
+    case "show": {
+      const slug = name ?? load().org;
+      if (!slug) throw new ApiError(400, "usage: scyne org show <slug>");
+      const orgs = await client.get<Array<{ id: string; slug: string }>>("/orgs");
+      const hit = orgs.find(o => o.slug === slug.toLowerCase());
+      if (!hit) throw new ApiError(404, `no organisation '${slug}'`);
+      return json(await client.get(`/orgs/${hit.id}`));
+    }
+    case "archive": {
+      if (!name) throw new ApiError(400, "usage: scyne org archive <slug>");
+      const orgs = await client.get<Array<{ id: string; slug: string; name: string }>>("/orgs");
+      const hit = orgs.find(o => o.slug === name.toLowerCase());
+      if (!hit) throw new ApiError(404, `no organisation '${name}'`);
+      await client.del(`/orgs/${hit.id}`);
+      // Archive, never delete — its issues, runs and spend are still referenced.
+      out(`✓ archived ${hit.name}. Its history is kept and still reachable by id.`);
+      if (load().org === hit.slug) { patch({ org: undefined }); out(`  Cleared your pin.`); }
+      return;
+    }
+    default:
+      throw new ApiError(400, `unknown: scyne org ${verb}. Try list, create, use, show, archive.`);
+  }
 }
 
 async function cmdProject(client: Client, args: string[]): Promise<void> {
@@ -321,7 +393,7 @@ function reportDual(title: string, r: DualResult): void {
   const show = (s: DualResult["disk"]): string => {
     switch (s.state) {
       case "created": return `✓ ${s.detail ?? "created"}`;
-      case "exists":  return `· already there`;
+      case "exists":  return s.detail ? `· ${s.detail}` : `· already there`;
       case "skipped": return `· ${s.detail}`;
       case "failed":  return `✗ ${s.detail}`;
     }
@@ -499,8 +571,60 @@ async function cmdMember(client: Client, args: string[]): Promise<void> {
   }
 }
 
+/** Resolve `SCY-7` (what every command PRINTS) or a uuid to an issue. */
+async function resolveIssue(client: Client, given: string): Promise<{ id: string; identifier: string; status: string }> {
+  const issues = await client.get<Array<{ id: string; identifier: string; status: string }>>("/issues");
+  const hit = issues.find(i => i.identifier === given || i.id === given);
+  if (!hit) {
+    throw new ApiError(404,
+      `no issue '${given}'.\n  Open ones: ${issues.filter(i => i.status !== "done")
+        .map(i => i.identifier).slice(0, 12).join(", ") || "(none)"}`);
+  }
+  return hit;
+}
+
+/**
+ * Stop, or restart, an issue that is already going.
+ *
+ * Three verbs rather than two, because "stop" means two different things and
+ * guessing wrong is expensive: pausing waits for the step in flight (nothing
+ * is discarded), pausing with --force kills it now (its partial spend is
+ * gone), and cancelling ends the issue for good.
+ */
+async function cmdRunControl(client: Client, verb: "pause" | "cancel" | "resume", args: string[]): Promise<void> {
+  const [given] = args;
+  if (!given) throw new ApiError(400, `usage: scyne run ${verb} <SCY-7>${verb === "pause" ? " [--force]" : ""}`);
+  const issue = await resolveIssue(client, given);
+  const force = verb === "pause" && has("force");
+
+  if (verb === "cancel" && !has("yes")) {
+    const answer = await prompt(`Cancel ${issue.identifier}? It cannot be resumed. [y/N] `);
+    if (!/^y(es)?$/i.test(answer.trim())) { out("· left alone"); return; }
+  }
+
+  await client.post(`/issues/${issue.id}/${verb}`, force ? { force: true } : {});
+
+  if (verb === "resume") { out(`✓ resuming ${issue.identifier} from where it stopped`); }
+  else if (verb === "cancel") { out(`✓ cancelling ${issue.identifier} — it will not resume`); }
+  else if (force) { out(`✓ stopping ${issue.identifier} now; it will park at the step it was on`); }
+  else {
+    out(`✓ pause requested for ${issue.identifier}`);
+    // The one thing worth saying out loud: a graceful pause is not immediate,
+    // and an agent step is measured in tens of minutes.
+    out(`  The step in flight finishes first — that can take as long as an agent run.`);
+    out(`  Use --force to stop it now, at the cost of that step's work.`);
+  }
+  out(`  watch: scyne status ${issue.identifier}`);
+}
+
 async function cmdRun(client: Client, args: string[]): Promise<void> {
   const [stage] = args;
+  // The control verbs live under `run` because that is the noun they act on:
+  // `scyne run pause SCY-7` reads as pausing a run, and a top-level `pause`
+  // would collide with the stage names in the same position.
+  if (stage === "pause" || stage === "cancel" || stage === "resume") {
+    return cmdRunControl(client, stage, args.slice(1));
+  }
   if (!stage || !STAGES[stage]) {
     out(`usage: scyne run <stage> [--project <p>] [--feature <f>]`);
     out(``); out(`Stages:`);
@@ -672,7 +796,7 @@ async function cmdAdmin(client: Client, args: string[]): Promise<void> {
     const byId = new Map<string, string>(o.users.map((u: any) => [u.id, u.email]));
     table(o.recentActions.map((a: any) => ({
       when: String(a.created_at).slice(0, 16).replace("T", " "),
-      who: byId.get(a.user_id) ?? a.agent_key ?? "—",
+      who: a.user_email ?? byId.get(a.user_id) ?? a.agent_key ?? "—",
       did: a.verb,
     })), ["when", "who", "did"]);
   }
@@ -693,6 +817,11 @@ async function cmdAudit(client: Client): Promise<void> {
     });
   if (has("json")) return json(rows);
 
+  // The actor and the project come JOINED on the row. Resolving them here
+  // against this organisation's own /users could not name a superadmin acting
+  // in it from outside — and that is exactly the actor an audit trail most
+  // needs to name. The maps are kept only as a fallback for rows written
+  // before the join existed.
   const users = await client.get<any[]>("/users").catch(() => []);
   const byId = new Map<string, string>(users.map(u => [u.id, u.email]));
   const projects = await client.get<any[]>("/projects").catch(() => []);
@@ -700,23 +829,135 @@ async function cmdAudit(client: Client): Promise<void> {
 
   table(rows.map(a => ({
     when: String(a.created_at).slice(0, 19).replace("T", " "),
-    who: byId.get(a.user_id) ?? a.agent_key ?? "—",
-    project: projName.get(a.project_id) ?? "—",
+    who: a.user_email ?? byId.get(a.user_id) ?? a.agent_key ?? "—",
+    project: a.project_name ?? projName.get(a.project_id) ?? "—",
     did: a.verb,
     detail: JSON.stringify(a.detail ?? {}).slice(0, 40),
   })), ["when", "who", "project", "did", "detail"]);
 }
 
+/**
+ * Where the money went.
+ *
+ * Reported and estimated are shown as SEPARATE columns rather than added into
+ * one. A merged total cannot be audited: nobody reading it can tell which half
+ * came from a vendor's own billing and which half came from a price table
+ * somebody typed. Codex reports no cost at all, so on a Codex-first install
+ * the second column is most of the bill.
+ */
 async function cmdSpend(client: Client): Promise<void> {
   const by = flag("by") ?? "project";
-  const rows = await client.get<any[]>(`/spend?by=${by}`);
+  const q = new URLSearchParams({ by });
+  for (const f of ["project", "feature", "user", "since", "until"]) {
+    const v = flag(f);
+    if (v) q.set(f, v);
+  }
+  const rows = await client.get<any[]>(`/spend?${q}`);
   if (has("json")) return json(rows);
+  if (!rows.length) { out("  (nothing recorded yet)"); return; }
+
+  const label = (r: any): string =>
+    r.project_name ?? r.feature_name ?? r.user_email ?? r.agent_key ?? r.adapter ?? r.model ?? "—";
+  const money = (v: unknown): string => (Number(v) ? `$${Number(v).toFixed(4)}` : "—");
+
   table(rows.map(r => ({
-    [by]: r.project_name ?? r.agent_key ?? r.adapter ?? "—",
+    [by]: label(r),
     runs: r.run_count,
-    tokens: Number(r.input_tokens) + Number(r.output_tokens),
-    cost: `$${Number(r.cost_usd).toFixed(4)}`,
-  })), [by, "runs", "tokens", "cost"]);
+    tokens: (Number(r.input_tokens) + Number(r.output_tokens)).toLocaleString("en-AU"),
+    reported: money(r.reported_cost_usd),
+    // `~` on sight: this figure is ours, not the CLI's.
+    estimated: Number(r.estimated_cost_usd) ? `~${money(r.estimated_cost_usd)}` : "—",
+    unpriced: r.unpriced_run_count === "0" ? "" : `${r.unpriced_run_count} run(s)`,
+  })), [by, "runs", "tokens", "reported", "estimated", "unpriced"]);
+
+  const totalReported = rows.reduce((n, r) => n + Number(r.reported_cost_usd), 0);
+  const totalEstimated = rows.reduce((n, r) => n + Number(r.estimated_cost_usd), 0);
+  const unpriced = rows.reduce((n, r) => n + Number(r.unpriced_run_count), 0);
+  out("");
+  out(`  $${totalReported.toFixed(4)} reported` +
+      (totalEstimated ? ` + ~$${totalEstimated.toFixed(4)} estimated` : "") +
+      (unpriced ? `   (${unpriced} run(s) carry no figure at all)` : ""));
+}
+
+/**
+ * The model price catalogue.
+ *
+ * It matters more than a price list looks like it should: a Codex run reports
+ * no cost, so these rows decide what every run is recorded as costing AND
+ * whether a cost budget fires.
+ */
+/** `2026-08-31T00:00:00.000Z` → `2026-08-31`. */
+const day = (v: unknown): string => (v ? String(v).slice(0, 10) : "—");
+
+async function cmdModels(client: Client, args: string[]): Promise<void> {
+  const [verb] = args;
+  switch (verb) {
+    case "list": case undefined: {
+      const models = await client.get<any[]>("/models");
+      if (has("json")) return json(models);
+      table(models.map(m => ({
+        model: m.model,
+        provider: m.provider,
+        "in $/M": m.input_per_mtok ?? "—",
+        "cached": m.cached_input_per_mtok ?? "—",
+        "out $/M": m.output_per_mtok ?? "—",
+        runs: m.run_count,
+        // A date, not a timestamp: `retires_on` is a DATE column and the
+        // driver hands it back as an ISO instant, which reads as false
+        // precision for something announced to the day.
+        note: m.retired ? `RETIRED ${day(m.retires_on)}`
+            : m.retiring_soon ? `retires ${day(m.retires_on)}`
+            : m.unpriced ? "no published price" : "",
+      })));
+      const risky = models.filter(m => m.retiring_soon || m.retired);
+      if (risky.length) {
+        out("");
+        // Worth saying loudly: a retired model is not a slow run, it is every
+        // run dying on its first request.
+        out(`  ${risky.length} model(s) at or near retirement. A run on a retired model fails immediately.`);
+      }
+      return;
+    }
+    case "set": {
+      const model = args[1];
+      if (!model) throw new ApiError(400, "usage: scyne models set <model> --input <n> --output <n> [--cached <n>]");
+      const provider = flag("provider") ?? "openai";
+      const num = (f: string) => (flag(f) === undefined ? undefined : Number(flag(f)));
+      const row = await client.put<any>(`/models/${provider}/${encodeURIComponent(model)}`, {
+        inputPerMTok: num("input"), cachedInputPerMTok: num("cached"),
+        outputPerMTok: num("output"), retiresOn: flag("retires") ?? undefined,
+      });
+      out(`✓ ${row.provider}/${row.model}: in $${row.input_per_mtok ?? "—"}/M, out $${row.output_per_mtok ?? "—"}/M`);
+      return;
+    }
+    case "proposal": {
+      const pending = await client.get<any>("/models/refresh");
+      if (!pending) { out("  (no proposal outstanding)"); return; }
+      if (has("json")) return json(pending);
+      out(`Proposed ${pending.created_at}${pending.source ? ` from ${pending.source}` : ""}`);
+      out("");
+      if (!pending.diff.length) { out("  (it changes nothing)"); }
+      else table(pending.diff.map((d: any) => ({
+        model: d.model, field: d.field, from: d.from ?? "—", to: d.to ?? "—",
+      })));
+      out("");
+      out(`  apply:   scyne models apply       (superadmin)`);
+      out(`  discard: scyne models discard`);
+      return;
+    }
+    case "apply": {
+      const res = await client.post<{ applied: number }>("/models/refresh/apply", {});
+      out(`✓ applied ${res.applied} price row(s)`);
+      return;
+    }
+    case "discard": {
+      await client.del("/models/refresh");
+      out("✓ discarded");
+      return;
+    }
+    default:
+      throw new ApiError(400, `unknown: scyne models ${verb}. Try list, set, proposal, apply, discard.`);
+  }
 }
 
 async function cmdInstalls(client: Client, args: string[]): Promise<void> {
@@ -864,6 +1105,27 @@ scyne — the Scyne pipeline, from the command line
     gate list | approve <id> | reject <id> [--note "..."]
     logs <runId> [--follow]          an agent's transcript
 
+  Stopping and restarting
+    run pause <SCY-7> [--force]      pause it — the step in flight finishes first,
+                                      unless --force, which stops the agent now
+    run cancel <SCY-7> [--yes]       stop for good; it does not resume
+    run resume <SCY-7>               carry on from where it stopped
+
+  Cost
+    spend [--by project|feature|user|agent|adapter|model]
+          [--project P] [--feature F] [--user email] [--since D] [--until D] [--json]
+    models list [--json]             the price catalogue, retirements flagged
+    models set <model> --input <n> --output <n> [--cached <n>] [--retires YYYY-MM-DD]
+    models proposal                  the outstanding price proposal and its diff
+    models apply | discard           apply (superadmin) or discard it
+
+  Organisations  (superadmin)
+    org list [--json]                every organisation, with its counts
+    org create <name> [--slug s]     create one
+    org use <slug> | --clear         act as one for every later command
+    org show [<slug>]                one organisation in detail
+    org archive <slug>               archive it — never a delete
+
   Superadmin  (administrators only)
     admin                            everything in one screen
     admin people | installs | projects | activity
@@ -881,7 +1143,7 @@ scyne — the Scyne pipeline, from the command line
     adapter unset [--project P]      fall back to the next scope up
 
   Global flags
-    --project <name>  --feature <name>  --json  --api <url>
+    --project <name>  --feature <name>  --org <slug>  --json  --api <url>
 `;
 
 // ---------------------------------------------------------------------- main
@@ -900,11 +1162,16 @@ async function main(): Promise<void> {
   if (verb === "login") return cmdLogin();
   if (verb === "logout") { patch({ token: undefined }); out("✓ logged out"); return; }
 
-  const client = createClient(flag("api") ? { apiUrl: flag("api") } : {});
+  const client = createClient({
+    ...(flag("api") ? { apiUrl: flag("api") } : {}),
+    // An explicit --org wins over whatever `scyne org use` pinned.
+    ...(flag("org") ? { org: flag("org") } : {}),
+  });
 
   switch (verb) {
     case "whoami":   return cmdWhoami(client);
     case "use":      return cmdUse(client, rest);
+    case "org":      return cmdOrg(client, rest);
     case "project":  return cmdProject(client, rest);
     case "feature":  return cmdFeature(client, rest);
     case "user":     return cmdUser(client, rest);
@@ -918,6 +1185,7 @@ async function main(): Promise<void> {
     case "admin":    return cmdAdmin(client, rest);
     case "audit":    return cmdAudit(client);
     case "spend":    return cmdSpend(client);
+    case "models":   return cmdModels(client, rest);
     case "installs": return cmdInstalls(client, rest);
     case "chat":     return cmdChat(client, rest);
     case "adapter":  return cmdAdapter(client, rest);

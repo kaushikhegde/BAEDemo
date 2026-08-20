@@ -16,6 +16,8 @@
 //   2. No external URLs. No CDN, no web font, no remote icon set. Icons are
 //      inline SVG defined below; the type stack is the system stack.
 
+import { AUTH_CSS, AUTH_JS } from "./console/auth.js";
+import { ADMIN_JS } from "./console/admin.js";
 import type { Theme } from "../config.js";
 import { themeCss } from "./theme.js";
 
@@ -43,13 +45,44 @@ const ICONS: Record<string, string> = {
   config:  I(`<path d="M2.5 4.5h5M10.5 4.5h3M2.5 11.5h3M8.5 11.5h5"/>` +
              `<circle cx="9" cy="4.5" r="1.6"/><circle cx="7" cy="11.5" r="1.6"/>`),
   health:  I(`<circle cx="8" cy="8" r="6.2"/><path d="M4.6 8h1.6l1-2.2 1.6 4.4 1-2.2h1.6"/>`),
+  orgs:    I(`<path d="M2.5 14V4.5l5-2.5v12"/><path d="M7.5 6.5h6V14"/><path d="M1.5 14h13"/>` +
+             `<path d="M4.5 6.2h1M4.5 8.6h1M9.8 9h1.4M9.8 11.4h1.4"/>`),
+  users:   I(`<circle cx="6" cy="5.5" r="2.4"/><path d="M1.8 14c0-2.4 1.9-4.1 4.2-4.1s4.2 1.7 4.2 4.1"/>` +
+             `<path d="M10.8 3.6a2.2 2.2 0 0 1 0 4.2"/><path d="M11.6 9.6c1.6.4 2.7 1.7 2.7 3.4"/>`),
+  projects:I(`<path d="M1.8 4.4a1.4 1.4 0 0 1 1.4-1.4h2.6l1.3 1.7h5.8a1.4 1.4 0 0 1 1.4 1.4v6.1` +
+             `a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4z"/>`),
+  spend:   I(`<path d="M1.8 12.5 5.4 7l3 2.6L13.9 3"/><path d="M10.6 3h3.3v3.3"/>`),
+  audit:   I(`<path d="M4 1.8h6.2L13 4.6V14a.9.9 0 0 1-.9.9H4a.9.9 0 0 1-.9-.9V2.7A.9.9 0 0 1 4 1.8Z"/>` +
+             `<path d="M9.8 1.9v3h3.1"/><path d="M5.6 8.2h4.8M5.6 10.8h3.2"/>`),
 };
 
-const TABS: ReadonlyArray<readonly [string, string]> = [
-  ["runs", "Runs"], ["issues", "Issues"], ["gates", "Gates"],
-  ["org", "Org"], ["skills", "Skills"], ["budgets", "Budgets"],
-  ["config", "Config"], ["health", "Health"],
+/**
+ * The rail.
+ *
+ * `admin` marks a tab that only an administrator (or, for `"super"`, only a
+ * superadmin) sees. That flag drives DISPLAY only — every one of these routes
+ * is refused by the router as well, and it is the router that is the security
+ * boundary. Hiding a tab makes a tidier screen; it does not make a permission.
+ */
+const TABS: ReadonlyArray<{ id: string; label: string; admin?: "admin" | "super" }> = [
+  { id: "runs", label: "Runs" },
+  { id: "issues", label: "Issues" },
+  { id: "gates", label: "Gates" },
+  { id: "org", label: "Org" },
+  { id: "skills", label: "Skills" },
+  { id: "budgets", label: "Budgets" },
+  { id: "config", label: "Config" },
+  { id: "health", label: "Health" },
+  // ---- everything below the divider is administration ----
+  { id: "orgs", label: "Organisations", admin: "super" },
+  { id: "users", label: "Users", admin: "admin" },
+  { id: "projects", label: "Projects", admin: "admin" },
+  { id: "spend", label: "Spend", admin: "admin" },
+  { id: "audit", label: "Audit", admin: "admin" },
 ];
+
+/** The first admin tab — where the divider goes. */
+const FIRST_ADMIN_TAB = TABS.findIndex(t => t.admin);
 
 export function renderConsole(theme: Theme): string {
   return `<!doctype html>
@@ -502,6 +535,10 @@ a { color: var(--brand); }
   .railfoot { display: none; }
   .top { position: static; }
 }
+.navdiv {
+  height: 1px; margin: .55rem .75rem .45rem; background: var(--line);
+}
+${AUTH_CSS}
 </style>
 </head>
 <body>
@@ -513,8 +550,10 @@ a { color: var(--brand); }
         : `<span class="glyph"></span><span class="name">${theme.logoText}</span>`}
       <span class="tag">Orchestrator</span>
     </div>
-    <nav>${TABS.map(([id, label]) =>
-      `<a href="#${id}" data-tab="${id}">${ICONS[id]}${label}</a>`).join("")}</nav>
+    <nav>${TABS.map((t, i) =>
+      (i === FIRST_ADMIN_TAB ? `<div class="navdiv" id="navdiv"></div>` : "") +
+      `<a href="#${t.id}" data-tab="${t.id}"${t.admin ? ` data-admin="${t.admin}"` : ""}` +
+      `${t.admin ? ` style="display:none"` : ""}>${ICONS[t.id]}${t.label}</a>`).join("")}</nav>
     <div class="railfoot">
       <div><span class="dot" id="dot"></span><span class="lbl" id="dotlbl">connecting…</span></div>
       <div class="env" id="env"></div>
@@ -527,12 +566,14 @@ a { color: var(--brand); }
         <div class="sub" id="psub"></div>
       </div>
       <div class="strip" id="strip"></div>
+      <div class="whoami" id="whoami"></div>
       <button id="newrun">+ New run</button>
     </div>
     <main id="view"><div class="empty"><b>Loading</b>Reading the orchestrator.</div></main>
   </div>
 </div>
 <div id="modal"></div>
+<div id="gate" class="gate" style="display:none"></div>
 <script>
 /* Everything below runs in the BROWSER. It may contain no backtick and no
    dollar-brace, comments included — see the header of this file. Where a
@@ -954,8 +995,18 @@ async function renderIssue(id) {
           st(issue.status) + '</div>' +
           '<h3 style="margin:.35rem 0 0;font-size:1.05rem">' + esc(issue.title) + '</h3></div>' +
         '<div class="wrap">' +
-          ((issue.status === "blocked" || issue.status === "todo")
+          /* Stopping and restarting. Pause is offered on anything still going;
+             Resume only on something actually stopped. A cancelled or done
+             issue gets neither — there is nothing left to do to it. */
+          ((issue.status === "blocked" || issue.status === "todo" || issue.status === "paused")
             ? '<button id="i-resume">Resume</button>' : "") +
+          ((issue.status === "done" || issue.status === "cancelled" || issue.status === "paused")
+            ? ""
+            : '<button class="ghost" id="i-pause" title="Let the step in flight finish, then stop">Pause</button>' +
+              '<button class="ghost" id="i-force" title="Stop the agent NOW and lose this step of work">Stop now</button>') +
+          ((issue.status === "done" || issue.status === "cancelled")
+            ? ""
+            : '<button class="ghost" id="i-cancel">Cancel</button>') +
           '<button class="ghost" id="i-del">Delete</button>' +
         '</div>' +
       '</div>' +
@@ -1053,9 +1104,37 @@ async function renderIssue(id) {
   if (resume) resume.addEventListener("click", async () => {
     resume.disabled = true;
     msg.innerHTML = '<span class="muted" style="font-size:.8rem">Resuming — an agent step can take tens of minutes. This view refreshes.</span>';
-    try { await send("/issues/" + id + "/advance", "POST"); setTimeout(route, 1200); }
+    /* /resume rather than /advance: it refuses a cancelled issue with a
+       legible 409 instead of silently doing nothing. */
+    try { await send("/issues/" + id + "/resume", "POST", {}); setTimeout(route, 1200); }
     catch (e) { fail(e); resume.disabled = false; }
   });
+
+  /* All three return 202 and take effect at the engine's next step boundary,
+     so the view refreshes shortly rather than immediately — a graceful pause
+     can wait as long as an agent run. */
+  const control = (elId, path, body, note, confirmText) => {
+    const btn = document.getElementById(elId);
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      if (confirmText && !confirm(confirmText)) return;
+      btn.disabled = true;
+      msg.innerHTML = '<span class="muted" style="font-size:.8rem">' + note + '</span>';
+      try { await send("/issues/" + id + path, "POST", body); setTimeout(route, 1200); }
+      catch (e) { fail(e); btn.disabled = false; }
+    });
+  };
+
+  control("i-pause", "/pause", {},
+    "Pause requested. The step in flight finishes first — that can take as long as an agent run.");
+  control("i-force", "/pause", { force: true },
+    "Stopping the agent now. The issue will park at this step.",
+    "Stop " + issue.identifier + " now?\\n\\nThe agent is killed where it stands and that step's work is lost. " +
+    "You can still resume — the step runs again from the start.");
+  control("i-cancel", "/cancel", {},
+    "Cancelling.",
+    "Cancel " + issue.identifier + "?\\n\\nIt cannot be resumed, and any pending gate is cancelled with it. " +
+    "Start the workflow again if you change your mind.");
 
   document.getElementById("i-del").addEventListener("click", async () => {
     if (!confirm("Delete " + issue.identifier + " and everything under it? " +
@@ -2012,7 +2091,9 @@ async function renderHealth() {
 /* ---- routing ------------------------------------------------------------- */
 const ROUTES = { runs: renderRuns, issues: renderIssues, gates: renderGates,
                  org: renderOrg, skills: renderSkills, budgets: renderBudgets,
-                 config: renderConfig, health: renderHealth };
+                 config: renderConfig, health: renderHealth,
+                 orgs: renderOrgs, users: renderUsers, projects: renderProjects,
+                 spend: renderSpend, audit: renderAudit };
 
 // Which nav item lights up for a detail route. A run belongs to Runs, an
 // agent and its bundle to Org, an issue to Issues — otherwise drilling in
@@ -2095,11 +2176,17 @@ async function renderStrip() {
   }
 }
 
+${AUTH_JS}
+${ADMIN_JS}
+
 document.getElementById("newrun").addEventListener("click", () => { newRunModal(null); });
 window.addEventListener("hashchange", route);
-renderStrip();
-setInterval(renderStrip, 5000);
-route();
+setInterval(() => { if (ME) renderStrip(); }, 5000);
+
+/* Boot through the gate rather than straight into route(): the shell is served
+   unauthenticated (so it can show a login form at all), and everything behind
+   it needs a credential. start() decides which of the two you get. */
+start();
 </script>
 </body>
 </html>`;

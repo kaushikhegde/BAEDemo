@@ -25,7 +25,9 @@ export const chatUrl = (): string => process.env.SCYNE_CHAT_URL || DEFAULT_CHAT_
 /** What happened on one side. "exists" is a normal outcome, not a failure. */
 export type SideResult =
   | { state: "created"; detail?: string }
-  | { state: "exists" }
+  // `detail` because a 409 has two meanings that read very differently to a
+  // person: already in YOUR organisation, or the name is held by another one.
+  | { state: "exists"; detail?: string }
   | { state: "skipped"; detail: string }
   | { state: "failed"; detail: string };
 
@@ -78,8 +80,13 @@ export async function createProject(
     });
     db = { state: "created" };
   } catch (err) {
+    // A 409 here means one of two very different things: the project already
+    // exists in YOUR organisation, or the name is held by ANOTHER one — the
+    // project folder tree is flat and shared, so names are unique across the
+    // install. "already there" is misleading for the second, because a listing
+    // in your own organisation will show nothing.
     db = (err as ApiError).status === 409
-      ? { state: "exists" }
+      ? { state: "exists", detail: (err as Error).message || undefined }
       : { state: "failed", detail: (err as Error).message };
   }
   return { disk, db };

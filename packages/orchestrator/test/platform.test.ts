@@ -17,7 +17,7 @@ beforeEach(async () => {
   p = createPlatformRepo(db);
   repo = createRepo(db);
   company = randomUUID();
-  await db.query(`insert into companies (id, name) values ($1,'Scyne')`, [company]);
+  await db.query(`insert into companies (id, name, slug) values ($1,'Scyne','scyne')`, [company]);
 });
 afterEach(async () => { await db.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -364,5 +364,274 @@ describe("spend", () => {
     // Every run in the group was unpriced — the row must say so, not just
     // report a `cost_usd` of "0" that reads identically to "free".
     expect(codexRow.unpriced_run_count).toBe("2");
+  });
+});
+
+describe("a principal carries the organisation it acts in", () => {
+  it("resolves a token to the holder's own organisation", async () => {
+    const u = await admin();
+    const { secret } = await p.createToken(u.id, "cli");
+    const principal = await p.principalFromToken(secret);
+    expect(principal?.companyId).toBe(company);
+    expect(principal?.isSuperadmin).toBe(false);
+  });
+
+  it("flags a superadmin, so no caller has to compare role strings", async () => {
+    const u = await p.createUser({ companyId: company, email: "root@scyne.co", role: "superadmin" });
+    const { secret } = await p.createToken(u.id, "cli");
+    expect((await p.principalFromToken(secret))?.isSuperadmin).toBe(true);
+  });
+
+  it("resolves a session the same way a token is resolved", async () => {
+    const u = await admin();
+    const { secret } = await p.createSession(u.id);
+    const principal = await p.principalFromSession(secret);
+    expect(principal?.companyId).toBe(company);
+    expect(principal?.isSuperadmin).toBe(false);
+  });
+});
+
+describe("organisations", () => {
+  it("creates one with a slug derived from the name", async () => {
+    const org = await p.createCompany({ name: "Alpha Council of SA" });
+    expect(org.slug).toBe("alpha-council-of-sa");
+    expect(org.status).toBe("active");
+    expect(org.archived_at).toBeNull();
+  });
+
+  it("accepts an explicit slug, and normalises it", async () => {
+    expect((await p.createCompany({ name: "Beta", slug: "  Beta Group " })).slug).toBe("beta-group");
+  });
+
+  it("refuses a name with no usable slug rather than writing an empty one", async () => {
+    await expect(p.createCompany({ name: "!!!" })).rejects.toThrow(/slug/i);
+  });
+
+  it("finds one by slug, which is what an authorisation header carries", async () => {
+    expect((await p.getCompanyBySlug("scyne"))?.id).toBe(company);
+    expect((await p.getCompanyBySlug("  SCYNE "))?.id).toBe(company);
+    expect(await p.getCompanyBySlug("nope")).toBeNull();
+  });
+
+  it("lists only the ones that are not archived", async () => {
+    const temp = await p.createCompany({ name: "Temp Co" });
+    expect((await p.listCompanies()).map(c => c.slug)).toContain("temp-co");
+    expect(await p.archiveCompany(temp.id)).toBe(true);
+    expect((await p.listCompanies()).map(c => c.slug)).not.toContain("temp-co");
+    // archiving twice is not an error, it is a no-op that reports nothing changed
+    expect(await p.archiveCompany(temp.id)).toBe(false);
+  });
+
+  it("renames without touching the slug", async () => {
+    const org = await p.createCompany({ name: "Gamma" });
+    const renamed = await p.updateCompany(org.id, { name: "Gamma Holdings" });
+    expect(renamed?.name).toBe("Gamma Holdings");
+    // The slug is what an operator pinned and what a header carries — a
+    // rename must not silently invalidate either.
+    expect(renamed?.slug).toBe("gamma");
+  });
+
+  it("counts what an Orgs tab needs, without a second call per column", async () => {
+    const u = await admin();
+    const proj = await p.createProject({ companyId: company, name: "Counted", createdBy: u.id });
+    await p.createFeature({ projectId: proj.id, name: "One" });
+    const stats = await p.companyStats(company);
+    expect(stats).toMatchObject({ users: "1", projects: "1", features: "1", issues: "0" });
+  });
+});
+
+describe("login is organisation-agnostic", () => {
+  it("finds a user by email alone, whichever organisation they are in", async () => {
+    const acme = await p.createCompany({ name: "Acme" });
+    const u = await p.createUser({ companyId: acme.id, email: "person@acme.co", role: "admin" });
+    // A person logging in knows their email and their password. They do NOT
+    // know their organisation's uuid, so a company-scoped lookup would make
+    // every user outside the home org unable to sign in at all.
+    const found = await p.getUserByEmailAnywhere("Person@Acme.CO");
+    expect(found?.id).toBe(u.id);
+    expect(found?.company_id).toBe(acme.id);
+  });
+
+  it("returns null for an address nobody holds", async () => {
+    expect(await p.getUserByEmailAnywhere("ghost@nowhere.co")).toBeNull();
+  });
+
+  it("refuses the same address in two organisations", async () => {
+    const acme = await p.createCompany({ name: "Acme" });
+    await p.createUser({ companyId: company, email: "shared@x.co" });
+    // One person, one account. Without this, `getUserByEmailAnywhere` would
+    // have to pick one of two rows, and which one it picked would decide
+    // whose data they saw.
+    await expect(p.createUser({ companyId: acme.id, email: "shared@x.co" })).rejects.toThrow();
+  });
+
+  it("treats addresses case-insensitively for that uniqueness", async () => {
+    const acme = await p.createCompany({ name: "Acme" });
+    await p.createUser({ companyId: company, email: "Case@x.co" });
+    await expect(p.createUser({ companyId: acme.id, email: "case@X.co" })).rejects.toThrow();
+  });
+});
+
+describe("spend, by every dimension", () => {
+  /** One run, with everything it needs to be grouped by any dimension. */
+  async function seedRun(opts: {
+    project: string; feature?: string; email?: string; agentKey?: string;
+    adapter?: string; model?: string; reported?: number | null; estimated?: number | null;
+    inTok?: number; outTok?: number; startedAt?: string;
+  }) {
+    const proj = await p.getProjectByName(company, opts.project)
+      ?? await p.createProject({ companyId: company, name: opts.project });
+    const feat = opts.feature
+      ? (await p.getFeatureByName(proj.id, opts.feature)
+         ?? await p.createFeature({ projectId: proj.id, name: opts.feature }))
+      : null;
+    const user = opts.email
+      ? (await p.getUserByEmailAnywhere(opts.email) ?? await p.createUser({ companyId: company, email: opts.email }))
+      : null;
+    const agentId = opts.agentKey ? await repo.upsertAgent(company, { key: opts.agentKey, name: opts.agentKey }) : null;
+
+    const issue = await repo.createIssue({
+      companyId: company, title: `run for ${opts.project}`, createdBy: user?.id ?? null,
+    });
+    await db.query(`update issues set project_id=$2, feature_id=$3 where id=$1`,
+      [issue.id, proj.id, feat?.id ?? null]);
+
+    const run = await repo.startRun({
+      issueId: issue.id, agentId, logPath: "/tmp/x.jsonl",
+      adapter: opts.adapter ?? "codex", model: opts.model ?? "gpt-5.6-terra",
+    });
+    await repo.finishRun(run.id, {
+      status: "succeeded",
+      inputTokens: opts.inTok ?? 1000, outputTokens: opts.outTok ?? 1000,
+      costUsd: opts.reported ?? null, estCostUsd: opts.estimated ?? null,
+    });
+    if (opts.startedAt) await db.query(`update runs set started_at=$2 where id=$1`, [run.id, opts.startedAt]);
+    return { issue, run, proj, feat, user };
+  }
+
+  it("groups by project", async () => {
+    await seedRun({ project: "Alpha", estimated: 3 });
+    await seedRun({ project: "Beta", estimated: 1 });
+    const rows = await p.spend(company, { by: "project" });
+    expect(rows.map(r => r.project_name)).toEqual(["Alpha", "Beta"]);   // dearest first
+  });
+
+  it("groups by feature — a dimension that did not exist before", async () => {
+    await seedRun({ project: "Alpha", feature: "Appeals", estimated: 2 });
+    await seedRun({ project: "Alpha", feature: "Claims", estimated: 5 });
+    const rows = await p.spend(company, { by: "feature" });
+    expect(rows.map(r => r.feature_name)).toEqual(["Claims", "Appeals"]);
+  });
+
+  it("groups by user, which `SpendRow` declared and never populated", async () => {
+    await seedRun({ project: "Alpha", email: "ana@x.co", estimated: 4 });
+    await seedRun({ project: "Alpha", email: "bo@x.co", estimated: 1 });
+    const rows = await p.spend(company, { by: "user" });
+    expect(rows.map(r => r.user_email)).toEqual(["ana@x.co", "bo@x.co"]);
+    expect(rows[0].user_id).not.toBeNull();
+  });
+
+  it("groups by model", async () => {
+    await seedRun({ project: "Alpha", model: "gpt-5.6-sol", estimated: 9 });
+    await seedRun({ project: "Alpha", model: "gpt-5.6-luna", estimated: 1 });
+    const rows = await p.spend(company, { by: "model" });
+    expect(rows.map(r => r.model)).toEqual(["gpt-5.6-sol", "gpt-5.6-luna"]);
+  });
+
+  it("groups by adapter — broken since 003, which nulled agents.adapter", async () => {
+    await seedRun({ project: "Alpha", adapter: "codex", estimated: 2 });
+    await seedRun({ project: "Alpha", adapter: "claude_local", reported: 7 });
+    const rows = await p.spend(company, { by: "adapter" });
+    expect(rows.map(r => r.adapter)).toEqual(["claude_local", "codex"]);
+  });
+
+  it("keeps reported and estimated apart, and totals both", async () => {
+    await seedRun({ project: "Alpha", reported: 4 });
+    await seedRun({ project: "Alpha", estimated: 6 });
+    const [row] = await p.spend(company, { by: "project" });
+    expect(Number(row.reported_cost_usd)).toBeCloseTo(4, 4);
+    expect(Number(row.estimated_cost_usd)).toBeCloseTo(6, 4);
+    expect(Number(row.cost_usd)).toBeCloseTo(10, 4);
+  });
+
+  it("counts runs with NO figure at all, rather than summing them as zero", async () => {
+    await seedRun({ project: "Alpha", reported: 5 });
+    await seedRun({ project: "Alpha" });     // unpriced model, no figure either way
+    const [row] = await p.spend(company, { by: "project" });
+    expect(row.unpriced_run_count).toBe("1");
+    expect(Number(row.cost_usd)).toBeCloseTo(5, 4);
+  });
+
+  it("orders by COST, not by output tokens — the `order by 8` bug", async () => {
+    // The cheap run has far more output tokens. Positional ordering put it
+    // first, which made the whole table wrong in exactly the way nobody
+    // notices until they are asked where the money went.
+    await seedRun({ project: "Cheap", estimated: 0.5, outTok: 5_000_000 });
+    await seedRun({ project: "Dear", estimated: 50, outTok: 10 });
+    const rows = await p.spend(company, { by: "project" });
+    expect(rows[0].project_name).toBe("Dear");
+  });
+
+  it("filters compose with the dimension", async () => {
+    await seedRun({ project: "Alpha", feature: "Appeals", estimated: 2 });
+    await seedRun({ project: "Alpha", feature: "Claims", estimated: 3 });
+    await seedRun({ project: "Beta", feature: "Claims", estimated: 9 });
+    const rows = await p.spend(company, { by: "feature", project: "Alpha" });
+    expect(rows.map(r => r.feature_name).sort()).toEqual(["Appeals", "Claims"]);
+    expect(rows.reduce((n, r) => n + Number(r.cost_usd), 0)).toBeCloseTo(5, 4);
+  });
+
+  it("filters by date", async () => {
+    await seedRun({ project: "Alpha", estimated: 2, startedAt: "2026-01-01T00:00:00Z" });
+    await seedRun({ project: "Alpha", estimated: 3, startedAt: "2026-08-01T00:00:00Z" });
+    const rows = await p.spend(company, { by: "project", since: "2026-06-01" });
+    expect(Number(rows[0].cost_usd)).toBeCloseTo(3, 4);
+  });
+
+  it("still accepts the old bare-dimension call", async () => {
+    await seedRun({ project: "Alpha", estimated: 1 });
+    const rows = await p.spend(company, "project");
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe("the audit trail names its actor", () => {
+  it("joins the email, so an actor from another organisation still resolves", async () => {
+    // A superadmin acting INSIDE another organisation is not in that org's
+    // user list, so a client mapping user_id against /users renders every one
+    // of their actions as "—". That is the actor an audit trail most needs to
+    // name, so the join happens in SQL.
+    const other = await p.createCompany({ name: "Watched Co" });
+    const root = await p.createUser({ companyId: company, email: "root@scyne.co", role: "superadmin" });
+    await p.recordAction({ companyId: other.id, userId: root.id, verb: "org.update" });
+
+    const rows = await p.listActions(other.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].user_email).toBe("root@scyne.co");
+    expect((await p.listUsers(other.id))).toHaveLength(0);   // and they are not a member of it
+  });
+
+  it("joins the project name too", async () => {
+    const u = await admin();
+    const proj = await p.createProject({ companyId: company, name: "Named", createdBy: u.id });
+    await p.recordAction({ companyId: company, userId: u.id, projectId: proj.id, verb: "project.update" });
+    const rows = await p.listActions(company);
+    expect(rows[0].project_name).toBe("Named");
+  });
+
+  it("filters by user and by date", async () => {
+    const a = await p.createUser({ companyId: company, email: "one@x.co" });
+    const b = await p.createUser({ companyId: company, email: "two@x.co" });
+    await p.recordAction({ companyId: company, userId: a.id, verb: "auth.login" });
+    await p.recordAction({ companyId: company, userId: b.id, verb: "auth.login" });
+    expect(await p.listActions(company, { userId: a.id })).toHaveLength(1);
+    expect(await p.listActions(company, { since: "2099-01-01" })).toHaveLength(0);
+  });
+
+  it("leaves the email null for an action nobody performed", async () => {
+    await p.recordAction({ companyId: company, agentKey: "ba", verb: "run.start" });
+    const rows = await p.listActions(company);
+    expect(rows[0].user_email).toBeNull();
+    expect(rows[0].agent_key).toBe("ba");
   });
 });

@@ -39,12 +39,16 @@ afterEach(async () => {
 });
 
 type Res = { status: number; body: any };
-async function call(method: string, path: string, opts: { token?: string; body?: unknown } = {}): Promise<Res> {
+async function call(
+  method: string, path: string,
+  opts: { token?: string; body?: unknown; headers?: Record<string, string> } = {},
+): Promise<Res> {
   const res = await fetch(baseUrl + path, {
     method,
     headers: {
       "content-type": "application/json",
       ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.headers ?? {}),
     },
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
   });
@@ -71,7 +75,9 @@ describe("bootstrap and login", () => {
   it("claims an empty installation once, then refuses forever", async () => {
     const first = await call("POST", "/auth/bootstrap", { body: { email: "a@b.co", password: "pw" } });
     expect(first.status).toBe(201);
-    expect(first.body.user.role).toBe("admin");
+    // Claiming an installation IS what superadmin means — this person operates
+    // the whole install, not one organisation inside it.
+    expect(first.body.user.role).toBe("superadmin");
     expect(first.body.token).toMatch(/^scy_/);
 
     const second = await call("POST", "/auth/bootstrap", { body: { email: "c@d.co", password: "pw" } });
@@ -85,7 +91,9 @@ describe("bootstrap and login", () => {
     expect(login.status).toBe(200);
 
     const me = await call("GET", "/auth/whoami", { token: login.body.token });
-    expect(me.body).toMatchObject({ email: "admin@scyne.co", role: "admin", authenticatedBy: "session" });
+    expect(me.body).toMatchObject({
+      email: "admin@scyne.co", role: "superadmin", authenticatedBy: "session",
+    });
 
     await call("POST", "/auth/logout", { token: login.body.token });
     expect((await call("GET", "/auth/whoami", { token: login.body.token })).status).toBe(401);
@@ -326,5 +334,333 @@ describe("conflicts", () => {
     const admin = await bootstrap();
     await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } });
     expect((await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).status).toBe(409);
+  });
+});
+
+describe("the superadmin role cannot be granted sideways", () => {
+  /** A genuine `admin` — bootstrap's claimer is a superadmin and cannot test this. */
+  async function ordinaryAdmin(): Promise<string> {
+    const root = await bootstrap();
+    const made = await call("POST", "/users", {
+      token: root, body: { email: "ordinary-admin@scyne.co", password: "pw", role: "admin" },
+    });
+    expect(made.status).toBe(201);
+    const login = await call("POST", "/auth/login", {
+      body: { email: "ordinary-admin@scyne.co", password: "pw" },
+    });
+    expect(login.status).toBe(200);
+    return login.body.token;
+  }
+
+  it("refuses an ordinary administrator creating a superadmin", async () => {
+    const token = await ordinaryAdmin();
+    const me = await call("GET", "/auth/whoami", { token });
+    // Guard the guard: if this ever starts handing back a superadmin the test
+    // would pass for the wrong reason and stop protecting anything.
+    expect(me.body.role).toBe("admin");
+
+    const attempt = await call("POST", "/users", {
+      token, body: { email: "escalate@scyne.co", password: "pw", role: "superadmin" },
+    });
+    expect(attempt.status).toBe(403);
+    expect(String(attempt.body.error)).toMatch(/superadmin/i);
+  });
+
+  it("refuses an ordinary administrator promoting an existing user", async () => {
+    const token = await ordinaryAdmin();
+    const made = await call("POST", "/users", {
+      token, body: { email: "ordinary@scyne.co", password: "pw", role: "member" },
+    });
+    expect(made.status).toBe(201);
+
+    const promote = await call("PATCH", `/users/${made.body.id}`, { token, body: { role: "superadmin" } });
+    expect(promote.status).toBe(403);
+  });
+
+  it("still allows the ordinary roles", async () => {
+    const token = await bootstrap();
+    for (const role of ["admin", "member", "viewer"]) {
+      const r = await call("POST", "/users", {
+        token, body: { email: `role-${role}@scyne.co`, password: "pw", role },
+      });
+      expect(r.status).toBe(201);
+      expect(r.body.role).toBe(role);
+    }
+  });
+});
+
+describe("organisations", () => {
+  /** The install-claimer is a superadmin; that is the only role that may manage orgs. */
+  const root = () => bootstrap();
+
+  async function adminOf(rootToken: string, email: string): Promise<string> {
+    const made = await call("POST", "/users", {
+      token: rootToken, body: { email, password: "pw", role: "admin" },
+    });
+    expect(made.status).toBe(201);
+    const login = await call("POST", "/auth/login", { body: { email, password: "pw" } });
+    return login.body.token;
+  }
+
+  it("lets a superadmin create and list them", async () => {
+    const token = await root();
+    const made = await call("POST", "/orgs", { token, body: { name: "Acme Pty Ltd" } });
+    expect(made.status).toBe(201);
+    expect(made.body.slug).toBe("acme-pty-ltd");
+
+    const list = await call("GET", "/orgs", { token });
+    expect(list.status).toBe(200);
+    expect(list.body.map((o: { slug: string }) => o.slug)).toContain("acme-pty-ltd");
+  });
+
+  it("refuses an ordinary administrator creating one", async () => {
+    const token = await adminOf(await root(), "org-admin@scyne.co");
+    expect((await call("POST", "/orgs", { token, body: { name: "Nope" } })).status).toBe(403);
+  });
+
+  it("shows an ordinary administrator their own organisation, as a list of one", async () => {
+    // Not a 403: the console's organisation switcher would then be an error
+    // state for the majority of its users. A list of one is the honest answer
+    // to "which organisations may I act in".
+    const token = await adminOf(await root(), "org-admin2@scyne.co");
+    const list = await call("GET", "/orgs", { token });
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(1);
+    expect(list.body[0].slug).toBe("scyne");
+  });
+
+  it("archives rather than deletes", async () => {
+    const token = await root();
+    const made = await call("POST", "/orgs", { token, body: { name: "Temp Co" } });
+    expect((await call("DELETE", `/orgs/${made.body.id}`, { token })).status).toBe(200);
+    const list = await call("GET", "/orgs", { token });
+    expect(list.body.map((o: { slug: string }) => o.slug)).not.toContain("temp-co");
+  });
+
+  it("refuses to archive the home organisation, which owns the agent org chart", async () => {
+    const token = await root();
+    const list = await call("GET", "/orgs", { token });
+    const home = list.body.find((o: { slug: string }) => o.slug === "scyne");
+    const attempt = await call("DELETE", `/orgs/${home.id}`, { token });
+    expect(attempt.status).toBe(400);
+    expect(String(attempt.body.error)).toMatch(/home organisation/i);
+  });
+
+  it("reports counts a console can render without a call per column", async () => {
+    const token = await root();
+    const list = await call("GET", "/orgs", { token });
+    const home = list.body.find((o: { slug: string }) => o.slug === "scyne");
+    const one = await call("GET", `/orgs/${home.id}`, { token });
+    expect(one.status).toBe(200);
+    expect(one.body.stats).toMatchObject({
+      users: expect.any(String), projects: expect.any(String),
+      features: expect.any(String), issues: expect.any(String),
+    });
+  });
+
+  it("hides another organisation from an ordinary administrator as 404, not 403", async () => {
+    const rootToken = await root();
+    const other = await call("POST", "/orgs", { token: rootToken, body: { name: "Hidden Co" } });
+    const token = await adminOf(rootToken, "org-admin3@scyne.co");
+    // 403 would confirm it exists. See this router's header.
+    expect((await call("GET", `/orgs/${other.body.id}`, { token })).status).toBe(404);
+  });
+
+  it("renames, and the slug does not move under anyone's feet", async () => {
+    const token = await root();
+    const made = await call("POST", "/orgs", { token, body: { name: "Delta" } });
+    const renamed = await call("PATCH", `/orgs/${made.body.id}`, { token, body: { name: "Delta Group" } });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe("Delta Group");
+    expect(renamed.body.slug).toBe("delta");
+  });
+
+  it("says which organisation whoami is answering for", async () => {
+    const token = await root();
+    const me = await call("GET", "/auth/whoami", { token });
+    expect(me.body.company).toMatchObject({ slug: "scyne" });
+    expect(me.body.isSuperadmin).toBe(true);
+  });
+
+  it("lets a superadmin act inside another organisation with X-Scyne-Org", async () => {
+    const token = await root();
+    const other = await call("POST", "/orgs", { token, body: { name: "Elsewhere" } });
+    const me = await call("GET", "/auth/whoami", { token, headers: { "x-scyne-org": "elsewhere" } });
+    expect(me.body.company.id).toBe(other.body.id);
+
+    // and a project created there belongs there, not to the home org
+    const proj = await call("POST", "/projects", {
+      token, headers: { "x-scyne-org": "elsewhere" }, body: { name: "Elsewhere Claims" },
+    });
+    expect(proj.status).toBe(201);
+    const homeProjects = await call("GET", "/projects", { token });
+    expect(homeProjects.body.map((p: { name: string }) => p.name)).not.toContain("Elsewhere Claims");
+  });
+});
+
+describe("project names are unique across the whole install", () => {
+  it("refuses a name another organisation already owns", async () => {
+    const token = await bootstrap();
+    await call("POST", "/orgs", { token, body: { name: "Other Org" } });
+    expect((await call("POST", "/projects", { token, body: { name: "RTWSA" } })).status).toBe(201);
+
+    const clash = await call("POST", "/projects", {
+      token, headers: { "x-scyne-org": "other-org" }, body: { name: "RTWSA" },
+    });
+    expect(clash.status).toBe(409);
+    expect(clash.body.error).toBe("name_taken");
+    expect(String(clash.body.message)).toMatch(/flat tree/i);
+  });
+
+  it("is case-insensitive, because the filesystem may be too", async () => {
+    const token = await bootstrap();
+    await call("POST", "/projects", { token, body: { name: "RTWSA" } });
+    expect((await call("POST", "/projects", { token, body: { name: "rtwsa" } })).status).toBe(409);
+  });
+});
+
+describe("the model price catalogue", () => {
+  it("lists the seeded models, flagging retirement and unpriced rows", async () => {
+    const token = await bootstrap();
+    const res = await call("GET", "/models", { token });
+    expect(res.status).toBe(200);
+
+    const terra = res.body.find((m: any) => m.model === "gpt-5.6-terra");
+    expect(Number(terra.input_per_mtok)).toBe(2);
+    expect(terra.unpriced).toBe(false);
+
+    // gpt-5.4 retires from Codex on 2026-08-31.
+    const retiring = res.body.find((m: any) => m.model === "gpt-5.4");
+    expect(retiring.retiring_soon || retiring.retired).toBe(true);
+
+    // A model with no published price is UNPRICED, not free.
+    const spark = res.body.find((m: any) => m.model === "gpt-5.3-codex-spark");
+    expect(spark.unpriced).toBe(true);
+    expect(spark.input_per_mtok).toBeNull();
+  });
+
+  it("lets an administrator correct one by hand", async () => {
+    const token = await bootstrap();
+    const res = await call("PUT", "/models/openai/gpt-5.6-terra", {
+      token, body: { inputPerMTok: 2.5, outputPerMTok: 13 },
+    });
+    expect(res.status).toBe(200);
+    expect(Number(res.body.input_per_mtok)).toBe(2.5);
+  });
+
+  it("refuses a negative or implausible rate rather than storing it", async () => {
+    const token = await bootstrap();
+    // NB: not Infinity — JSON.stringify turns it into `null`, which is the
+    // legitimate "unpriced" value, so it never reaches the server as Infinity.
+    for (const body of [{ inputPerMTok: -1 }, { inputPerMTok: 999_999 }, { outputPerMTok: "12.00" }]) {
+      const res = await call("PUT", "/models/openai/gpt-5.6-terra", { token, body });
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  it("stores a refresh as a PROPOSAL with a diff, and does not apply it", async () => {
+    const token = await bootstrap();
+    const res = await call("POST", "/models/refresh", {
+      token,
+      body: {
+        source: "https://developers.openai.com/api/docs/pricing",
+        rows: [
+          { provider: "openai", model: "gpt-5.6-terra", input_per_mtok: 3, output_per_mtok: 12 },
+          { provider: "openai", model: "gpt-5.6-luna", input_per_mtok: 0.2, output_per_mtok: 1.2 },
+        ],
+      },
+    });
+    expect(res.status).toBe(200);
+    // Only the one row that actually changes is in the diff — a proposal of
+    // forty rows that alters two must not present forty for review.
+    expect(res.body.diff.map((d: any) => d.model)).toEqual(["gpt-5.6-terra"]);
+    expect(res.body.diff[0]).toMatchObject({ field: "input_per_mtok", from: "2.0000", to: "3" });
+
+    // Nothing changed yet.
+    const models = await call("GET", "/models", { token });
+    expect(Number(models.body.find((m: any) => m.model === "gpt-5.6-terra").input_per_mtok)).toBe(2);
+  });
+
+  it("rejects a hallucinated price before it can be proposed", async () => {
+    const token = await bootstrap();
+    const res = await call("POST", "/models/refresh", {
+      token, body: { rows: [{ model: "gpt-5.6-terra", input_per_mtok: 15000 }] },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_rows");
+    expect(String(res.body.problems[0])).toMatch(/between 0 and/);
+  });
+
+  it("rejects a row with no model id, and a duplicated one", async () => {
+    const token = await bootstrap();
+    expect((await call("POST", "/models/refresh", {
+      token, body: { rows: [{ input_per_mtok: 1 }] } })).status).toBe(400);
+    expect((await call("POST", "/models/refresh", {
+      token, body: { rows: [{ model: "x", input_per_mtok: 1 }, { model: "x", input_per_mtok: 2 }] } })).status)
+      .toBe(400);
+  });
+
+  it("applies only on a superadmin's say-so", async () => {
+    const token = await bootstrap();     // the claimer IS the superadmin
+    await call("POST", "/models/refresh", {
+      token, body: { rows: [{ provider: "openai", model: "gpt-5.6-terra", input_per_mtok: 3, output_per_mtok: 12 }] },
+    });
+
+    // An ordinary administrator may propose but not apply.
+    await call("POST", "/users", { token, body: { email: "priceadmin@scyne.co", password: "pw", role: "admin" } });
+    const adminToken = (await call("POST", "/auth/login", {
+      body: { email: "priceadmin@scyne.co", password: "pw" } })).body.token;
+    expect((await call("POST", "/models/refresh/apply", { token: adminToken })).status).toBe(403);
+
+    const applied = await call("POST", "/models/refresh/apply", { token });
+    expect(applied.status).toBe(200);
+    expect(applied.body.applied).toBe(1);
+
+    const models = await call("GET", "/models", { token });
+    expect(Number(models.body.find((m: any) => m.model === "gpt-5.6-terra").input_per_mtok)).toBe(3);
+  });
+
+  it("keeps only one proposal outstanding", async () => {
+    const token = await bootstrap();
+    await call("POST", "/models/refresh", { token, body: { rows: [{ model: "gpt-5", input_per_mtok: 9 }] } });
+    await call("POST", "/models/refresh", { token, body: { rows: [{ model: "gpt-5", input_per_mtok: 8 }] } });
+    const pending = await call("GET", "/models/refresh", { token });
+    // Two competing sets with no ordering between them is a way to apply the
+    // older one by accident.
+    expect(pending.body.rows).toHaveLength(1);
+    expect(Number(pending.body.rows[0].input_per_mtok)).toBe(8);
+  });
+
+  it("can be discarded", async () => {
+    const token = await bootstrap();
+    await call("POST", "/models/refresh", { token, body: { rows: [{ model: "gpt-5", input_per_mtok: 9 }] } });
+    expect((await call("DELETE", "/models/refresh", { token })).status).toBe(200);
+    expect((await call("GET", "/models/refresh", { token })).body).toBeNull();
+  });
+});
+
+describe("the audit trail records organisation management where it can be seen", () => {
+  it("files org.create under the ACTOR's organisation, not the new one", async () => {
+    const token = await bootstrap();
+    const made = await call("POST", "/orgs", { token, body: { name: "Audited Co" } });
+    expect(made.status).toBe(201);
+
+    // Looked at from the home organisation, which is where the superadmin was
+    // standing. Filing it under the new org hides it from the only place
+    // anyone would look — unless they first switch to the org whose creation
+    // they are trying to find.
+    const actions = await call("GET", "/actions", { token });
+    const created = actions.body.find((a: { verb: string }) => a.verb === "org.create");
+    expect(created).toBeTruthy();
+    expect(created.target_id).toBe(made.body.id);
+    expect(created.detail).toMatchObject({ name: "Audited Co", slug: "audited-co" });
+  });
+
+  it("records the archive too", async () => {
+    const token = await bootstrap();
+    const made = await call("POST", "/orgs", { token, body: { name: "Short Lived" } });
+    await call("DELETE", `/orgs/${made.body.id}`, { token });
+    const actions = await call("GET", "/actions", { token });
+    expect(actions.body.some((a: { verb: string }) => a.verb === "org.archive")).toBe(true);
   });
 });

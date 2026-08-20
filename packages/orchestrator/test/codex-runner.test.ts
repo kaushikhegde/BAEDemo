@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCodexArgs, createCodexRunner } from "../src/core/codex-runner.js";
+import { buildCodexArgs, createCodexRunner, readMcpServers } from "../src/core/codex-runner.js";
 import type { RunRequest } from "../src/core/runner.js";
 
 const base: RunRequest = {
@@ -115,5 +115,74 @@ describe("createCodexRunner", () => {
     expect(res.status).toBe("failed");
     // Every runbook in this repo greps for this exact string.
     expect(res.stderrTail).toContain("Unknown skill: no-such-skill");
+  });
+});
+
+describe("readMcpServers expands ${VAR}", () => {
+  const write = (obj: unknown): string => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-"));
+    const path = join(dir, ".mcp.json");
+    writeFileSync(path, JSON.stringify(obj));
+    return path;
+  };
+
+  it("substitutes an environment variable in an env value", async () => {
+    // The bug this pins: Claude Code expands ${VAR} in .mcp.json itself, but
+    // readMcpServers parses the JSON and re-encodes each value as TOML for
+    // `codex -c`. Without expansion, a Codex run hands the MCP server the
+    // LITERAL string "${MCP_TOKEN_FOR_AZURE}" and every call 401s with a
+    // credential that looks present in the config.
+    process.env.SCYNE_TEST_PAT = "a-real-token";
+    const path = write({
+      mcpServers: {
+        "azure-devops": {
+          command: "npx",
+          args: ["-y", "@azure-devops/mcp", "Scyne-AI-Lab", "--authentication", "pat"],
+          env: { PERSONAL_ACCESS_TOKEN: "${SCYNE_TEST_PAT}" },
+        },
+      },
+    });
+    const servers = await readMcpServers(path);
+    expect(servers["azure-devops"].env!.PERSONAL_ACCESS_TOKEN).toBe("a-real-token");
+    delete process.env.SCYNE_TEST_PAT;
+  });
+
+  it("expands inside args and the command too", async () => {
+    process.env.SCYNE_TEST_ORG = "Scyne-AI-Lab";
+    const path = write({
+      mcpServers: { ado: { command: "npx", args: ["-y", "@azure-devops/mcp", "${SCYNE_TEST_ORG}"] } },
+    });
+    const servers = await readMcpServers(path);
+    expect(servers.ado.args).toContain("Scyne-AI-Lab");
+    delete process.env.SCYNE_TEST_ORG;
+  });
+
+  it("honours a ${VAR:-default}", async () => {
+    delete process.env.SCYNE_TEST_MISSING;
+    const path = write({
+      mcpServers: { x: { command: "c", env: { A: "${SCYNE_TEST_MISSING:-fallback}" } } },
+    });
+    expect((await readMcpServers(path)).x.env!.A).toBe("fallback");
+  });
+
+  it("THROWS on a variable that resolves to nothing, naming it", async () => {
+    // Silently substituting "" gives the server an empty credential and a 401
+    // that reads like a permissions problem. Failing here names the variable
+    // and the file, which is a thirty-second fix instead of an afternoon.
+    delete process.env.SCYNE_TEST_ABSENT;
+    const path = write({ mcpServers: { x: { command: "c", env: { A: "${SCYNE_TEST_ABSENT}" } } } });
+    await expect(readMcpServers(path)).rejects.toThrow(/SCYNE_TEST_ABSENT/);
+  });
+
+  it("leaves a value with no placeholder exactly as it is", async () => {
+    const path = write({ mcpServers: { x: { command: "npx", args: ["-y", "pkg"], env: { A: "plain" } } } });
+    const servers = await readMcpServers(path);
+    expect(servers.x.env!.A).toBe("plain");
+    expect(servers.x.args).toEqual(["-y", "pkg"]);
+  });
+
+  it("still returns {} for a missing or malformed file", async () => {
+    expect(await readMcpServers("/nowhere/.mcp.json")).toEqual({});
+    expect(await readMcpServers(undefined)).toEqual({});
   });
 });

@@ -16,7 +16,7 @@ beforeEach(async () => {
 
   const company = randomUUID();
   project = randomUUID(); featureA = randomUUID(); featureB = randomUUID();
-  await db.query(`insert into companies (id, name) values ($1,'Scyne')`, [company]);
+  await db.query(`insert into companies (id, name, slug) values ($1,'Scyne','scyne')`, [company]);
   await db.query(`insert into projects (id, company_id, name) values ($1,$2,'RTWSA')`, [project, company]);
   await db.query(`insert into features (id, project_id, name) values ($1,$2,'Appeals')`, [featureA, project]);
   await db.query(`insert into features (id, project_id, name) values ($1,$2,'Claims')`, [featureB, project]);

@@ -13,7 +13,7 @@ const MIGRATIONS = new URL("../migrations", import.meta.url).pathname;
 /** company → user → project → feature, the chain everything else hangs off. */
 async function seed(): Promise<{ company: string; user: string; project: string; feature: string }> {
   const company = randomUUID(), user = randomUUID(), project = randomUUID(), feature = randomUUID();
-  await db.query(`insert into companies (id, name) values ($1,'Scyne')`, [company]);
+  await db.query(`insert into companies (id, name, slug) values ($1,'Scyne','scyne')`, [company]);
   await db.query(`insert into users (id, company_id, email) values ($1,$2,'a@b.co')`, [user, company]);
   await db.query(`insert into projects (id, company_id, name) values ($1,$2,'RTWSA')`, [project, company]);
   await db.query(`insert into features (id, project_id, name) values ($1,$2,'Appeals')`, [feature, project]);
@@ -227,5 +227,196 @@ describe("002_platform schema", () => {
       `insert into installations (id, company_id, machine_id) values ($1,$2,'machine-1')`,
       [randomUUID(), company])
     ).rejects.toThrow();
+  });
+});
+
+describe("005_tenancy schema", () => {
+  const columns = async (table: string): Promise<Set<string>> => {
+    const { rows } = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_name = $1`, [table]);
+    return new Set(rows.map(r => r.column_name));
+  };
+
+  it("gives every organisation a slug, a status and an archive marker", async () => {
+    const c = await columns("companies");
+    expect(c.has("slug")).toBe(true);
+    expect(c.has("status")).toBe(true);
+    expect(c.has("archived_at")).toBe(true);
+  });
+
+  it("derives a slug for an organisation that predates the column", async () => {
+    // seed() inserts (id, name) only — exactly as every row written before
+    // this migration existed did. The backfill has to cope with those.
+    await db.query(`insert into companies (id, name, slug) values ($1,'Scyne AI Lab','scyne-ai-lab')`,
+      [randomUUID()]);
+    const { rows } = await db.query<{ slug: string }>(
+      `select slug from companies where name = 'Scyne AI Lab'`);
+    expect(rows[0]?.slug).toBe("scyne-ai-lab");
+  });
+
+  it("refuses two organisations with the same slug", async () => {
+    await db.query(`insert into companies (id, name, slug) values ($1,'Acme','acme')`, [randomUUID()]);
+    await expect(
+      db.query(`insert into companies (id, name, slug) values ($1,'Acme Two','acme')`, [randomUUID()]),
+    ).rejects.toThrow();
+  });
+
+  it("refuses an organisation with no slug at all", async () => {
+    await expect(
+      db.query(`insert into companies (id, name) values ($1,'Sluggless')`, [randomUUID()]),
+    ).rejects.toThrow();
+  });
+
+  it("records who started an issue, and tolerates not knowing", async () => {
+    expect((await columns("issues")).has("created_by")).toBe(true);
+    const { company } = await seed();
+    const issue = randomUUID();
+    await db.query(
+      `insert into issues (id, company_id, identifier, title, status)
+       values ($1,$2,'SCY-1','Untracked start','todo')`, [issue, company]);
+    const { rows } = await db.query<{ created_by: string | null }>(
+      `select created_by from issues where id=$1`, [issue]);
+    expect(rows[0].created_by).toBeNull();
+  });
+
+  it("keeps an issue when the user who started it is deleted", async () => {
+    const { company, user } = await seed();
+    const issue = randomUUID();
+    await db.query(
+      `insert into issues (id, company_id, identifier, title, status, created_by)
+       values ($1,$2,'SCY-2','Attributed','todo',$3)`, [issue, company, user]);
+    await db.query(`delete from users where id=$1`, [user]);
+    const { rows } = await db.query<{ created_by: string | null }>(
+      `select created_by from issues where id=$1`, [issue]);
+    // set null, not cascade: deleting a person must not delete their work.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].created_by).toBeNull();
+  });
+});
+
+describe("006_issue_control schema", () => {
+  // A distinct identifier per insert: (company_id, identifier) is unique, and
+  // three issues sharing one would fail on THAT constraint rather than on the
+  // control-request check this test is actually about.
+  let issueSeq = 0;
+  const newIssue = async (company: string, extra = "", params: unknown[] = []) => {
+    const id = randomUUID();
+    await db.query(
+      `insert into issues (id, company_id, identifier, title, status${extra ? ", " + extra : ""})
+       values ($1,$2,$3,'Controlled','in_progress'${params.map((_, i) => `,$${i + 4}`).join("")})`,
+      [id, company, `SCY-C${++issueSeq}`, ...params]);
+    return id;
+  };
+
+  it("carries a control request, who asked and when", async () => {
+    const { rows } = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_name = 'issues'`);
+    const cols = new Set(rows.map(r => r.column_name));
+    expect(cols.has("control_request")).toBe(true);
+    expect(cols.has("control_requested_by")).toBe(true);
+    expect(cols.has("control_requested_at")).toBe(true);
+  });
+
+  it("defaults to no request at all", async () => {
+    const { company } = await seed();
+    const id = await newIssue(company);
+    const { rows } = await db.query<{ control_request: string | null }>(
+      `select control_request from issues where id=$1`, [id]);
+    expect(rows[0].control_request).toBeNull();
+  });
+
+  it("accepts the three verbs and refuses anything else", async () => {
+    const { company } = await seed();
+    for (const verb of ["pause", "pause_now", "cancel"]) {
+      const id = await newIssue(company, "control_request", [verb]);
+      const { rows } = await db.query<{ control_request: string }>(
+        `select control_request from issues where id=$1`, [id]);
+      expect(rows[0].control_request).toBe(verb);
+    }
+    // A typo in a route handler must fail at the database rather than sit in
+    // the column forever as a request the engine will never recognise.
+    await expect(newIssue(company, "control_request", ["halt"])).rejects.toThrow();
+  });
+
+  it("keeps the request when the person who made it is deleted", async () => {
+    const { company, user } = await seed();
+    const id = await newIssue(company, "control_request, control_requested_by", ["cancel", user]);
+    await db.query(`delete from users where id=$1`, [user]);
+    const { rows } = await db.query<{ control_request: string; control_requested_by: string | null }>(
+      `select control_request, control_requested_by from issues where id=$1`, [id]);
+    expect(rows[0].control_request).toBe("cancel");
+    expect(rows[0].control_requested_by).toBeNull();
+  });
+});
+
+describe("007_model_prices schema", () => {
+  const cols = async (table: string) => {
+    const { rows } = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_name = $1`, [table]);
+    return new Set(rows.map(r => r.column_name));
+  };
+
+  it("carries a price table", async () => {
+    const c = await cols("model_prices");
+    for (const col of ["provider", "model", "input_per_mtok", "cached_input_per_mtok",
+                       "output_per_mtok", "currency", "retires_on", "source_url", "fetched_at"]) {
+      expect(c.has(col), col).toBe(true);
+    }
+  });
+
+  it("records which model ran, and what it is estimated to have cost", async () => {
+    const c = await cols("runs");
+    expect(c.has("model")).toBe(true);
+    expect(c.has("est_cost_usd")).toBe(true);
+    expect(c.has("cost_source")).toBe(true);
+  });
+
+  it("seeds the models Codex actually offers today", async () => {
+    const { rows } = await db.query<{ model: string; input_per_mtok: string; output_per_mtok: string }>(
+      `select model, input_per_mtok, output_per_mtok from model_prices where model = 'gpt-5.6-terra'`);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].input_per_mtok)).toBe(2);
+    expect(Number(rows[0].output_per_mtok)).toBe(12);
+  });
+
+  it("flags the models retiring from Codex on 31 August 2026", async () => {
+    const { rows } = await db.query<{ model: string }>(
+      `select model from model_prices where retires_on = date '2026-08-31' order by model`);
+    expect(rows.map(r => r.model)).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
+  });
+
+  it("seeds a model with no published price as UNPRICED rather than as free", async () => {
+    const { rows } = await db.query<{ input_per_mtok: string | null }>(
+      `select input_per_mtok from model_prices where model = 'gpt-5.3-codex-spark'`);
+    expect(rows).toHaveLength(1);
+    // null, not 0 — "$0.00" reads as a run that cost nothing.
+    expect(rows[0].input_per_mtok).toBeNull();
+  });
+
+  it("refuses a negative rate", async () => {
+    await expect(db.query(
+      `insert into model_prices (provider, model, input_per_mtok) values ('openai','bad',-1)`,
+    )).rejects.toThrow();
+  });
+
+  it("holds one row per provider and model", async () => {
+    await expect(db.query(
+      `insert into model_prices (provider, model, input_per_mtok) values ('openai','gpt-5',1)`,
+    )).rejects.toThrow();
+  });
+
+  it("carries no cost_source for a run that predates the column", async () => {
+    const { company } = await seed();
+    const issue = randomUUID(), run = randomUUID();
+    await db.query(
+      `insert into issues (id, company_id, identifier, title, status) values ($1,$2,'SCY-P','x','todo')`,
+      [issue, company]);
+    await db.query(
+      `insert into runs (id, issue_id, status, log_path) values ($1,$2,'succeeded','/tmp/x.jsonl')`,
+      [run, issue]);
+    const { rows } = await db.query<{ cost_source: string | null; model: string | null }>(
+      `select cost_source, model from runs where id=$1`, [run]);
+    expect(rows[0].cost_source).toBeNull();
+    expect(rows[0].model).toBeNull();
   });
 });

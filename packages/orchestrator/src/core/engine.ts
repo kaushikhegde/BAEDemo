@@ -18,6 +18,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { interpolate } from "./interpolate.js";
 import { classifyFailure } from "./retry.js";
+import { priceRun } from "./usage.js";
+import { killRun } from "./spawn.js";
 import type { RunResult } from "./runner.js";
 import { resolveRuntime } from "../config.js";
 import type { OrchestratorConfig, OrchestratorDefaults, Step, WorkflowDef } from "../config.js";
@@ -66,9 +68,26 @@ export type ExecFn = (cmd: string, cwd: string, timeoutMs?: number, env?: NodeJS
 export const MAX_READ_CHARS = 256_000;
 
 export interface Engine {
-  start(workflowKey: string, params: Record<string, string>): Promise<IssueRow>;
+  start(
+    workflowKey: string,
+    params: Record<string, string>,
+    opts?: { companyId?: string; createdBy?: string | null },
+  ): Promise<IssueRow>;
   advance(issueId: string): Promise<void>;
   retry(issueId: string): Promise<void>;
+  /**
+   * Ask a running issue to stop.
+   *
+   * `force: false` (the default) lets the in-flight step finish and parks
+   * before the NEXT one — nothing lost, nothing wasted, but it can take as
+   * long as an agent run. `force: true` kills the child now and parks at THIS
+   * step, which will be re-run on resume.
+   */
+  pause(issueId: string, opts?: { force?: boolean; by?: string | null }): Promise<IssueRow | null>;
+  /** Stop for good. Kills any live child; the issue does not resume. */
+  cancel(issueId: string, opts?: { by?: string | null }): Promise<IssueRow | null>;
+  /** Carry a paused issue on from where it stopped. */
+  resume(issueId: string): Promise<void>;
   /**
    * Record a gate decision and, unless `opts.advance` is false, carry the issue
    * forward from it. HTTP callers pass `{ advance: false }` and fire `advance()`
@@ -93,7 +112,16 @@ const defaultExec: ExecFn = (cmd, cwd, timeoutMs = 20 * 60_000, env) =>
       (err, stdout, stderr) => res({ code: err ? (err.code ?? 1) : 0, stdout, stderr }));
   });
 
-type StepOutcome = "next" | "wait" | "blocked";
+/**
+ * `stopped` is what a step returns when an operator killed it mid-flight.
+ *
+ * It is deliberately NOT `blocked`: blocking would overwrite the `paused` or
+ * `cancelled` status the control request is about to set, and would leave the
+ * timeline saying the agent failed when in fact somebody stopped it. It sends
+ * `advance()` back to the top of its loop WITHOUT advancing `step_index`, so
+ * the control check there records what actually happened.
+ */
+type StepOutcome = "next" | "wait" | "blocked" | "stopped";
 
 export function createEngine(deps: {
   repo: Repo; config: OrchestratorConfig; exec?: ExecFn;
@@ -391,10 +419,19 @@ export function createEngine(deps: {
             // setting → default. Recorded so the transcript can be decoded
             // and spend can be attributed.
             adapter: rt.adapter,
+            // Same reasoning as `adapter`: resolveRuntime is the only place
+            // that knows, and a price needs a model. The Codex transcript
+            // carries no model field, so without this a Codex run could never
+            // be priced at all.
+            model: rt.model ?? null,
           });
 
           const startedAt = Date.now();
           const res = await runner.run({
+            // The run row's id, so `killRun` can find this child. Without it a
+            // running agent is unaddressable and Pause/Cancel could only ever
+            // take effect at the NEXT step boundary.
+            runId: run.id,
             agent: {
               key: agentKey,
               // installRoot: `agent-instructions/<agent>.thin.md` ships with the install.
@@ -423,6 +460,19 @@ export function createEngine(deps: {
           });
           const elapsedMs = Date.now() - startedAt;
 
+          // Estimate the cost when the CLI reported none — which is every
+          // Codex run. Looked up by the model the engine resolved, priced by
+          // the pure `priceRun`, and stored in its OWN column: `cost_usd`
+          // continues to mean "reported by the CLI, verbatim", so a reader can
+          // always tell whose arithmetic they are looking at.
+          //
+          // A model we hold no price for stays null rather than becoming 0 —
+          // "$0.00" reads as a free run, and `—` is the truth.
+          let estCostUsd: number | null = null;
+          if (res.usage && res.usage.costUsd == null && rt.model) {
+            estCostUsd = priceRun(res.usage, await repo.getModelPrice(rt.model));
+          }
+
           await repo.finishRun(run.id, {
             status: res.status, exitCode: res.exitCode, sessionId: res.usage?.sessionId ?? null,
             inputTokens: res.usage?.inputTokens ?? null, outputTokens: res.usage?.outputTokens ?? null,
@@ -430,12 +480,52 @@ export function createEngine(deps: {
             cacheCreationTokens: res.usage?.cacheCreationTokens ?? null,
             costUsd: res.usage?.costUsd ?? null, durationMs: res.usage?.durationMs ?? null,
             numTurns: res.usage?.numTurns ?? null,
+            estCostUsd,
           });
+
+          // A cost ceiling could not fire on a Codex run at all before this:
+          // the runner checks budgets against the CLI's own reported figure,
+          // and Codex reports none. Moving the org onto Codex therefore
+          // removed the dollar cap from every agent, silently. The check runs
+          // HERE, after the estimate exists, and says plainly that the figure
+          // was ours — being stopped by an arithmetic nobody can see is worse
+          // than not being stopped.
+          if (res.status === "succeeded" && estCostUsd != null
+              && budget?.maxCostUsd && estCostUsd > budget.maxCostUsd) {
+            await repo.finishRun(run.id, {
+              status: "over_budget", exitCode: res.exitCode,
+              sessionId: res.usage?.sessionId ?? null,
+              inputTokens: res.usage?.inputTokens ?? null, outputTokens: res.usage?.outputTokens ?? null,
+              cacheReadTokens: res.usage?.cacheReadTokens ?? null,
+              cacheCreationTokens: res.usage?.cacheCreationTokens ?? null,
+              costUsd: null, durationMs: res.usage?.durationMs ?? null,
+              numTurns: res.usage?.numTurns ?? null, estCostUsd,
+            });
+            await note(issue.id,
+              `Agent \`${agentKey}\` is over its cost ceiling: **~$${estCostUsd.toFixed(4)} estimated** ` +
+              `against a limit of $${budget.maxCostUsd.toFixed(2)}.\n\n` +
+              `That figure is OURS, not the CLI's — \`${rt.model}\` reports no cost of its own, so it was ` +
+              `computed from its token counts and the price recorded for it. Check the model catalogue ` +
+              `if it looks wrong.`);
+            // Returned rather than reassigned: `res` is the runner's own
+            // result and stays exactly as the runner produced it.
+            return { res: { ...res, status: "over_budget" as const }, elapsedMs };
+          }
 
           return { res, elapsedMs };
         };
 
         let { res, elapsedMs } = await attemptOnce();
+
+        // Stopped by a person, not failed. Checked before the retry logic
+        // rather than left to it: `classifyFailure` also refuses to retry a
+        // cancel, but reaching that path would still `block()` the issue —
+        // overwriting the `paused`/`cancelled` status the request is about to
+        // set, and telling the timeline the agent failed when it did not.
+        if (res.status === "cancelled") {
+          await note(issue.id, `Agent \`${agentKey}\` was stopped.`);
+          return "stopped";
+        }
 
         // Self-healing, once, and only when the first attempt demonstrably
         // spent nothing — see `classifyFailure` for why the test is "did it
@@ -578,10 +668,57 @@ export function createEngine(deps: {
         // the instant a call returns to park — a second, LATER call on an
         // already-parked issue is not caught by the lock at all, only by
         // this check (and, per step type, the artefact check besides).
-        if (!issue || issue.status === "blocked" || issue.status === "done" || issue.status === "in_review") return;
+        if (!issue) return;
+        // Finished, one way or the other. Nothing — not even a control
+        // request — moves an issue out of these.
+        if (issue.status === "done" || issue.status === "cancelled") return;
 
         const wf = workflow(issue.workflow_key);
         const step = wf.steps[issue.step_index];
+
+        // The control check comes BEFORE the parked-status returns below, and
+        // that ordering is the whole point: an issue sitting at `in_review`
+        // waiting for a human, or at `blocked` after a failure, is EXACTLY
+        // what someone reaches for Cancel about. With the returns first, a
+        // request against either was recorded and then silently never
+        // honoured — the issue simply stayed where it was, looking ignored.
+        //
+        // A force-pause or a cancel has already killed the child by the time
+        // we get here; what remains is to record where it stopped, and why.
+        if (issue.control_request) {
+          const verb = issue.control_request;
+          const who = issue.control_requested_by
+            ? await repo.describeUser(issue.control_requested_by)
+            : "a user";
+          const where = step
+            ? `step ${issue.step_index} (\`${step.type}\`)`
+            : `the end of ${wf.label}`;
+          await repo.clearControl(issueId);
+          await repo.updateIssue(issueId, { status: verb === "cancel" ? "cancelled" : "paused" });
+          if (verb === "cancel") {
+            // A gate left `pending` on a cancelled issue sits in every
+            // "awaiting approval" list forever, inviting someone to approve
+            // work that was called off.
+            for (const g of await repo.listGates(issueId)) {
+              if (g.status === "pending") await repo.decideGate(g.id, "cancelled", `Issue ${verb}led`, who);
+            }
+          }
+          await note(issueId, verb === "cancel"
+            ? `**Cancelled** by ${who} at ${where}. This issue will not resume.`
+            : `**Paused** by ${who} at ${where}. Resume it to carry on from here — ` +
+              `steps that already succeeded are not re-run.`);
+          return;
+        }
+
+        // `in_review` is a belt-and-braces halt alongside each wait step's own
+        // artefact check (see "gate"/"flow" in runStep): the in-memory lock
+        // only protects calls that overlap IN FLIGHT and is released the
+        // instant a call returns to park, so a second, LATER call on an
+        // already-parked issue is caught only here.
+        //
+        // `paused` leaves only through resume(); `blocked` only through retry().
+        if (issue.status === "blocked" || issue.status === "in_review" || issue.status === "paused") return;
+
         if (!step) {
           await repo.updateIssue(issueId, { status: "done" });
           // The closing line of the timeline. Cost is summed from the runs
@@ -614,7 +751,29 @@ export function createEngine(deps: {
           await block(issueId, `Step ${issue.step_index} (\`${step.type}\`) threw: ${err instanceof Error ? err.message : String(err)}`);
           return;
         }
-        if (outcome === "blocked" || outcome === "wait") return;
+        if (outcome === "blocked" || outcome === "wait") {
+          // A control request made WHILE this step was running has not been
+          // seen: the loop only looks at the top, and this step is about to
+          // park. Re-read once so a pause or cancel issued mid-step is
+          // honoured, rather than left pending forever behind a blocked or
+          // gate-parked issue.
+          //
+          // Observed live: an exec step failed, `block()` set the status, and
+          // advance() returned — so a cancel sent seconds earlier stayed in
+          // `control_request` unhonoured, the issue read `blocked`, and the
+          // next resume quietly cleared the request. The cancel simply
+          // vanished.
+          //
+          // This cannot loop: the control check at the top either honours the
+          // request and returns, or the parked-status check below it does.
+          const latest = await repo.getIssue(issueId);
+          if (latest?.control_request) continue;
+          return;
+        }
+        // Killed mid-step: go back to the top WITHOUT advancing, so the
+        // control check records `paused`/`cancelled` and this step is the one
+        // that re-runs if the issue is ever resumed.
+        if (outcome === "stopped") continue;
 
         await repo.updateIssue(issueId, { stepIndex: issue.step_index + 1, status: "in_progress" });
       }
@@ -624,16 +783,26 @@ export function createEngine(deps: {
   }
 
   return {
-    async start(workflowKey, params) {
+    async start(workflowKey, params, opts = {}) {
       const wf = workflow(workflowKey);
-      const companyId = await repo.ensureCompany(config.company ?? "Scyne");
-      const agent = await repo.getAgentByKey(companyId, wf.assignee);
+      // The CALLER's organisation, falling back to the configured one for an
+      // internal caller with no principal. Resolving it from config here would
+      // file every client's work under whichever organisation the config file
+      // happens to name.
+      const companyId = opts.companyId ?? await repo.ensureCompany(config.company ?? "Scyne");
+      // The org chart is reconciled into the HOME organisation on boot, so an
+      // agent lookup in any other organisation legitimately finds nothing. An
+      // issue with no assignee is already a supported state — the engine
+      // resolves the agent per step — so this is a null, not an error.
+      const agent = await repo.getAgentByKey(companyId, wf.assignee)
+        ?? await repo.getAgentByKey(await repo.ensureCompany(config.company ?? "Scyne"), wf.assignee);
       const title = wf.title
         ? interpolate(wf.title, params)
         : `${wf.label} — ${params.project ?? ""}`.trim();
       return repo.createIssue({
         companyId, title,
         workflowKey, params, assigneeAgentId: agent?.id ?? null, status: "todo",
+        createdBy: opts.createdBy ?? null,
       });
     },
 
@@ -647,6 +816,84 @@ export function createEngine(deps: {
      * and rewinding further would duplicate an agent run that already
      * succeeded.
      */
+    /**
+     * Ask a running issue to stop.
+     *
+     * Graceful by default: the request is recorded and `advance()` honours it
+     * the moment the in-flight step ends. That can take as long as an agent
+     * run, which is the point — nothing is discarded and nothing is wasted.
+     *
+     * `force` additionally kills the live child NOW. Its run is recorded
+     * `cancelled` rather than `failed`, which is what stops core/retry.ts
+     * spending money undoing the very thing that was asked for.
+     */
+    async pause(issueId, opts = {}) {
+      const issue = await repo.getIssue(issueId);
+      if (!issue) throw new Error(`unknown issue ${issueId}`);
+      if (issue.status === "done" || issue.status === "cancelled") {
+        throw new Error(`issue ${issue.identifier} is ${issue.status} — there is nothing to pause`);
+      }
+      const updated = await repo.requestControl(issueId, opts.force ? "pause_now" : "pause", opts.by ?? null);
+
+      if (opts.force) {
+        const run = await repo.runningRunFor(issueId);
+        if (run && killRun(run.id)) await note(issueId, `Stopping the running agent now, as asked.`);
+      } else {
+        await note(issueId,
+          `Pause requested. The step in flight will finish first — nothing is discarded, ` +
+          `and nothing further starts after it.`);
+      }
+      // A parked issue has no loop running to notice the request, so nudge it.
+      // Awaited, not fired and forgotten: `advance()` returns immediately when
+      // the issue is already locked by a running loop (which will honour the
+      // request at its own next boundary) AND when the control check parks it,
+      // so this never waits on an agent — but firing it in the background made
+      // the status a race for anyone reading it straight afterwards.
+      await advance(issueId).catch(() => { /* the request is recorded either way */ });
+      return repo.getIssue(issueId) ?? updated;
+    },
+
+    async cancel(issueId, opts = {}) {
+      const issue = await repo.getIssue(issueId);
+      if (!issue) throw new Error(`unknown issue ${issueId}`);
+      if (issue.status === "done") {
+        throw new Error(`issue ${issue.identifier} is already done — there is nothing to cancel`);
+      }
+      if (issue.status === "cancelled") return issue;
+      const updated = await repo.requestControl(issueId, "cancel", opts.by ?? null);
+      const run = await repo.runningRunFor(issueId);
+      if (run) killRun(run.id);
+      await advance(issueId).catch(() => { /* the request is recorded either way */ });
+      return repo.getIssue(issueId) ?? updated;
+    },
+
+    /**
+     * Carry a paused issue on from where it stopped.
+     *
+     * `step_index` is left exactly where it is: a graceful pause parked BEFORE
+     * an unstarted step, and a force-pause parked ON the step it killed. Either
+     * way that step is the one worth running, and rewinding further would
+     * duplicate work that already succeeded.
+     */
+    async resume(issueId) {
+      const issue = await repo.getIssue(issueId);
+      if (!issue) throw new Error(`unknown issue ${issueId}`);
+      if (issue.status === "cancelled") {
+        throw new Error(
+          `issue ${issue.identifier} was cancelled and does not resume. ` +
+          `Start the workflow again if it is still wanted.`);
+      }
+      if (issue.status === "done") throw new Error(`issue ${issue.identifier} is already done`);
+      // Resuming WITHDRAWS any outstanding request — otherwise the issue would
+      // park again on its very next iteration, which reads as "resume is broken".
+      await repo.clearControl(issueId);
+      if (issue.status === "paused" || issue.status === "blocked") {
+        await repo.updateIssue(issueId, { status: "todo" });
+      }
+      await note(issueId, `Resumed.`);
+      await advance(issueId);
+    },
+
     async retry(issueId) {
       const issue = await repo.getIssue(issueId);
       if (!issue) throw new Error(`unknown issue ${issueId}`);

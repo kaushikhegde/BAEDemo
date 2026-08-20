@@ -15,29 +15,29 @@ feature reads it.**
 
 1. A **Business Capability Map + L1/L2/L3 Process Model**, derived from every
    document the client has given us, across all their features. Published to its
-   own Confluence page per project.
+   own Azure DevOps wiki page per project.
 2. An **evidence-traced persona set + a journey map per persona**, published to
-   one Confluence page per project — plus `personas.json` and `journey-map.json`,
+   one wiki page per project — plus `personas.json` and `journey-map.json`,
    which are a **build contract for the companion app**. Needs (1): journey
    stages align to the capability model's L1 lifecycle phases.
 
 **FEATURE level — describes ONE slice of work. Repeated per feature.**
 
-3. A **Confluence-ready Product Summary** (11-section markdown) and a set of
-   **Jira-ready user stories** (Atlassian Cloud REST v3 payloads).
+3. A **wiki-ready Product Summary** (11-section markdown) and a set of
+   **Azure DevOps work items**, one per story, created under an optional parent.
 4. A set of **UI mockups** (wireframes) — one screen specification rendered as
    self-contained themed HTML pages, one per screen, each carrying its error /
    empty / blocked states and tracing back to the stories and capabilities it
    realises. Local artefacts; they appear on the companion app's **UI** tab.
 5. A **Salesforce Data Model** (objects, custom fields, Mermaid ER diagram),
-   published to its own Confluence page.
+   published to its own wiki page.
 6. A **Salesforce Service Cloud Solution Architecture Document**
    (capability-to-component map, Flow/LWC/Apex inventory with a justification per
    custom component, integration interface catalogue, ADRs, architecture
-   diagrams), published to its own Confluence page.
+   diagrams), published to its own wiki page.
 7. A **test pack** (executable test cases, requirements traceability matrix,
    coverage gap analysis, optional CSV/Gherkin exports), published to its own
-   Confluence page.
+   wiki page.
 8. Optionally, a **Salesforce Solution Design Document** (declarative-first
    component design, Mermaid flow diagram) — a narrower deliverable that overlaps
    (6). Most features need only the architecture.
@@ -80,24 +80,35 @@ produced: "add an SLA breach field to the data model", "reword story 2.4.1.3",
 "the personas are too generic". That is the **revision flow** — a full agent
 round-trip to the specialist that owns the artefact, which revises rather than
 regenerates, raises its own approval gate, and on approval updates the existing
-Confluence page rather than creating a second one.
+wiki page rather than creating a second one.
 
 The user drives everything from a Scyne-branded chatbot UI. The chatbot does not do the work itself — it posts a workflow to the orchestrator, which runs the agent org on the local machine via Claude Code. Every stage raises its own human approval gate, and the stages that publish do so after it. See **How it runs** below.
 
-> **Mermaid → PNG for Confluence:** all Mermaid diagrams (Product Summary flow, data model ER, solution-design flow) are rendered to **PNG** locally via `npx -y @mermaid-js/mermaid-cli` and embedded with `<ac:image>` before publishing. PNG (not SVG) is used deliberately — Confluence renders PNG inline reliably, whereas SVG attachments often show only as a download link.
+> **Diagrams need no rendering.** Azure DevOps wiki takes **markdown
+> natively** and renders ` ```mermaid ` fences itself, so there is no
+> storage-format conversion, no `npx @mermaid-js/mermaid-cli` PNG pass, and
+> nothing to attach. That entire chain existed for Confluence and is gone with
+> it — see `scripts/legacy-atlassian/README.md` for what it was and the two
+> lessons that came out of it.
 >
-> **Attachments do NOT go through the MCP.** `<ac:image>` only resolves if the PNG
-> is attached to the page, and the Atlassian MCP cannot attach anything: the
-> OAuth grant `mcp-remote` obtains carries 20 scopes — 8 Confluence, none of them
-> attachment scopes — so `POST .../child/attachment` returns
-> `401 "scope does not match"`, and a raw curl reusing that token fails the same
-> way (aimed at the site domain it 403s instead, because 3LO tokens are only
-> valid against `api.atlassian.com`). Re-authorising will not add the scope —
-> Atlassian's MCP app fixes the list. Every publishing agent therefore uploads
-> with **`node scripts/confluence-attach.mjs <pageId> <files…>`**, which uses the
-> `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env` (Basic auth, site domain).
-> Symptom when this is skipped: the page publishes with its diagrams **silently
-> missing** — not broken images, simply absent.
+> **Publishing goes through the Azure DevOps MCP**, configured in `.mcp.json`
+> with the PAT read from the root `.env` as `${MCP_TOKEN_FOR_AZURE}` — never
+> inlined, because that file is committed and a PAT in it is a PAT in the git
+> history. `scripts/ado-publish.mjs` and `scripts/ado-workitems.mjs` are the
+> REST equivalents; the publish prompt reaches for the first when a document
+> exceeds about 40 KB, because passing 110 KB through a tool call is measured to
+> fail (run SCY-6: $2.73, no page).
+>
+> **Two scopes, and a 401 that lies.** The PAT needs `vso.wiki_write` AND
+> `vso.work_write`. Azure DevOps answers a MISSING SCOPE with **401**, not 403 —
+> so a wiki call failing beside a working project call means a scope, not a bad
+> token. `node scripts/ado-publish.mjs --verify` says which.
+>
+> **The work item type is discovered, not assumed.** "User Story" exists only in
+> the Agile process template; the current target runs **Basic**, whose types are
+> Epic → Issue → Task with no User Story at all. `ado-workitems.mjs` reads the
+> project's types and matches a preference order, so a hard-coded `$User Story`
+> cannot fail every story at once.
 
 ## How it runs
 
@@ -116,9 +127,45 @@ npm run dev          # orchestrator on :3100 (console at /orch), chatbot on :517
 
 | | |
 |---|---|
-| **Console** | `http://127.0.0.1:3100/orch` — **start a run**, runs with live transcripts, issues that **drill in** to their activity, work products, gates and cost, pending gates with approve/reject, a top-down **org chart with live agent state**, an editable **Skills** inventory showing which agent invokes what, **editable agent instructions**, spend, config, health |
+| **Console** | `http://127.0.0.1:3100/orch` — **sign in**, then: start a run, runs with live transcripts, issues that **drill in** to their activity, work products, gates, cost and **Pause / Stop now / Cancel**, pending gates with approve/reject, a top-down **org chart with live agent state**, an editable **Skills** inventory, **editable agent instructions**, budgets, config, health — and below a divider, the administration tabs: **Organisations**, **Users**, **Projects**, **Spend**, **Audit** |
 | **API docs** | `http://127.0.0.1:3100/docs` — generated from `openapi.yaml`, which is diffed against the router in both directions by a test |
 | **Chatbot** | `http://127.0.0.1:5173` |
+
+### Signing in to the console
+
+`/orch` serves its shell to anyone — it has to, or there would be nowhere to
+show a login form. Everything BEHIND it needs a credential: every engine route
+(`/issues`, `/runs`, `/agents`, `/config`, `/gates`) and every platform route.
+Only `/health`, `/orch`, `/docs` and `/openapi.json` are open.
+
+The credential is an **httpOnly `scyne_session` cookie**, set by
+`POST /auth/login` and sent automatically because the console is same-origin.
+No console code ever touches a token — `console.test.ts` asserts that the page
+script contains no `localStorage`, no `sessionStorage` and no `Bearer`, because
+a credential the page can read is one an injected script can steal. The CLI is
+unaffected: it sends `Authorization: Bearer`, which wins over the cookie.
+
+The first account claims the installation, as its **superadmin**:
+
+```bash
+node cli/index.ts init      # or: scyne init
+```
+
+**Admin tabs are hidden by role in the rail and REFUSED by the router.** Only
+the second is a security boundary; hiding a tab makes a tidier screen, not a
+permission. A superadmin also gets an **organisation switcher** beside their
+email, which sends `X-Scyne-Org` — a header the server refuses outright from
+anyone else rather than ignoring, because silently ignoring an
+authorisation-shaped header teaches a caller that it worked.
+
+The five admin tabs live in `http/console/admin.ts` and the login gate in
+`http/console/auth.ts`, rather than as another four hundred lines in
+`console.ts` (already 2100). Both are STRINGS spliced into that page, so the
+rule that governs the rest of that script governs them: **no backtick and no
+dollar-brace anywhere inside, comments included** — they sit in a TypeScript
+template literal. Watch the escaping too: a `\n` written in the TypeScript
+source becomes a REAL newline in the emitted browser string and breaks it; the
+browser needs `\\n`.
 
 ### The workflow engine
 
@@ -199,11 +246,13 @@ Publishing is an `agent` step **after** the gate, not a second phase the agent
 detects it is in. It runs exactly once because `step_index` moves past it — which
 is what deleted the marker-comment protocol the old bundles carried.
 
-The publish prompt is generated per stage and always says: check the space
-exists (never create it), render Mermaid to PNG locally, upload with
-`scripts/confluence-attach.mjs`, then record the page id in
-`projects/<project>/.published.json` so a later revision updates that page
-instead of creating a second one.
+The publish prompt is generated per stage and always says: resolve the org,
+project and wiki from the workflow params (falling back to `ADO_ORG` /
+`ADO_PROJECT`), create-or-update the page **by path** with the markdown as it
+stands, and record the path in `projects/<project>/.published.json` under
+`ado.<artefact>` so a later revision updates that page instead of creating a
+second one. For a document over about 40 KB it says to use
+`scripts/ado-publish.mjs` rather than a tool call.
 
 ### What the chatbot posts
 
@@ -247,7 +296,7 @@ reads: { previous: "projects/{project}/{feature}/solutions/DataModel/outputs/sal
 so the file's contents arrive in the prompt as `{previous}`. The skill enters its
 **Revision mode**: preserve everything the instruction does not touch, apply the
 change and its genuine consequences, append a `## Revision History` entry. On
-approval the publish step **updates** the existing Confluence page, using
+approval the publish step **updates** the existing wiki page, using
 `projects/<project>/.published.json` for page identity.
 
 A missing `previous` file blocks the issue **before** the agent is spawned,
@@ -268,6 +317,57 @@ A blocked issue is restarted with `POST /issues/:id/advance`, from the console's
 Resume button or the chatbot's Request-changes path. It resumes at the step that
 blocked; steps that already succeeded are not re-run.
 
+### Stopping a run
+
+An agent run averages twenty-five minutes and real money, so "I started the
+wrong thing" used to cost both. Three verbs now, and the difference between the
+first two is the whole point:
+
+| Verb | The agent in flight | The issue ends at | Resumable |
+|---|---|---|---|
+| **Pause** | runs to completion | `paused`, before the NEXT step | yes |
+| **Pause now** (`--force`) | SIGTERM → SIGKILL | `paused`, at THIS step | yes — that step re-runs |
+| **Cancel** | SIGTERM → SIGKILL | `cancelled` | no |
+
+```bash
+scyne run pause  SCY-7            # the step in flight finishes first
+scyne run pause  SCY-7 --force    # stop the agent now, losing that step's work
+scyne run cancel SCY-7            # for good; prompts unless --yes
+scyne run resume SCY-7
+```
+
+Also `POST /issues/{id}/{pause,cancel,resume}` (each 202, each recording an
+`actions` row naming who asked), and three controls in the chatbot's Workflow
+panel.
+
+**It is a REQUEST, not a status.** `issues.control_request` is written by the
+route; the ENGINE decides when to honour it, at its next step boundary. The two
+are genuinely different — the request is made by a human at an arbitrary
+moment, and the status can only change when the engine reaches a point where it
+can act. Collapsing them would mean either lying about the status for twenty
+minutes while an agent still burns tokens, or losing the request when the
+running step finishes and overwrites it.
+
+Three consequences worth knowing, each of which was a bug found by testing this
+against a live server rather than only in unit tests:
+
+- **An issue parked at a gate or `blocked` can still be stopped.** The control
+  check runs BEFORE the parked-status early-returns in `advance()`. With that
+  ordering reversed, a cancel on an issue awaiting approval was recorded and
+  then silently never honoured — and waiting for a human is the single most
+  likely moment to call something off.
+- **A request made while a step is running survives that step blocking.** When
+  a step parks or blocks, `advance()` re-reads once before returning. Without
+  it, an exec that failed seconds after a cancel left the request pending
+  forever, the issue read `blocked`, and the next resume quietly cleared it.
+- **A killed run is `cancelled`, not `failed`,** and `core/retry.ts` refuses it
+  explicitly. A cancel a few seconds in with no usage recorded matches the
+  "died cheaply, retry it" rule exactly — so without that branch, pressing
+  Cancel would have spawned the agent again.
+
+Cancelling also cancels any `pending` gate on the issue, so abandoned work does
+not sit in an approval queue inviting someone to approve it.
+
 ### Self-healing
 
 A failed **agent** step is retried **once, automatically** — but only when the
@@ -282,6 +382,7 @@ text looks:
 | Over 60s with usage unrecorded | no | killed mid-flight — its spend is unknown, not zero |
 | `over_budget` | no | the ceiling was reached once and would be billed again |
 | Configuration error (missing bundle, `Unknown skill`, bad key) | no | it fails identically, and a retry line that means nothing teaches you to ignore the ones that do |
+| `cancelled` — a person pressed Pause now or Cancel | no | a retry would undo the thing that was asked for. Checked BEFORE the transient-window rule, which a cancel a few seconds in would otherwise match exactly |
 
 The retry gets its **own run row and its own log file** (`…-retry1.jsonl`), so
 the console shows two attempts rather than two mysterious runs a second apart,
@@ -305,7 +406,7 @@ costs a client meeting.
 
 The chatbot polls `/api/status/:issueId` every 3 seconds, surfaces comments as a
 live activity timeline, renders approval gates inline with an Approve / Reject
-card, and shows Confluence + Jira links the moment they appear.
+card, and shows wiki + work item links the moment they appear.
 
 ## Folder layout
 
@@ -326,7 +427,7 @@ requirement-generator/                         workspace root (cwd for all agent
 │   │   ├── personas/             optional persona artwork, <persona-id>.png
 │   │   ├── journeys/             optional journey artwork, <persona-id>-journey.png
 │   │   └── example-screens/
-│   ├── .published.json           Confluence page identity per artefact, so a REVISION
+│   ├── .published.json           wiki page identity per artefact, so a REVISION
 │   │                             updates the page instead of creating a second one
 │   └── solutions/
 │       ├── Capabilities/         (Capabilities Process Architect)
@@ -443,17 +544,44 @@ or a step can pin its own.
 API key, so there is nothing in the environment to detect. Install with
 `npm i -g @openai/codex && codex login`.
 
-`CODEX_MODEL` is optional and only read when the org-wide default adapter is
-`codex` (`SCYNE_ADAPTER=codex`) — it names the model `codex exec` is called
-with (`--model`). Leave it unset to run Codex's own default model; naming one
-this install has not verified it serves is how an entire org's runs die on
-their first request.
+`CODEX_MODEL` is only read when the org-wide default adapter is `codex`
+(`SCYNE_ADAPTER=codex`) — it names the model `codex exec` is called with
+(`--model`). It must be one this account actually serves; naming one it does
+not is how an entire org's runs die on their first request.
 
-> **Codex reports no cost.** `core/usage.ts` records `total_cost_usd` verbatim
-> from Claude Code's result event; Codex emits token counts and no dollar
-> figure, so its runs show `—` rather than `$0.00`, the closing comment says
-> `cost not reported for N runs`, and **a cost budget cannot fire on a Codex
-> run**. Token and duration ceilings still do.
+**Setting it is what makes Codex runs costable.** A price needs a model name,
+and the Codex transcript carries none — verified against a real capture, whose
+events are `thread.started`, `turn.started`, `item.completed`, `turn.completed`
+and `error`, with no model field anywhere. So the only record of what a run was
+billed at is what `resolveRuntime` resolved, written to `runs.model` for exactly
+the reason 004 wrote `runs.adapter`. Leave `CODEX_MODEL` unset and Codex still
+runs — but every run shows `—` for cost, and no cost budget can fire on it.
+
+> Current Codex models are **gpt-5.6-sol** (detail and polish), **gpt-5.6-terra**
+> (the everyday workhorse) and **gpt-5.6-luna** (fast and cheap). **gpt-5.4 and
+> gpt-5.4-mini retire from Codex on 31 August 2026**; gpt-5.2 and gpt-5.3-codex
+> are already deprecated there. `scyne models list` flags both states — a
+> retired model is not a slow run, it is every run failing on its first request.
+
+> **Codex reports no cost — so we compute one, and label it.** `core/usage.ts`
+> still records `total_cost_usd` verbatim from Claude Code's result event into
+> `runs.cost_usd`, which continues to mean REPORTED BY THE CLI and nothing
+> else. Codex emits token counts and no dollar figure, so since migration 007 a
+> Codex run is priced by `priceRun()` from the `model_prices` table and stored
+> in **`runs.est_cost_usd`**, with `runs.cost_source` recording which of the two
+> a reader is looking at. Totals read `$4.10 reported + ~$1.23 est` rather than
+> being merged — a single figure cannot be audited, because nobody reading it
+> can tell which half came from a vendor's billing and which from a price table
+> somebody typed.
+>
+> **A cost budget now fires on the estimate.** It could not before, which meant
+> moving the org onto Codex silently removed the dollar ceiling from every
+> agent. The blocking comment says the figure was estimated and names the model
+> — being stopped by an arithmetic nobody can see is worse than not being
+> stopped. Token and duration ceilings are unchanged.
+>
+> **A model with no published price stays unpriced** — `—`, never `$0.00`,
+> which would read as a run that cost nothing.
 
 There are no agent UUIDs to keep in sync, no placeholder swap, and no
 `.bootstrap/ids.json` — all of that belonged to Paperclip's hire flow and is
@@ -482,12 +610,31 @@ breaches the duration limit is killed (SIGTERM, then SIGKILL); token and cost
 limits are checked once the final `result` event lands and flag the run
 `over_budget`.
 
-**Cost is reported, not computed.** There is no price table anywhere in
-`packages/orchestrator/` — `core/usage.ts` reads `total_cost_usd` straight off
-Claude Code's own final `result` event and records it verbatim, alongside the
-four token counters from the same event. So a figure in the console is the
-CLI's arithmetic, not ours, and a model the CLI does not price shows as `—`
-rather than as a guess.
+**Reported cost is reported; estimated cost is labelled.** `runs.cost_usd` is
+read straight off the CLI's own final `result` event and recorded verbatim, so
+a figure in that column is always the CLI's arithmetic rather than ours. What
+Codex changed is that there IS no such event — so `runs.est_cost_usd` holds our
+own figure, computed by `priceRun()` from `model_prices`, in its own column,
+never merged into the reported one. `runs.cost_source` says which applies.
+
+The price table lives in the database rather than in code, so it can be
+corrected without a deploy:
+
+```bash
+scyne models list                                      # catalogue, retirements flagged
+scyne models set gpt-5.6-terra --input 2 --output 12   # correct one by hand
+scyne models proposal                                  # a proposed table, as a DIFF
+scyne models apply                                     # superadmin only
+```
+
+**A refresh is a proposal, never a write.** Rows may come from an agent that
+read the vendor's pricing page, from a script, or from a person pasting a
+table; they are validated (finite, non-negative, under a sanity ceiling, no
+duplicates) and stored with the diff they would apply. A superadmin applies
+them. A model that hallucinates a rate must not be able to change what every
+run in the install is billed at, or trip every cost budget at once. An omitted
+field means "leave it alone" rather than "clear it", so a refresh that forgets a
+column cannot silently wipe every cached rate.
 
 **Storage** is PGlite at `.orchestrator/pgdata`, with raw run logs as JSONL at
 `.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
@@ -518,7 +665,7 @@ npm run serve                                            # HTTP + console on :31
 ```
 
 Any `--key value` after the workflow name becomes a workflow param, so
-`--confluenceSpace SADA` reaches the publish prompt without a code change.
+`--adoProject "Scyne AI Project"` reaches the publish prompt without a code change.
 
 ### HTTP API
 
@@ -526,10 +673,10 @@ Any `--key value` after the workflow name becomes a workflow param, so
 `/agents/{key}/bundle` (**PUT**) · **`/skills`** · **`/skills/{name}`** (**PUT**) ·
 **`/workflows/{key}`** ·
 `/runners` · `POST /issues` · `GET /issues` ·
-`/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · `/issues/{id}/comments`
+`/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · **`/issues/{id}/pause`** · **`/issues/{id}/cancel`** · **`/issues/{id}/resume`** · `/issues/{id}/comments`
 (POST) · `/issues/{id}/work-products` · `/issues/{id}/gates` ·
 `POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
-`/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · `/config` · `/orch` ·
+`/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · **`/models`** · **`/models/{provider}/{model}`** (PUT) · **`/models/refresh`** (GET/POST/DELETE) · **`/models/refresh/apply`** · **`/orgs`** · **`/orgs/{id}`** · `/config` · `/orch` ·
 `/openapi.json` · `/docs`.
 
 `GET /config` reports, per workflow, a **`params`** list and a **`stepList`**.
@@ -644,8 +791,9 @@ regenerate-from-scratch defeats the approval gate that follows.
 - Outputs: `capability-map.json` (L1–L4 hierarchy, current/target maturity,
   lifecycle stage), `process-model.json` (L1 phase / L2 step / L3 activity with
   actor, service tier, components, capability IDs), `capability-process.md`.
-- No prerequisite. Publishes to its own Confluence page (`<project> — Capability
-  & Process Map`) on approval; Confluence only, never Jira. Writes no HTML — the project's single page is
+- No prerequisite. Publishes to its own wiki page
+  (`/Scyne/<project>/Capability & Process Map`) on approval; a page only, never
+  work items. Writes no HTML — the project's single page is
   rendered by `render-companion-app.mjs`.
 - Deduplicate by what the organisation does: a capability exercised in three
   features is ONE capability citing all three.
@@ -673,7 +821,7 @@ regenerate-from-scratch defeats the approval gate that follows.
   `Full Name (ABBR)`.
 - 11-section Product Summary, with placeholder text preserved verbatim in 3.3.1,
   7, 8, 9, 10, 11. (3.3.1 Data Model stays a manual placeholder — the Data Modeler
-  publishes to a *separate* Confluence page.)
+  publishes to a *separate* wiki page.)
 - **It reuses the project's persona names verbatim.** Coining a new name for a
   persona the project has already evidenced is the most common way this pipeline
   produces documents that contradict each other.
@@ -754,7 +902,7 @@ open http://127.0.0.1:5173
 | **POST** | **`/api/features`** | **Create a feature** under a project. `400 reserved_name` for a name that would clash with a project folder or CLI stage keyword |
 | **POST** | **`/api/upload/project`** | The wizard's untyped dropzone → `projects/<p>/documents/`, converted to markdown on arrival, original archived |
 | **POST** | **`/api/project/bootstrap`** | `Set up project — <project>`: capability map, then personas, sequentially. `409 no_documents` |
-| POST | `/api/capability-map/trigger` | `Generate capability map — <project>`. **PROJECT level, no feature.** `409 no_documents` only. Publishes to Confluence |
+| POST | `/api/capability-map/trigger` | `Generate capability map — <project>`. **PROJECT level, no feature.** `409 no_documents` only. Publishes to the ADO wiki |
 | POST | `/api/personas/trigger` | `Generate personas — <project>`. **PROJECT level, no feature.** `409 no_capability_map` |
 | POST | `/api/trigger` | `Generate requirements — …`. Feature level. `409 missing_inputs` if SOP/Transcripts/UI are empty |
 | POST | `/api/ui-mockups/trigger` | `Generate UI mockups — …`. `409 no_documents` only. Publishes nothing |
@@ -776,7 +924,7 @@ open http://127.0.0.1:5173
 | POST | `/api/approve/:approvalId` | Resolves a gate; wakes the gate's own issue assignee. Atlassian auto-provisioning keys off the keys in the issue description |
 | POST | `/api/reject/:approvalId` | Rejects a gate |
 | POST | `/api/request-changes/:approvalId` | Reviewer feedback → comments it, re-fires the assignee to regenerate |
-| GET | `/api/history` | All completed runs with their Confluence + Jira links |
+| GET | `/api/history` | All completed runs with their wiki + work item links |
 | GET | `/api/runs/:issueId` | Compact agent run summaries for the run tree |
 | GET | `/api/features` | `projects/<project>/<feature>/` on disk. Excludes the project's own folders (`solutions`, `documents`, `design`, …) |
 | GET | `/api/project-description/:project` | Reads `projects/<project>/description.md` |
@@ -816,8 +964,8 @@ The system prompt teaches the dependency chain (requirements → data model → 
 ### Frontend layout
 
 - **Left panel**: chat with the LLM. Agent comments stream in as bubbles with the author label (e.g. `BA · SCY-2`). Approval gates render inline as a card with an expandable "Review what will be pushed" preview (Stories / Product Summary / Gaps tabs).
-- **Right panel**: workflow status. Stage pill (queued → Delivery Lead triaging → BA generating → awaiting approval → pushing → complete), progress list of issues, autoscrolling activity timeline, links panel for Confluence + Jira.
-- **Login gate**: the app shows a `Login.tsx` screen first (hardcoded demo creds `admin` / `scyne2026`; session stored in `localStorage.scyne_session`). Replace with real auth when wiring SSO.
+- **Right panel**: workflow status. Stage pill (queued → Delivery Lead triaging → BA generating → awaiting approval → pushing → complete), progress list of issues, autoscrolling activity timeline, links panel for the wiki page + work items.
+- **Login gate**: the app shows a `Login.tsx` screen first, which authenticates against the **orchestrator's own user table** — the same accounts the CLI and console use. There are no demo credentials. The first account is created by `scyne init`, which claims the installation as its **superadmin**; everyone else is created with `scyne user create` or from the console. The session is an **httpOnly cookie** on the chatbot origin, never `localStorage` — a credential JavaScript cannot read is one an injected script cannot steal — and the chatbot forwards *that user's* token to the orchestrator, so a run started from chat records `issues.created_by`.
 - **Session persistence**: `parentIssueId` is saved to `localStorage.scyne_parent_issue_id`. Refresh resumes the workflow.
 - **Right-pane tabs**: `Activity` (live workflow status) and `UI` (iframes the generated app from `/api/preview/:project/:feature`). The UI tab unlocks the moment a generated app is registered.
 - **Comments render as markdown**: `MiniMarkdown` component handles headings, bullets, bold, inline code, fenced code blocks, and links (both `[label](url)` and bare URLs).
@@ -837,28 +985,68 @@ DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
 
 These mean a user can simply say "process SADA / interim-benefit" without specifying any parameters.
 
-**Per-project push targets (not fixed to SADA):** `/api/trigger` defaults the **Jira project key** and **Confluence space key** to the *project name* (e.g. project `RTWSA` → keys `RTWSA`), not the `.env` SADA values. The `.env` `DEFAULT_JIRA_PROJECT_KEY` / `DEFAULT_PARENT_EPIC_KEY` / `DEFAULT_CONFLUENCE_PAGE_TITLE` only apply when the chosen project equals `DEFAULT_JIRA_PROJECT_KEY` (the SADA demo); for any other project the parent epic is omitted and the page title defaults to the feature name. The BA's Phase 2 **verifies the Jira project + Confluence space exist** (`getVisibleJiraProjects` / `getConfluenceSpaces`) and blocks with a clear message if not — it cannot create projects/spaces (the Atlassian MCP has no such tool). The Delivery Lead keeps the parent `Generate requirements` issue `in_progress` while the BA runs (it does **not** mark it `blocked`).
+**One Azure DevOps target for the whole install.** Unlike the Atlassian
+arrangement this replaced — where a Confluence space key was derived from each
+Scyne project's name — publishing goes to ONE org and ONE project (`ADO_ORG` /
+`ADO_PROJECT`, overridable per run with `adoOrg` / `adoProject`). The Scyne
+project and feature live in the **wiki page path** instead
+(`/Scyne/<project>/<feature>/<artefact>`), so one ADO project holds every
+client's work without collision and there is nothing to derive from a name.
 
-**Auto-provisioning (no client setup by default):** at the **approval** step, `/api/approve` reads the Jira/Confluence keys from the parent issue description and calls `server/services/atlassianProvision.ts` (`ensureAtlassianTargets`) to create the missing targets via the Atlassian **REST** API (not the MCP) before resolving the gate — both Jira project + Confluence space for the requirements flow, just the space for the Confluence-only data-model/solution-design flows (whose descriptions carry no Jira key). Auth reuses the **OAuth login the client already did for the MCP** (token cached in `~/.mcp-auth/`, used as a Bearer against `api.atlassian.com` 3LO) — no API token needed. An explicit API token (`ATLASSIAN_SITE_URL`+`ATLASSIAN_EMAIL`+`ATLASSIAN_API_TOKEN`) takes priority if set (Basic auth), useful when the MCP grant lacks create scope. **Soft-fail policy:** auth/lookup problems → skip provisioning and let the BA verify-and-block (so a stale token never blocks an approval where the target already exists); only a definitive *missing-target + create-rejected* throws `502 provision_failed` and holds the gate. Jira projects are created team-managed Kanban by default (`ATLASSIAN_JIRA_TEMPLATE_KEY`/`ATLASSIAN_JIRA_PROJECT_TYPE` override).
+**The target is verified at approval, never created.** `/api/approve` reads the
+ADO org and project out of the parent issue description and calls
+`server/services/adoVerify.ts`, which checks the project exists, the token has
+the **wiki** scope, a wiki exists (and is unambiguous), and — for the
+requirements flow — that there is a usable work item type. A failed check holds
+the gate with `502 ado_target_unavailable` and says exactly what is wrong;
+nothing is approved.
 
-## The Atlassian MCP
+It deliberately does not CREATE anything, which is the one behavioural
+difference from `atlassianProvision.ts`. Creating an Azure DevOps project is a
+long-running asynchronous operation returning an operation id to poll, and a
+half-created project is worse to hand a client than a clear refusal; creating a
+wiki is a decision about where a client's documents live, which a publish step
+should not make on its own.
+
+## The Azure DevOps MCP
 
 Project-scope, configured in `.mcp.json` at the workspace root:
 
 ```json
 {
   "mcpServers": {
-    "atlassian": {
+    "azure-devops": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/mcp/authv2"]
+      "args": ["-y", "@azure-devops/mcp", "Scyne-AI-Lab", "--authentication", "pat"],
+      "env": { "PERSONAL_ACCESS_TOKEN": "${MCP_TOKEN_FOR_AZURE}" }
     }
   }
 }
 ```
 
-The runner passes `--mcp-config <workspace>/.mcp.json --strict-mcp-config` for any agent with `mcpEnabled: true`, and omits both for everyone else. Without `--mcp-config`, a project-scope MCP needs interactive trust approval, which cannot happen in `--print` mode. `--strict-mcp-config` keeps an agent from inheriting whatever MCPs the developer happens to have configured at user scope.
+Organisation `Scyne-AI-Lab`, project `Scyne AI Project`. Microsoft's first-party
+server in **PAT mode** — a configuration the client tested and published with,
+rather than one researched here. It is also the only ADO MCP that has BOTH wiki
+write tools and work item tools: the PAT-based third-party server
+(`@tiberriver256/mcp-server-azure-devops`) exposes `get_wikis`, `get_wiki_page`
+and `search_wiki` and no wiki writes at all.
 
-OAuth tokens for `mcp-remote` are cached in `~/.mcp-auth/` at user scope. The same user runs Claude Code interactively and inside the BA's subprocess, so tokens are shared.
+**`${VAR}` is expanded by us on the Codex path.** Claude Code expands
+`${VAR}` in `.mcp.json` itself. `readMcpServers` in `core/codex-runner.ts` does
+not go through Claude Code — it parses the same file and re-encodes each value
+as a `codex -c` TOML override — so without expansion a Codex run would hand the
+MCP server the literal string `${MCP_TOKEN_FOR_AZURE}`, and every ADO call
+would 401 with a credential that looks perfectly present in the config. Since
+the whole org runs on Codex, that is not an edge case. A variable that resolves
+to nothing is a hard error naming the variable and the file, because
+substituting an empty string produces a 401 that reads like a permissions
+problem.
+
+The runner passes `--mcp-config <workspace>/.mcp.json --strict-mcp-config` for
+any agent with `mcpEnabled: true`, and omits both for everyone else. Without
+`--mcp-config`, a project-scope MCP needs interactive trust approval, which
+cannot happen in `--print` mode. `--strict-mcp-config` keeps an agent from
+inheriting whatever MCPs the developer happens to have configured at user scope.
 
 ## Common operations
 
@@ -1106,7 +1294,7 @@ as images, audio goes through Gemini transcription — and are never archived.
 
 Outputs land at the same paths the agent would write, so the chatbot's approval
 preview and every downstream stage still find them. What you skip by going direct
-is the human approval gate and Confluence/Jira publishing — those live in the
+is the human approval gate and Azure DevOps publishing — those live in the
 agents' Phase 2, not in the skills.
 
 ### Brand the companion app from a client's website
@@ -1197,7 +1385,7 @@ would appear as a feature in the target picker.
 
 ```bash
 npm run orch -- run requirements --project SADA --feature interim-benefit \
-  --confluenceSpace SADA --jiraProjectKey SADA
+  --adoOrg Scyne-AI-Lab --adoProject "Scyne AI Project"
 ```
 
 Every `--key value` after the workflow name becomes a workflow param and reaches
@@ -1210,7 +1398,7 @@ single-writer):
 
 ```bash
 curl -sS -X POST http://127.0.0.1:3100/issues -H 'Content-Type: application/json' \
-  -d '{"workflow":"requirements","params":{"project":"SADA","feature":"interim-benefit","confluenceSpace":"SADA"}}'
+  -d '{"workflow":"requirements","params":{"project":"SADA","feature":"interim-benefit","adoOrg":"Scyne-AI-Lab","adoProject":"Scyne AI Project"}}'
 ```
 
 ### Watch what an agent is doing
@@ -1285,18 +1473,30 @@ npm run orch -- log <runId> --raw   # the raw JSONL, byte for byte
   agent cannot self-check. `--validate-only` is how the pipeline calls it. Its own
   page renderer is retained but no longer wired in: a project has ONE page,
   rendered by `render-companion-app.mjs`.
-- `scripts/confluence-attach.mjs <pageId> <file…>` — the ONLY supported way to put
-  a file on a Confluence page. Used by every publishing agent's Phase 2 to upload
-  its Mermaid PNGs (and `personas.json`, `capability-map.json`, `test-cases.csv`).
-  Reads `ATLASSIAN_SITE_URL`/`EMAIL`/`API_TOKEN` from the environment or
-  `scyne-chatbot/.env`, authenticates with Basic auth against the **site domain**,
-  and is idempotent — re-uploading a filename replaces that attachment in place
-  rather than duplicating it, which is what a revision needs. Prints the
-  `<ac:image>` snippet for each image so the agent can paste it into the body.
-  > It exists because the Atlassian MCP **has no attachment scope** and never
-  > will (see the Mermaid → PNG note above). Any agent hand-rolling a curl with
-  > the `~/.mcp-auth` token gets a 401/403 and, historically, published the page
-  > with its diagrams missing and said nothing.
+- **`scripts/ado-publish.mjs <file.md> --path "/Some/Page"`** — create or update
+  a wiki page from a markdown file on disk, idempotent BY PATH so a revision
+  can never leave the client with two documents. `--verify` checks the org,
+  project, wiki and both token scopes and exits non-zero naming which failed —
+  run it before a stage does, because a bad target is far cheaper to find now
+  than after a document is built. `--attach` uploads an image and rewrites its
+  markdown reference to `/.attachments/`; usually unnecessary, since the wiki
+  renders ` ```mermaid ` itself.
+  > The publish prompt reaches for this when a document exceeds about 40 KB.
+  > Passing 110 KB through a tool call is measured to fail — run SCY-6 read the
+  > document three times assembling the call, compacted thirteen minutes in and
+  > published nothing, for $2.73.
+- **`scripts/ado-workitems.mjs <stories.json> --summary-url <url> [--parent <id>]`**
+  — creates or updates one work item per story. Three things it does that an
+  instruction to a model could not be relied on to:
+  > **Discovers the work item type.** "User Story" exists only in the Agile
+  > process template; the current target runs **Basic** (Epic → Issue → Task,
+  > no User Story), so a hard-coded `$User Story` would fail every story.
+  > **Substitutes `{{PRODUCT_SUMMARY_URL}}`** — and REFUSES to write a
+  > description that still contains it, because a re-run without
+  > `--summary-url` would otherwise overwrite a correct link with the
+  > placeholder.
+  > **Writes the created ids back** into `stories.json`, so a re-run updates
+  > rather than duplicating a client's backlog.
 - `scripts/extract-brand.mjs <url> <project>` — see *Brand the companion app*.
 - `scripts/convert-to-md.mjs <project> [<feature>]` — with a feature, converts that
   feature's `requirements/`; with none, the project's own `documents/`.
@@ -1372,6 +1572,8 @@ with the registry, the registry wins.
   - `in_review` — work-products attached, approval gate raised
   - `done` — fully resolved
   - `blocked` — agent paused, needs human input
+  - `paused` — a person stopped it; `resume` carries on from the same step
+  - `cancelled` — a person ended it; it does not resume
 - **Two levels.** Personas, capabilities and the process model describe the CLIENT
   and live at `projects/<project>/`. Everything else describes ONE slice of work and
   lives at `projects/<project>/<feature>/`. When in doubt: would a second feature
@@ -1390,8 +1592,10 @@ with the registry, the registry wins.
 | An issue sits at `blocked` | A step failed. The blocking comment names it — a non-zero `exec`, a missing `produces` file, an unreadable `reads` file, or an agent that exited non-zero. | Fix the cause, then Resume from the console's Issues tab (or `POST /issues/:id/advance`). It restarts at the step that blocked, not from the beginning. |
 | An issue sits at `todo` and nothing happens | The process died mid-run and orphan recovery returned it to `todo` at boot. | Resume it, as above. |
 | Approving does nothing visible for a minute | Correct: the decision returns 202 and the publish step runs in the background. | Watch `#runs` in the console, or poll `GET /issues/{id}`. |
-| Published Confluence page has no diagrams (or `401 scope does not match` on upload) | Something tried to attach PNGs through the Atlassian MCP, which has **no attachment scope** and never will. | Attachments go through `node scripts/confluence-attach.mjs <pageId> <files…>`, which uses `ATLASSIAN_API_TOKEN` from `scyne-chatbot/.env`. Re-authorising the MCP does not add the scope. |
-| Atlassian MCP OAuth fails with "Supported sites required" | The logged-in Atlassian account has no Jira/Confluence site. | Switch accounts, or create a free Atlassian Cloud trial site, then re-run `npm run oauth`. |
+| Publishing fails with `401` on the wiki while everything else works | The PAT is valid and lacks the **wiki** scope. Azure DevOps answers a missing scope with 401, not 403, so it reads exactly like a bad token. | Add `vso.wiki_write` at `dev.azure.com/<org>/_usersSettings/tokens`. Confirm with `node scripts/ado-publish.mjs --verify`, which tests each scope separately and says which one failed. |
+| Every story fails with "work item type does not exist" | The project's process template has no `User Story` — Basic has Epic → Issue → Task. | `ado-workitems.mjs` discovers the type; if something else hard-codes one, use `--type` or let the script choose. |
+| An ADO call 401s only on Codex runs, and works on Claude | `.mcp.json` holds `${MCP_TOKEN_FOR_AZURE}` and something is not expanding it, so the server receives the literal string. | `readMcpServers` in `core/codex-runner.ts` does the expansion. Check the variable is set in the ROOT `.env` — an unset one now throws by name rather than substituting an empty string. |
+| A published wiki page has the placeholder `{{PRODUCT_SUMMARY_URL}}` in its stories | `ado-workitems.mjs` was run without `--summary-url`. | It refuses this now. If you see it on an older item, re-run with `--summary-url`; the script updates in place. |
 | A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |
 | Chatbot shows "undefined" for a parameter | Frontend reading an old field name. | Search for the renamed field across `src/`. |
 | `/api/features` returns `{}` | `projects/` missing, or `WORKSPACE_PATH` pointing elsewhere. | `mkdir projects/<project>/<feature>/...`, restart the dev server. |

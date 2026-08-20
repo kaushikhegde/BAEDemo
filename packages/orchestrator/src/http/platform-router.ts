@@ -17,9 +17,13 @@
 
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { createDocumentStore } from "../core/documents.js";
+import {
+  createAuth, clearSessionCookieHeader, cookieCredential, sessionCookieHeader, type AuthedRequest,
+} from "./auth-middleware.js";
 import { createPlatformRepo, type PlatformRepo, type Principal } from "../core/platform.js";
 import {
   bearerFrom, hashPassword, verifyPassword, isGlobalRole, isProjectRole, atLeast,
+  atLeastGlobal, isSuperadmin,
   type ProjectRole,
 } from "../core/auth.js";
 import type { Orchestrator } from "../index.js";
@@ -32,6 +36,11 @@ export const PLATFORM_ROUTES = [
   { method: "GET",    path: "/auth/tokens" },
   { method: "POST",   path: "/auth/tokens" },
   { method: "DELETE", path: "/auth/tokens/{id}" },
+  { method: "GET",    path: "/orgs" },
+  { method: "POST",   path: "/orgs" },
+  { method: "GET",    path: "/orgs/{id}" },
+  { method: "PATCH",  path: "/orgs/{id}" },
+  { method: "DELETE", path: "/orgs/{id}" },
   { method: "GET",    path: "/users" },
   { method: "POST",   path: "/users" },
   { method: "PATCH",  path: "/users/{id}" },
@@ -61,19 +70,18 @@ export const PLATFORM_ROUTES = [
   { method: "GET",    path: "/conversations/{id}/messages" },
   { method: "POST",   path: "/conversations/{id}/messages" },
   { method: "GET",    path: "/spend" },
+  { method: "GET",    path: "/models" },
+  { method: "PUT",    path: "/models/{provider}/{model}" },
+  { method: "GET",    path: "/models/refresh" },
+  { method: "POST",   path: "/models/refresh" },
+  { method: "POST",   path: "/models/refresh/apply" },
+  { method: "DELETE", path: "/models/refresh" },
 ] as const;
-
-/** Express has no per-request user slot; this is ours. */
-interface AuthedRequest extends Request {
-  principal?: Principal;
-  projectRole?: ProjectRole;
-}
 
 export function createPlatformRouter(orch: Orchestrator): Router {
   const r = Router();
   const platform: PlatformRepo = createPlatformRepo(orch.db);
   const docs = createDocumentStore(orch.db);
-  const companyId = orch.companyId;
 
   const ok = (res: Response, body: unknown): void => { res.json(body); };
   const created = (res: Response, body: unknown): void => { res.status(201).json(body); };
@@ -92,30 +100,29 @@ export function createPlatformRouter(orch: Orchestrator): Router {
       });
     };
 
+  // Identity is resolved by the SHARED middleware, not by a copy living here:
+  // http/router.ts needs the identical check, and two implementations of an
+  // authorisation check drift. See http/auth-middleware.ts.
+  const { requireAuth, requireAdmin, requireSuperadmin } = createAuth(platform, orch.homeCompanyId);
+
   /**
-   * Resolve a credential to a principal. Accepts both an API token (the CLI
-   * and the plugin) and a session token (the browser), because they are
-   * indistinguishable on the wire and a caller should not have to say which
-   * kind it holds.
+   * Only a superadmin may grant or revoke `superadmin`.
+   *
+   * Without this, adding `superadmin` to GLOBAL_ROLES silently handed every
+   * ORDINARY administrator a privilege-escalation path: `POST /users` and
+   * `PATCH /users/{id}` both validate the role with `isGlobalRole`, which now
+   * accepts it. An admin could mint themselves a superadmin account and cross
+   * into every other organisation in the install.
+   *
+   * Returns true when the request may proceed, having ALREADY responded when
+   * it may not — same shape as requireAdmin below.
    */
-  const authenticate = async (req: AuthedRequest): Promise<Principal | null> => {
-    const secret = bearerFrom(req.headers as Record<string, unknown>);
-    if (!secret) return null;
-    return (await platform.principalFromToken(secret)) ?? (await platform.principalFromSession(secret));
-  };
-
-  const requireAuth = (): ((req: Request, res: Response, next: NextFunction) => void) =>
-    (req, res, next) => {
-      void authenticate(req as AuthedRequest).then(p => {
-        if (!p) { res.status(401).json({ error: "authentication required" }); return; }
-        (req as AuthedRequest).principal = p;
-        next();
-      }).catch(() => res.status(401).json({ error: "authentication required" }));
-    };
-
-  const requireAdmin = (req: AuthedRequest, res: Response): boolean => {
-    if (req.principal?.user.role !== "admin") { denied(res, "administrator only"); return false; }
-    return true;
+  const mayAssignRole = (req: AuthedRequest, res: Response, role: unknown): boolean => {
+    if (role === undefined || role === null) return true;
+    if (!isSuperadmin(String(role))) return true;
+    if (isSuperadmin(req.principal?.user.role)) return true;
+    denied(res, "only a superadmin may grant the superadmin role");
+    return false;
   };
 
   /**
@@ -126,7 +133,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
    */
   const project = async (req: AuthedRequest, res: Response, need: ProjectRole) => {
     const row = await platform.getProject(String(req.params.id));
-    if (!row || row.company_id !== companyId) { missing(res, "project"); return null; }
+    if (!row || row.company_id !== req.principal!.companyId) { missing(res, "project"); return null; }
     const role = await platform.projectRole(req.principal!.user, row.id);
     // No access is reported as absence, not as refusal — see the header.
     if (!role) { missing(res, "project"); return null; }
@@ -137,7 +144,10 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   const audit = (req: AuthedRequest, verb: string, extra: Record<string, unknown> = {}) =>
     platform.recordAction({
-      companyId, verb, userId: req.principal?.user.id ?? null,
+      // `?? homeCompanyId` for /auth/bootstrap, the one audited route with no
+      // principal yet — it is claiming the installation, so home is correct.
+      companyId: req.principal?.companyId ?? orch.homeCompanyId,
+      verb, userId: req.principal?.user.id ?? null,
       installationId: req.principal?.installationId ?? null, ...extra,
     });
 
@@ -151,11 +161,14 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   r.post("/auth/bootstrap", wrap(async (req, res) => {
     const { email, password, name } = req.body ?? {};
     if (!email || !password) return bad(res, "email and password are required");
-    if (!(await platform.isUnclaimed(companyId))) {
+    if (!(await platform.isUnclaimed(orch.homeCompanyId))) {
       return denied(res, "this installation already has users — ask an administrator for an account");
     }
     const user = await platform.createUser({
-      companyId, email, name: name ?? null, role: "admin", passwordHash: await hashPassword(password),
+      // Claiming an installation is exactly what `superadmin` means: this
+      // person operates the whole thing, not one organisation inside it.
+      companyId: orch.homeCompanyId, email, name: name ?? null,
+      role: "superadmin", passwordHash: await hashPassword(password),
     });
     const { secret } = await platform.createToken(user.id, "bootstrap");
     await audit(req, "auth.bootstrap", { userId: user.id, targetType: "user", targetId: user.id });
@@ -165,14 +178,20 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   r.post("/auth/login", wrap(async (req, res) => {
     const { email, password } = req.body ?? {};
     if (!email || !password) return bad(res, "email and password are required");
-    const user = await platform.getUserByEmail(companyId, String(email));
+    const user = await platform.getUserByEmailAnywhere(String(email));
     // One message for "no such user" and "wrong password": distinguishing them
     // tells an attacker which addresses are real.
     const okPass = user && user.status === "active" && await verifyPassword(String(password), user.password_hash);
     if (!user || !okPass) { res.status(401).json({ error: "invalid email or password" }); return; }
 
     const session = await platform.createSession(user.id);
-    await platform.recordAction({ companyId, verb: "auth.login", userId: user.id });
+    await platform.recordAction({ companyId: user.company_id, verb: "auth.login", userId: user.id });
+    // Set for the CONSOLE, which is served from this same origin and would
+    // otherwise have to hold the token in page-readable storage. A CLI caller
+    // ignores the header and keeps using the token in the body, so this costs
+    // nothing and serves both.
+    res.setHeader("Set-Cookie",
+      sessionCookieHeader(session.secret, session.expiresAt.getTime() - Date.now()));
     ok(res, {
       token: session.secret, expiresAt: session.expiresAt,
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
@@ -180,16 +199,28 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   }));
 
   r.post("/auth/logout", requireAuth(), wrap(async (req, res) => {
-    const secret = bearerFrom(req.headers as Record<string, unknown>);
+    // Whichever credential got them here — header or cookie — is the one to
+    // destroy. Clearing only the cookie would leave a live session behind.
+    const headers = req.headers as Record<string, unknown>;
+    const secret = bearerFrom(headers) ?? cookieCredential(headers);
     if (secret) await platform.destroySession(secret);
+    res.setHeader("Set-Cookie", clearSessionCookieHeader());
     ok(res, { ok: true });
   }));
 
   r.get("/auth/whoami", requireAuth(), wrap(async (req, res) => {
     const u = req.principal!.user;
+    const org = await platform.getCompany(req.principal!.companyId);
+    // FLAT, deliberately. cli/index.ts's cmdWhoami spreads this object
+    // (`json({ ...me, apiUrl, project, feature })`), so nesting the user under
+    // a `user` key would break that silently rather than loudly.
     ok(res, {
       id: u.id, email: u.email, name: u.name, role: u.role,
       authenticatedBy: req.principal!.tokenId ? "token" : "session",
+      // The org this request is ACTING IN — which, for a superadmin sending
+      // X-Scyne-Org, is not the org they belong to.
+      company: org ? { id: org.id, name: org.name, slug: org.slug } : null,
+      isSuperadmin: req.principal!.isSuperadmin,
     });
   }));
 
@@ -212,6 +243,78 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     ok(res, { ok: true });
   }));
 
+  // ---------------------------------------------------------- organisations
+
+  r.get("/orgs", requireAuth(), wrap(async (req, res) => {
+    // An ordinary administrator is NOT refused here — they are shown their own
+    // organisation as a single-item list. A 403 would make the console's org
+    // switcher an error state for most of its users, and "which organisations
+    // may I act in" has an honest one-item answer for them.
+    if (!req.principal!.isSuperadmin) {
+      const own = await platform.getCompany(req.principal!.companyId);
+      ok(res, own ? [{ ...own, stats: await platform.companyStats(own.id) }] : []);
+      return;
+    }
+    const orgs = await platform.listCompanies();
+    ok(res, await Promise.all(orgs.map(async o => ({ ...o, stats: await platform.companyStats(o.id) }))));
+  }));
+
+  r.post("/orgs", requireAuth(), wrap(async (req, res) => {
+    if (!requireSuperadmin(req, res)) return;
+    const { name, slug } = (req.body ?? {}) as { name?: string; slug?: string };
+    if (!name?.trim()) return bad(res, "name is required");
+    const org = await platform.createCompany({ name, slug });
+    // Recorded against the ACTOR's organisation, not the new one. The audit
+    // trail answers "what did people here do", and creating another
+    // organisation is something a person here did — filing it under the new
+    // org instead makes it invisible from the only place anyone would look,
+    // unless they first switch to the org whose creation they are looking for.
+    await platform.recordAction({
+      companyId: req.principal!.companyId, userId: req.principal!.user.id,
+      verb: "org.create", targetType: "company", targetId: org.id,
+      detail: { name: org.name, slug: org.slug },
+    });
+    created(res, org);
+  }));
+
+  r.get("/orgs/:id", requireAuth(), wrap(async (req, res) => {
+    const org = await platform.getCompany(String(req.params.id)).catch(() => null);
+    // 404 rather than 403 for an org the caller may not see — the same rule
+    // this file applies to projects, for the same reason.
+    if (!org || (!req.principal!.isSuperadmin && org.id !== req.principal!.companyId)) {
+      return missing(res, "organisation");
+    }
+    ok(res, { ...org, stats: await platform.companyStats(org.id) });
+  }));
+
+  r.patch("/orgs/:id", requireAuth(), wrap(async (req, res) => {
+    if (!requireSuperadmin(req, res)) return;
+    const { name, status } = (req.body ?? {}) as { name?: string; status?: string };
+    const org = await platform.updateCompany(String(req.params.id), { name, status });
+    if (!org) return missing(res, "organisation");
+    await platform.recordAction({
+      companyId: req.principal!.companyId, userId: req.principal!.user.id,
+      verb: "org.update", targetType: "company", targetId: org.id, detail: { name, status },
+    });
+    ok(res, org);
+  }));
+
+  r.delete("/orgs/:id", requireAuth(), wrap(async (req, res) => {
+    if (!requireSuperadmin(req, res)) return;
+    const id = String(req.params.id);
+    // The home organisation is where the agent org chart is reconciled on every
+    // boot. Archiving it would leave every workflow with no assignee to resolve.
+    if (id === orch.homeCompanyId) {
+      return bad(res, "the home organisation cannot be archived — it owns the agent org chart");
+    }
+    if (!(await platform.archiveCompany(id))) return missing(res, "organisation");
+    await platform.recordAction({
+      companyId: req.principal!.companyId, userId: req.principal!.user.id,
+      verb: "org.archive", targetType: "company", targetId: id,
+    });
+    ok(res, { archived: true });
+  }));
+
   // ----------------------------------------------------------------- users
 
   /**
@@ -228,8 +331,11 @@ export function createPlatformRouter(orch: Orchestrator): Router {
    * status, and when the account was created.
    */
   r.get("/users", requireAuth(), wrap(async (req, res) => {
-    const users = await platform.listUsers(companyId);
-    if (req.principal!.user.role === "admin") {
+    const users = await platform.listUsers(req.principal!.companyId);
+    // `atLeastGlobal`, not `=== "admin"`. A superadmin outranks an admin, and
+    // a literal comparison silently gives the HIGHER role the LESSER view —
+    // a failure that looks like a permissions bug rather than like a typo.
+    if (atLeastGlobal(req.principal!.user.role, "admin")) {
       return ok(res, users.map(({ password_hash, ...u }) => u));
     }
     ok(res, users
@@ -241,9 +347,10 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     if (!requireAdmin(req, res)) return;
     const { email, password, name, role } = req.body ?? {};
     if (!email) return bad(res, "email is required");
-    if (role && !isGlobalRole(String(role))) return bad(res, `role must be one of admin, member, viewer`);
+    if (role && !isGlobalRole(String(role))) return bad(res, `role must be one of superadmin, admin, member, viewer`);
+    if (!mayAssignRole(req, res, role)) return;
     const user = await platform.createUser({
-      companyId, email: String(email), name: name ?? null, role: role ? String(role) : "member",
+      companyId: req.principal!.companyId, email: String(email), name: name ?? null, role: role ? String(role) : "member",
       passwordHash: password ? await hashPassword(String(password)) : null,
     });
     await audit(req, "user.create", { targetType: "user", targetId: user.id, detail: { email: user.email } });
@@ -254,7 +361,8 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   r.patch("/users/:id", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const { name, role, status, password } = req.body ?? {};
-    if (role && !isGlobalRole(String(role))) return bad(res, `role must be one of admin, member, viewer`);
+    if (role && !isGlobalRole(String(role))) return bad(res, `role must be one of superadmin, admin, member, viewer`);
+    if (!mayAssignRole(req, res, role)) return;
     const user = await platform.updateUser(String(req.params.id), {
       ...(name !== undefined ? { name } : {}),
       ...(role !== undefined ? { role: String(role) } : {}),
@@ -271,7 +379,9 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   r.get("/projects", requireAuth(), wrap(async (req, res) => {
     const u = req.principal!.user;
-    ok(res, await platform.listProjects(companyId, { userId: u.id, isAdmin: u.role === "admin" }));
+    ok(res, await platform.listProjects(req.principal!.companyId, {
+      userId: u.id, isAdmin: atLeastGlobal(u.role, "admin"),
+    }));
   }));
 
   r.post("/projects", requireAuth(), wrap(async (req, res) => {
@@ -279,8 +389,16 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     if (u.role === "viewer") return denied(res, "a viewer cannot create projects");
     const { name, description, website } = req.body ?? {};
     if (!name) return bad(res, "name is required");
+    if (await platform.projectNameTaken(String(name))) {
+      res.status(409).json({
+        error: "name_taken",
+        message: `a project named '${String(name).trim()}' already exists. Project folders are a ` +
+                 `flat tree shared by every organisation, so the name must be unique across the install.`,
+      });
+      return;
+    }
     const row = await platform.createProject({
-      companyId, name: String(name), description: description ?? null,
+      companyId: req.principal!.companyId, name: String(name), description: description ?? null,
       website: website ?? null, createdBy: u.id,
     });
     await audit(req, "project.create", { projectId: row.id, targetType: "project", targetId: row.id });
@@ -406,7 +524,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   r.get("/projects/:id/actions", requireAuth(), wrap(async (req, res) => {
     const row = await project(req, res, "viewer"); if (!row) return;
-    ok(res, await platform.listActions(companyId, {
+    ok(res, await platform.listActions(req.principal!.companyId, {
       projectId: row.id, limit: req.query.limit ? Number(req.query.limit) : undefined,
     }));
   }));
@@ -420,7 +538,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
    */
   r.get("/actions", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    ok(res, await platform.listActions(companyId, {
+    ok(res, await platform.listActions(req.principal!.companyId, {
       ...(req.query.projectId ? { projectId: String(req.query.projectId) } : {}),
       limit: req.query.limit ? Number(req.query.limit) : 100,
     }));
@@ -438,22 +556,22 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     if (!requireAdmin(req, res)) return;
 
     const [users, installs, projects, spend, actions] = await Promise.all([
-      platform.listUsers(companyId),
-      platform.listInstallations(companyId),
-      platform.listProjects(companyId, { isAdmin: true }),
-      platform.spend(companyId, "project"),
-      platform.listActions(companyId, { limit: 15 }),
+      platform.listUsers(req.principal!.companyId),
+      platform.listInstallations(req.principal!.companyId),
+      platform.listProjects(req.principal!.companyId, { isAdmin: true }),
+      platform.spend(req.principal!.companyId, "project"),
+      platform.listActions(req.principal!.companyId, { limit: 15 }),
     ]);
 
     // Counts come from the same query the detail does, so the summary can
     // never disagree with the list underneath it.
     const { rows: issueRows } = await orch.db.query<{ status: string; n: string }>(
-      `select status, count(*)::text as n from issues where company_id=$1 group by status`, [companyId]);
+      `select status, count(*)::text as n from issues where company_id=$1 group by status`, [req.principal!.companyId]);
     const { rows: docRows } = await orch.db.query<{ n: string; bytes: string }>(
       `select count(*)::text as n, coalesce(sum(b.bytes),0)::text as bytes
          from documents d join blobs b on b.sha256 = d.sha256
          join projects p on p.id = d.project_id
-        where p.company_id=$1 and d.is_current`, [companyId]);
+        where p.company_id=$1 and d.is_current`, [req.principal!.companyId]);
 
     ok(res, {
       users: users.map(({ password_hash, ...u }) => u),
@@ -484,7 +602,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
    * an artefact is part of reading it. Writable by administrators only.
    */
   r.get("/settings", requireAuth(), wrap(async (req, res) => {
-    const rows = await orch.repo.listSettings(companyId);
+    const rows = await orch.repo.listSettings(req.principal!.companyId);
     ok(res, {
       settings: rows,
       // What the server can actually run, so a caller is not left guessing
@@ -517,10 +635,10 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const resolvedKey = String(scope) === "company" ? "*" : String(scopeKey ?? "");
     if (String(scope) !== "company") {
       if (!resolvedKey) return bad(res, `scope '${scope}' needs a scopeKey`);
-      if (!(await platform.getProjectByName(companyId, resolvedKey))) return missing(res, "project");
+      if (!(await platform.getProjectByName(req.principal!.companyId, resolvedKey))) return missing(res, "project");
     }
 
-    await orch.repo.setSetting(companyId, String(scope), resolvedKey, String(key), String(value),
+    await orch.repo.setSetting(req.principal!.companyId, String(scope), resolvedKey, String(key), String(value),
       req.principal!.user.id);
     await audit(req, "setting.set", {
       targetType: "setting", targetId: `${scope}:${resolvedKey}:${key}`, detail: { value },
@@ -534,7 +652,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const key = String(req.query.key ?? "");
     if (!scope || !key) return bad(res, "scope and key are required");
     const scopeKey = scope === "company" ? "*" : String(req.query.scopeKey ?? "");
-    const done = await orch.repo.clearSetting(companyId, scope, scopeKey, key);
+    const done = await orch.repo.clearSetting(req.principal!.companyId, scope, scopeKey, key);
     if (!done) return missing(res, "setting");
     await audit(req, "setting.clear", { targetType: "setting", targetId: `${scope}:${scopeKey}:${key}` });
     ok(res, { ok: true });
@@ -546,7 +664,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const { machineId, hostname, os, pluginVersion } = req.body ?? {};
     if (!machineId) return bad(res, "machineId is required");
     const inst = await platform.registerInstallation({
-      companyId, userId: req.principal!.user.id, machineId: String(machineId),
+      companyId: req.principal!.companyId, userId: req.principal!.user.id, machineId: String(machineId),
       hostname: hostname ?? null, os: os ?? null, pluginVersion: pluginVersion ?? null,
     });
     await audit(req, "install.register", { targetType: "installation", targetId: inst.id });
@@ -555,7 +673,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   r.get("/installations", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    ok(res, await platform.listInstallations(companyId));
+    ok(res, await platform.listInstallations(req.principal!.companyId));
   }));
 
   r.delete("/installations/:id", requireAuth(), wrap(async (req, res) => {
@@ -569,7 +687,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   // ----------------------------------------------------------------- chats
 
   r.get("/conversations", requireAuth(), wrap(async (req, res) => {
-    ok(res, await platform.listConversations(companyId, {
+    ok(res, await platform.listConversations(req.principal!.companyId, {
       userId: req.principal!.user.id,
       ...(req.query.projectId ? { projectId: String(req.query.projectId) } : {}),
     }));
@@ -578,7 +696,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   r.post("/conversations", requireAuth(), wrap(async (req, res) => {
     const { projectId, featureId, title } = req.body ?? {};
     created(res, await platform.createConversation({
-      companyId, userId: req.principal!.user.id,
+      companyId: req.principal!.companyId, userId: req.principal!.user.id,
       projectId: projectId ?? null, featureId: featureId ?? null, title: title ?? null,
     }));
   }));
@@ -597,11 +715,152 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   // ----------------------------------------------------------------- spend
 
+  const SPEND_DIMENSIONS = ["project", "feature", "user", "agent", "adapter", "model"] as const;
+
   r.get("/spend", requireAuth(), wrap(async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const by = String(req.query.by ?? "project");
-    if (!["project", "agent", "adapter"].includes(by)) return bad(res, "by must be project, agent or adapter");
-    ok(res, await platform.spend(companyId, by as "project" | "agent" | "adapter"));
+    if (!(SPEND_DIMENSIONS as readonly string[]).includes(by)) {
+      return bad(res, `by must be one of ${SPEND_DIMENSIONS.join(", ")}`);
+    }
+    const str = (v: unknown): string | undefined =>
+      typeof v === "string" && v.trim() ? v.trim() : undefined;
+    ok(res, await platform.spend(req.principal!.companyId, {
+      by: by as (typeof SPEND_DIMENSIONS)[number],
+      project: str(req.query.project), feature: str(req.query.feature), user: str(req.query.user),
+      since: str(req.query.since), until: str(req.query.until),
+    }));
+  }));
+
+  // ------------------------------------------------------- model prices
+  //
+  // Codex reports tokens and no dollar figure, so a Codex run is priced from
+  // this table. That makes these rows load-bearing: they decide what every
+  // run in the install is recorded as costing, and whether a cost budget
+  // fires. Which is exactly why a refresh is a PROPOSAL rather than a write.
+
+  /**
+   * A rate that could actually be real.
+   *
+   * The ceiling is deliberately generous — o1-pro is $150/M input — but a
+   * refresh that comes back with 15000 has misread a page, and applying it
+   * would trip every cost budget in the install on the next run.
+   */
+  const MAX_RATE = 10_000;
+  const validRate = (v: unknown): v is number | null =>
+    v === null || v === undefined
+    || (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= MAX_RATE);
+
+  /** Returns the problems with a proposed row set; empty means it is usable. */
+  const validateRows = (rows: unknown): string[] => {
+    if (!Array.isArray(rows) || !rows.length) return ["expected a non-empty array of rows"];
+    const problems: string[] = [];
+    const seen = new Set<string>();
+    for (const [i, raw] of rows.entries()) {
+      if (typeof raw !== "object" || raw === null) { problems.push(`row ${i}: not an object`); continue; }
+      const row = raw as Record<string, unknown>;
+      const model = typeof row.model === "string" ? row.model.trim() : "";
+      if (!model) { problems.push(`row ${i}: no model id`); continue; }
+      const key = `${String(row.provider ?? "openai")}/${model}`;
+      if (seen.has(key)) problems.push(`row ${i}: '${key}' appears twice`);
+      seen.add(key);
+      for (const f of ["input_per_mtok", "cached_input_per_mtok", "output_per_mtok"]) {
+        if (!validRate(row[f])) {
+          problems.push(`row ${i} (${model}): '${f}' must be a number between 0 and ${MAX_RATE}, or null`);
+        }
+      }
+      if (row.retires_on != null && Number.isNaN(Date.parse(String(row.retires_on)))) {
+        problems.push(`row ${i} (${model}): 'retires_on' is not a date`);
+      }
+    }
+    return problems;
+  };
+
+  r.get("/models", requireAuth(), wrap(async (req, res) => {
+    ok(res, await platform.listModelPrices(req.principal!.companyId));
+  }));
+
+  r.put("/models/:provider/:model", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const body = { ...(req.body ?? {}), provider: req.params.provider, model: req.params.model };
+    const problems = validateRows([{
+      provider: body.provider, model: body.model,
+      input_per_mtok: body.inputPerMTok ?? body.input_per_mtok ?? null,
+      cached_input_per_mtok: body.cachedInputPerMTok ?? body.cached_input_per_mtok ?? null,
+      output_per_mtok: body.outputPerMTok ?? body.output_per_mtok ?? null,
+      retires_on: body.retiresOn ?? body.retires_on ?? null,
+    }]);
+    if (problems.length) return bad(res, problems.join("; "));
+
+    const row = await platform.upsertModelPrice({
+      provider: String(req.params.provider), model: String(req.params.model),
+      inputPerMTok: body.inputPerMTok ?? body.input_per_mtok ?? null,
+      cachedInputPerMTok: body.cachedInputPerMTok ?? body.cached_input_per_mtok ?? null,
+      outputPerMTok: body.outputPerMTok ?? body.output_per_mtok ?? null,
+      retiresOn: body.retiresOn ?? body.retires_on ?? null,
+      sourceUrl: body.sourceUrl ?? body.source_url ?? "set by hand",
+      updatedBy: req.principal!.user.id,
+    });
+    await audit(req, "model.price.set", {
+      targetType: "model", targetId: `${req.params.provider}/${req.params.model}`, detail: { ...body },
+    });
+    ok(res, row);
+  }));
+
+  r.get("/models/refresh", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const proposal = await platform.pendingProposal(req.principal!.companyId);
+    if (!proposal) { ok(res, null); return; }
+    ok(res, { ...proposal, diff: await platform.diffProposal(proposal.rows as Array<Record<string, unknown>>) });
+  }));
+
+  /**
+   * Propose a new price table.
+   *
+   * The rows may come from anywhere — an agent that fetched the vendor's
+   * pricing page, a script, a person pasting a table. What matters is that
+   * they are VALIDATED and stored as a proposal rather than written: a model
+   * that hallucinates a rate must not be able to change what every run in the
+   * install is billed at, or to trip every cost budget at once.
+   */
+  r.post("/models/refresh", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const { rows, source } = (req.body ?? {}) as { rows?: unknown; source?: string };
+    const problems = validateRows(rows);
+    if (problems.length) {
+      res.status(400).json({ error: "invalid_rows", problems });
+      return;
+    }
+    const proposal = await platform.createProposal({
+      companyId: req.principal!.companyId, proposedBy: req.principal!.user.id,
+      source: source ?? null, rows: rows as unknown[],
+    });
+    const diff = await platform.diffProposal(rows as Array<Record<string, unknown>>);
+    await audit(req, "model.price.propose", { targetType: "proposal", targetId: proposal.id,
+      detail: { rows: (rows as unknown[]).length, changes: diff.length } });
+    // 200 with the diff, not 201 with the rows: what the caller needs to see
+    // is what would CHANGE, and usually that is two lines out of forty.
+    ok(res, { ...proposal, diff });
+  }));
+
+  r.post("/models/refresh/apply", requireAuth(), wrap(async (req, res) => {
+    // Superadmin, not admin. Applying this changes the recorded cost of every
+    // future run in the install.
+    if (!requireSuperadmin(req, res)) return;
+    const proposal = await platform.pendingProposal(req.principal!.companyId);
+    if (!proposal) return missing(res, "pending proposal");
+    const applied = await platform.applyProposal(proposal.id, req.principal!.user.id);
+    await audit(req, "model.price.apply", { targetType: "proposal", targetId: proposal.id, detail: { applied } });
+    ok(res, { applied });
+  }));
+
+  r.delete("/models/refresh", requireAuth(), wrap(async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const proposal = await platform.pendingProposal(req.principal!.companyId);
+    if (!proposal) return missing(res, "pending proposal");
+    await platform.discardProposal(proposal.id, req.principal!.user.id);
+    await audit(req, "model.price.discard", { targetType: "proposal", targetId: proposal.id });
+    ok(res, { discarded: true });
   }));
 
   return r;

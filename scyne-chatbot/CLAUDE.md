@@ -18,7 +18,7 @@ Both are launched together with `npm run dev` (concurrently).
 - **LLM**: Gemini 2.5 Flash via `@google/generative-ai` (the legacy SDK — matches the compliance-app pattern). Function calling enabled for the trigger tool.
 - **Auth**: none. Paperclip is in `local_trusted` mode; localhost calls are auto-authenticated as the board user.
 - **Persistence**: `localStorage` only — `scyne_session` (login), `scyne_parent_issue_id` (active workflow), and the chat transcript: `scyne_chat_messages` (rendered bubbles) + `scyne_chat_history` (LLM history). On refresh the chat is restored from those keys and the right-hand workflow panel rehydrates from `/api/status`. "New session" and logout clear the chat keys (`clearChatPersistence`).
-- **Login gate**: hardcoded demo creds (`admin` / `scyne2026`) in `src/components/Login.tsx`. Session is `{user, ts}`; expiry is a separate concern, not enforced. Replace with real auth when wiring SSO.
+- **Login gate**: `src/components/Login.tsx` posts to `POST /api/auth/login`, which forwards to the orchestrator's `/auth/login` and stores the returned token in an **httpOnly cookie**. The session object is the orchestrator's flat `whoami` payload (`{id, email, name, role, company, isSuperadmin}`). Expiry is the orchestrator's (12h); a 401 from any call is announced once by `api.ts` and returns the user to the login screen without discarding their chat history.
 - **WebSockets**: optional path for live audio. `wss.on("connection",...)` is mounted on the same HTTP server. Browser → `recordingSocketUrl()` → backend → Gemini Live → live transcription back over the same socket. The main workflow uses HTTP polling (every 3 s).
 
 ## Project structure

@@ -11,10 +11,14 @@
 import type { Db } from "./db.js";
 import { newId } from "./ids.js";
 import {
-  hashToken, mintToken, tokenPrefix, effectiveProjectRole, sessionExpiry,
+  hashToken, mintToken, tokenPrefix, effectiveProjectRole, sessionExpiry, isSuperadmin,
   type MintedToken, type ProjectRole,
 } from "./auth.js";
 
+export interface CompanyRow {
+  id: string; name: string; slug: string; status: string;
+  created_at: string; archived_at: string | null;
+}
 export interface UserRow {
   id: string; company_id: string; email: string; name: string | null;
   password_hash: string | null; role: string; status: string;
@@ -39,6 +43,17 @@ export interface ActionRow {
   issue_id: string | null; user_id: string | null; agent_key: string | null;
   installation_id: string | null; verb: string; target_type: string | null;
   target_id: string | null; detail: Record<string, unknown>; created_at: string;
+  /**
+   * The actor's address, joined here rather than resolved by the caller.
+   *
+   * A client that maps `user_id` against a list of THIS organisation's users
+   * cannot name a superadmin who was acting in it from outside — every one of
+   * their actions renders as "—", which is precisely the actor an audit trail
+   * most needs to name. Joined in SQL, it always resolves.
+   */
+  user_email: string | null;
+  /** The project the action touched, for the same reason. */
+  project_name: string | null;
 }
 export interface ConversationRow {
   id: string; company_id: string; project_id: string | null; feature_id: string | null;
@@ -57,12 +72,72 @@ export interface Principal {
   /** The token row's id when authenticated by token, null for a session. */
   tokenId: string | null;
   installationId: string | null;
+  /**
+   * The organisation this request acts WITHIN — a user's own company, except
+   * for a superadmin, who may retarget it per request with `X-Scyne-Org`.
+   *
+   * Every repo method below takes a companyId as its first argument. Reading
+   * that value off the principal rather than off a module-level constant is
+   * the whole of the multi-tenancy change: the schema was always scoped by
+   * company, and the application always passed the same one.
+   */
+  companyId: string;
+  isSuperadmin: boolean;
+}
+
+export interface ModelPriceRow {
+  provider: string; model: string;
+  input_per_mtok: string | null; cached_input_per_mtok: string | null; output_per_mtok: string | null;
+  currency: string; retires_on: string | null; source_url: string | null;
+  fetched_at: string | null; updated_by: string | null; updated_at: string;
+}
+
+/** One model as the console and the CLI want it: priced, dated, and counted. */
+export interface ModelCatalogueEntry extends ModelPriceRow {
+  /** Runs recorded against this model in the caller's organisation. */
+  run_count: string;
+  /** True once `retires_on` is within thirty days — or already past. */
+  retiring_soon: boolean;
+  retired: boolean;
+  /** No published rate on either side. Priced as nothing, never as free. */
+  unpriced: boolean;
+}
+
+export interface ProposalRow {
+  id: string; company_id: string; proposed_by: string | null; source: string | null;
+  rows: unknown; status: string; created_at: string;
+  decided_at: string | null; decided_by: string | null;
+}
+
+/** One proposed change, next to what it would replace. */
+export interface PriceDiff {
+  provider: string; model: string;
+  field: "input_per_mtok" | "cached_input_per_mtok" | "output_per_mtok" | "retires_on";
+  from: string | null; to: string | null;
 }
 
 export interface SpendRow {
   project_id: string | null; project_name: string | null;
-  agent_key: string | null; adapter: string | null; user_id: string | null;
-  run_count: string; input_tokens: string; output_tokens: string; cost_usd: string;
+  feature_id: string | null; feature_name: string | null;
+  agent_key: string | null; adapter: string | null; model: string | null;
+  user_id: string | null; user_email: string | null;
+  run_count: string; input_tokens: string; output_tokens: string;
+  /**
+   * REPORTED by the CLI that ran it, summed verbatim. Never our arithmetic.
+   */
+  reported_cost_usd: string;
+  /**
+   * OURS, computed from token counts and the recorded price for the model —
+   * every Codex run, which reports no cost of its own.
+   *
+   * Kept apart from `reported_cost_usd` all the way to the screen rather than
+   * added to it. A single merged total cannot be audited: nobody reading it
+   * can tell which half came from a vendor's own billing and which half came
+   * from a price table somebody typed.
+   */
+  estimated_cost_usd: string;
+  /** Kept for callers written before the split. `reported + estimated`. */
+  cost_usd: string;
   /**
    * How many of `run_count` reported no `cost_usd` at all (Codex does not
    * price its own runs). `sum(cost_usd)` already skips those rows on its
@@ -80,8 +155,91 @@ export interface SpendRow {
 const asJson = (v: unknown): Record<string, unknown> =>
   typeof v === "string" ? JSON.parse(v) : ((v ?? {}) as Record<string, unknown>);
 
+/**
+ * The one implementation of how a name becomes a slug.
+ *
+ * Mirrored by 005_tenancy.sql's backfill (as a `regexp_replace`) and by
+ * repo.ts's `ensureCompany`, which cannot import this — repo.ts is the
+ * ENGINE's store and this is the PRODUCT's, and the dependency only runs one
+ * way. Three copies of four characters of regex is the price of that
+ * boundary; if it ever grows past this, move it to its own module rather than
+ * crossing the line.
+ */
+export function slugify(value: string): string {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 export function createPlatformRepo(db: Db) {
   return {
+    // --------------------------------------------------------- companies
+
+    async getCompany(id: string): Promise<CompanyRow | null> {
+      const { rows } = await db.query<CompanyRow>(`select * from companies where id=$1`, [id]);
+      return rows[0] ?? null;
+    },
+
+    async getCompanyBySlug(slug: string): Promise<CompanyRow | null> {
+      const { rows } = await db.query<CompanyRow>(
+        `select * from companies where slug=$1`, [slugify(slug)]);
+      return rows[0] ?? null;
+    },
+
+    async listCompanies(): Promise<CompanyRow[]> {
+      const { rows } = await db.query<CompanyRow>(
+        `select * from companies where archived_at is null order by name`);
+      return rows;
+    },
+
+    async createCompany(input: { name: string; slug?: string }): Promise<CompanyRow> {
+      const slug = slugify(input.slug ?? input.name);
+      // An empty slug would pass NOT NULL and then collide with the next
+      // empty one, turning a naming mistake into an authorisation ambiguity.
+      if (!slug) throw new Error(`'${input.name}' has no usable slug — supply one explicitly`);
+      const { rows } = await db.query<CompanyRow>(
+        `insert into companies (id, name, slug) values ($1,$2,$3) returning *`,
+        [newId(), input.name.trim(), slug]);
+      return rows[0];
+    },
+
+    /**
+     * Rename or suspend. Deliberately CANNOT change the slug: it is what an
+     * operator pinned with `scyne org use` and what `X-Scyne-Org` carries, so
+     * changing it out from under them is how a working setup silently stops
+     * resolving. An organisation that genuinely needs a new slug is a new row.
+     */
+    async updateCompany(id: string, patch: { name?: string; status?: string }): Promise<CompanyRow | null> {
+      const sets: string[] = []; const params: unknown[] = [];
+      const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col}=$${params.length}`); };
+      if (patch.name !== undefined) set("name", patch.name.trim());
+      if (patch.status !== undefined) set("status", patch.status);
+      if (!sets.length) return this.getCompany(id);
+      params.push(id);
+      const { rows } = await db.query<CompanyRow>(
+        `update companies set ${sets.join(", ")} where id=$${params.length} returning *`, params);
+      return rows[0] ?? null;
+    },
+
+    /** Archive, never delete — issues, runs, spend and audit all reference it. */
+    async archiveCompany(id: string): Promise<boolean> {
+      const { rows } = await db.query<{ id: string }>(
+        `update companies set archived_at=now(), status='archived'
+          where id=$1 and archived_at is null returning id`, [id]);
+      return rows.length > 0;
+    },
+
+    /** Headline counts for one organisation — one round trip, not four. */
+    async companyStats(id: string): Promise<{
+      users: string; projects: string; features: string; issues: string;
+    }> {
+      const { rows } = await db.query<{ users: string; projects: string; features: string; issues: string }>(
+        `select (select count(*) from users    where company_id=$1)::text as users,
+                (select count(*) from projects where company_id=$1 and archived_at is null)::text as projects,
+                (select count(*) from features f join projects p on p.id=f.project_id
+                  where p.company_id=$1 and f.archived_at is null)::text as features,
+                (select count(*) from issues   where company_id=$1)::text as issues`, [id]);
+      return rows[0];
+    },
+
     // ------------------------------------------------------------- users
 
     async createUser(input: {
@@ -100,6 +258,24 @@ export function createPlatformRepo(db: Db) {
     async getUserByEmail(companyId: string, email: string): Promise<UserRow | null> {
       const { rows } = await db.query<UserRow>(
         `select * from users where company_id=$1 and email=$2`, [companyId, email.toLowerCase().trim()]);
+      return rows[0] ?? null;
+    },
+
+    /**
+     * Find a user by address alone, across every organisation.
+     *
+     * What `POST /auth/login` uses. The company-scoped `getUserByEmail` above
+     * is still correct for administration ("list MY org's users, is this one
+     * of them"), but it cannot serve a login: the person signing in supplies
+     * an email and a password and knows nothing about organisation ids.
+     *
+     * Safe because 005 makes `lower(email)` unique across the install, so this
+     * can never have to choose between two rows — and which one it chose
+     * would decide whose data the person saw.
+     */
+    async getUserByEmailAnywhere(email: string): Promise<UserRow | null> {
+      const { rows } = await db.query<UserRow>(
+        `select * from users where lower(email)=lower($1)`, [email.trim()]);
       return rows[0] ?? null;
     },
 
@@ -187,7 +363,11 @@ export function createPlatformRepo(db: Db) {
       const { token_id, ...user } = rows[0];
       // Best-effort: a failed touch must not fail the request it authenticated.
       await db.query(`update api_tokens set last_used_at=now() where id=$1`, [token_id]).catch(() => {});
-      return { user: user as UserRow, tokenId: token_id, installationId: null };
+      const row = user as UserRow;
+      return {
+        user: row, tokenId: token_id, installationId: null,
+        companyId: row.company_id, isSuperadmin: isSuperadmin(row.role),
+      };
     },
 
     // ---------------------------------------------------------- sessions
@@ -206,7 +386,12 @@ export function createPlatformRepo(db: Db) {
         `select u.* from sessions s join users u on u.id = s.user_id
           where s.token_hash = $1 and s.expires_at > now() and u.status = 'active'`,
         [hashToken(secret)]);
-      return rows[0] ? { user: rows[0], tokenId: null, installationId: null } : null;
+      return rows[0]
+        ? {
+            user: rows[0], tokenId: null, installationId: null,
+            companyId: rows[0].company_id, isSuperadmin: isSuperadmin(rows[0].role),
+          }
+        : null;
     },
 
     async destroySession(secret: string): Promise<void> {
@@ -244,6 +429,28 @@ export function createPlatformRepo(db: Db) {
     async getProject(id: string): Promise<ProjectRow | null> {
       const { rows } = await db.query<ProjectRow>(`select * from projects where id=$1`, [id]);
       return rows[0] ? { ...rows[0], theme: asJson(rows[0].theme) } : null;
+    },
+
+    /**
+     * Is this project name taken ANYWHERE in the install?
+     *
+     * Deliberately NOT scoped to one organisation. The workspace is a flat
+     * `projects/<name>/` tree read by six scripts (stage.mjs, pipeline.mjs,
+     * render-companion-app.mjs, render-mockups.mjs, migrate-to-project-level.mjs
+     * and the chatbot's workspace.ts), so two organisations owning a project of
+     * the same name would write to ONE directory and silently corrupt each
+     * other's artefacts.
+     *
+     * The cost is stated rather than hidden: refusing tells the caller that
+     * some organisation already holds the name. That is acceptable while the
+     * install is operated by the people who built it. When a client creates
+     * their own projects, this becomes `projects/<org-slug>/<name>/` and a
+     * migration — a day of script surgery that buys nothing until then.
+     */
+    async projectNameTaken(name: string): Promise<boolean> {
+      const { rows } = await db.query<{ n: string }>(
+        `select count(*)::text as n from projects where lower(name) = lower($1)`, [name.trim()]);
+      return rows[0].n !== "0";
     },
 
     async getProjectByName(companyId: string, name: string): Promise<ProjectRow | null> {
@@ -411,13 +618,23 @@ export function createPlatformRepo(db: Db) {
       }
     },
 
-    async listActions(companyId: string, filter: { projectId?: string; limit?: number } = {}):
+    async listActions(companyId: string, filter: {
+      projectId?: string; userId?: string; since?: string; until?: string; limit?: number;
+    } = {}):
       Promise<ActionRow[]> {
       const params: unknown[] = [companyId];
-      let sql = `select * from actions where company_id=$1`;
-      if (filter.projectId) { params.push(filter.projectId); sql += ` and project_id=$${params.length}`; }
+      let sql =
+        `select a.*, u.email as user_email, p.name as project_name
+           from actions a
+           left join users u on u.id = a.user_id
+           left join projects p on p.id = a.project_id
+          where a.company_id=$1`;
+      if (filter.projectId) { params.push(filter.projectId); sql += ` and a.project_id=$${params.length}`; }
+      if (filter.userId) { params.push(filter.userId); sql += ` and a.user_id=$${params.length}`; }
+      if (filter.since) { params.push(filter.since); sql += ` and a.created_at >= $${params.length}`; }
+      if (filter.until) { params.push(filter.until); sql += ` and a.created_at < $${params.length}`; }
       params.push(Math.min(filter.limit ?? 200, 1000));
-      sql += ` order by created_at desc limit $${params.length}`;
+      sql += ` order by a.created_at desc limit $${params.length}`;
       const { rows } = await db.query<ActionRow>(sql, params);
       return rows.map(r => ({ ...r, detail: asJson(r.detail) }));
     },
@@ -509,6 +726,177 @@ export function createPlatformRepo(db: Db) {
       };
     },
 
+    // ------------------------------------------------------ model prices
+
+    /**
+     * The catalogue: every model, its rates, whether it is retiring, and how
+     * much this organisation has actually run on it.
+     *
+     * `run_count` is what makes the difference between a catalogue and a
+     * price list — it is how an operator sees that the model they are about
+     * to retire is the one carrying all their work.
+     */
+    async listModelPrices(companyId: string): Promise<ModelCatalogueEntry[]> {
+      const { rows } = await db.query<ModelPriceRow & { run_count: string }>(
+        `select mp.*,
+                (select count(*) from runs r
+                   join issues i on i.id = r.issue_id
+                  where r.model = mp.model and i.company_id = $1)::text as run_count
+           from model_prices mp
+          order by mp.provider, mp.model`,
+        [companyId]);
+
+      const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      return rows.map(r => {
+        const retires = r.retires_on ? new Date(r.retires_on).getTime() : null;
+        return {
+          ...r,
+          retired: retires !== null && retires <= now,
+          retiring_soon: retires !== null && retires > now && retires - now <= THIRTY_DAYS,
+          unpriced: r.input_per_mtok === null && r.output_per_mtok === null,
+        };
+      });
+    },
+
+    async upsertModelPrice(input: {
+      provider: string; model: string;
+      inputPerMTok?: number | null; cachedInputPerMTok?: number | null; outputPerMTok?: number | null;
+      retiresOn?: string | null; sourceUrl?: string | null; updatedBy?: string | null;
+    }): Promise<ModelPriceRow> {
+      const { rows } = await db.query<ModelPriceRow>(
+        `insert into model_prices
+           (provider, model, input_per_mtok, cached_input_per_mtok, output_per_mtok,
+            retires_on, source_url, fetched_at, updated_by, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7, now(), $8, now())
+         on conflict (provider, model) do update set
+           input_per_mtok = excluded.input_per_mtok,
+           cached_input_per_mtok = excluded.cached_input_per_mtok,
+           output_per_mtok = excluded.output_per_mtok,
+           retires_on = excluded.retires_on,
+           source_url = excluded.source_url,
+           fetched_at = excluded.fetched_at,
+           updated_by = excluded.updated_by,
+           updated_at = now()
+         returning *`,
+        [input.provider, input.model,
+         input.inputPerMTok ?? null, input.cachedInputPerMTok ?? null, input.outputPerMTok ?? null,
+         input.retiresOn ?? null, input.sourceUrl ?? null, input.updatedBy ?? null]);
+      return rows[0];
+    },
+
+    // --------------------------------------------------- price proposals
+
+    async createProposal(input: {
+      companyId: string; proposedBy?: string | null; source?: string | null; rows: unknown[];
+    }): Promise<ProposalRow> {
+      // Only one proposal may be outstanding: two competing sets of prices
+      // with no ordering between them is a way to apply the older one by
+      // accident.
+      await db.query(
+        `update model_price_proposals set status='discarded', decided_at=now()
+          where company_id=$1 and status='pending'`, [input.companyId]);
+      const { rows } = await db.query<ProposalRow>(
+        `insert into model_price_proposals (id, company_id, proposed_by, source, rows)
+         values ($1,$2,$3,$4,$5::jsonb) returning *`,
+        [newId(), input.companyId, input.proposedBy ?? null, input.source ?? null,
+         JSON.stringify(input.rows)]);
+      return rows[0];
+    },
+
+    async pendingProposal(companyId: string): Promise<ProposalRow | null> {
+      const { rows } = await db.query<ProposalRow>(
+        `select * from model_price_proposals
+          where company_id=$1 and status='pending' order by created_at desc limit 1`, [companyId]);
+      if (!rows[0]) return null;
+      return { ...rows[0], rows: typeof rows[0].rows === "string" ? JSON.parse(rows[0].rows) : rows[0].rows };
+    },
+
+    /**
+     * What a proposal would actually change, field by field.
+     *
+     * A superadmin approving a price change should be looking at the DIFF, not
+     * at a wall of numbers. A refresh that proposes forty rows and alters two
+     * of them is the normal case, and reviewing forty is how the two get
+     * waved through.
+     */
+    async diffProposal(rows: Array<Record<string, unknown>>): Promise<PriceDiff[]> {
+      const out: PriceDiff[] = [];
+      for (const r of rows) {
+        const provider = String(r.provider ?? "openai");
+        const model = String(r.model ?? "");
+        if (!model) continue;
+        const { rows: existing } = await db.query<ModelPriceRow>(
+          `select * from model_prices where provider=$1 and model=$2`, [provider, model]);
+        const cur = existing[0];
+        for (const field of ["input_per_mtok", "cached_input_per_mtok", "output_per_mtok", "retires_on"] as const) {
+          // ABSENT means "leave it alone"; an explicit null means "clear it".
+          // Treating the two the same would let a refresh that simply omitted
+          // a column wipe every cached rate in the catalogue — which is
+          // exactly the shape of mistake a model makes, and it would silently
+          // raise the recorded cost of every cached run afterwards.
+          if (!(field in r) || r[field] === undefined) continue;
+          const proposed = r[field] === null ? null : String(r[field]);
+          const current = cur ? (cur[field] === null ? null : String(cur[field])) : null;
+          // Compare numerically where both are numbers, so 2 and "2.0000"
+          // are not reported as a change nobody made.
+          const same = current !== null && proposed !== null && !Number.isNaN(Number(current))
+            ? Number(current) === Number(proposed)
+            : current === proposed;
+          if (!same) out.push({ provider, model, field, from: current, to: proposed });
+        }
+      }
+      return out;
+    },
+
+    async applyProposal(id: string, byUserId: string | null): Promise<number> {
+      const { rows } = await db.query<ProposalRow>(
+        `select * from model_price_proposals where id=$1 and status='pending'`, [id]);
+      if (!rows[0]) return 0;
+      const parsed = (typeof rows[0].rows === "string" ? JSON.parse(rows[0].rows) : rows[0].rows) as Array<Record<string, unknown>>;
+      let applied = 0;
+      for (const r of parsed) {
+        if (!r.model) continue;
+        const provider = String(r.provider ?? "openai");
+        const model = String(r.model);
+        // Merged over what is already there, for the same reason the diff
+        // skips absent fields: a proposal states what it knows, not
+        // everything a row holds.
+        const { rows: existing } = await db.query<ModelPriceRow>(
+          `select * from model_prices where provider=$1 and model=$2`, [provider, model]);
+        const cur = existing[0];
+        const merge = (
+          key: "input_per_mtok" | "cached_input_per_mtok" | "output_per_mtok",
+        ): number | null => {
+          if (!(key in r) || r[key] === undefined) return cur?.[key] == null ? null : Number(cur[key]);
+          return r[key] === null ? null : Number(r[key]);
+        };
+        await this.upsertModelPrice({
+          provider, model,
+          inputPerMTok: merge("input_per_mtok"),
+          cachedInputPerMTok: merge("cached_input_per_mtok"),
+          outputPerMTok: merge("output_per_mtok"),
+          retiresOn: !("retires_on" in r) || r.retires_on === undefined
+            ? (cur?.retires_on ?? null)
+            : (r.retires_on === null ? null : String(r.retires_on)),
+          sourceUrl: rows[0].source ?? cur?.source_url ?? null,
+          updatedBy: byUserId,
+        });
+        applied++;
+      }
+      await db.query(
+        `update model_price_proposals set status='applied', decided_at=now(), decided_by=$2 where id=$1`,
+        [id, byUserId]);
+      return applied;
+    },
+
+    async discardProposal(id: string, byUserId: string | null): Promise<boolean> {
+      const { rows } = await db.query<{ id: string }>(
+        `update model_price_proposals set status='discarded', decided_at=now(), decided_by=$2
+          where id=$1 and status='pending' returning id`, [id, byUserId]);
+      return rows.length > 0;
+    },
+
     // ------------------------------------------------------------ spend
 
     /**
@@ -516,38 +904,78 @@ export function createPlatformRepo(db: Db) {
      * was a company total: project lived inside `issues.params` jsonb, which
      * cannot be grouped on without parsing every row.
      */
-    async spend(companyId: string, by: "project" | "agent" | "adapter" = "project"): Promise<SpendRow[]> {
+    /**
+     * Cost and tokens, grouped and filtered.
+     *
+     * Reported and estimated are summed SEPARATELY and both returned, because
+     * they are different kinds of fact. `unpriced_run_count` covers the third
+     * case — a run with neither figure — which `coalesce(sum(...),0)` would
+     * otherwise present as "0", indistinguishable from "these runs were free".
+     */
+    async spend(companyId: string, opts: {
+      by?: "project" | "feature" | "user" | "agent" | "adapter" | "model";
+      project?: string; feature?: string; user?: string;
+      since?: string; until?: string;
+    } | "project" | "agent" | "adapter" = {}): Promise<SpendRow[]> {
+      // The old signature took a bare dimension string. Kept working rather
+      // than broken, since the console and the CLI both call it.
+      const o = typeof opts === "string" ? { by: opts } : opts;
+      const by = o.by ?? "project";
+
       const dimension = {
-        project: `p.id, p.name`,
-        agent: `a.key`,
-        adapter: `r.adapter`,
-      }[by];
-      const select = {
-        project: `p.id as project_id, p.name as project_name, null::text as agent_key, null::text as adapter, null::uuid as user_id`,
-        agent: `null::uuid as project_id, null::text as project_name, a.key as agent_key, null::text as adapter, null::uuid as user_id`,
-        adapter: `null::uuid as project_id, null::text as project_name, null::text as agent_key, r.adapter as adapter, null::uuid as user_id`,
+        project: "p.id, p.name",
+        feature: "f.id, f.name",
+        user:    "u.id, u.email",
+        agent:   "a.key",
+        adapter: "r.adapter",
+        model:   "r.model",
       }[by];
 
+      const N = "null::text";
+      const U = "null::uuid";
+      const select = {
+        project: `p.id as project_id, p.name as project_name, ${U} as feature_id, ${N} as feature_name, ${N} as agent_key, ${N} as adapter, ${N} as model, ${U} as user_id, ${N} as user_email`,
+        feature: `${U} as project_id, ${N} as project_name, f.id as feature_id, f.name as feature_name, ${N} as agent_key, ${N} as adapter, ${N} as model, ${U} as user_id, ${N} as user_email`,
+        user:    `${U} as project_id, ${N} as project_name, ${U} as feature_id, ${N} as feature_name, ${N} as agent_key, ${N} as adapter, ${N} as model, u.id as user_id, u.email as user_email`,
+        agent:   `${U} as project_id, ${N} as project_name, ${U} as feature_id, ${N} as feature_name, a.key as agent_key, ${N} as adapter, ${N} as model, ${U} as user_id, ${N} as user_email`,
+        adapter: `${U} as project_id, ${N} as project_name, ${U} as feature_id, ${N} as feature_name, ${N} as agent_key, r.adapter as adapter, ${N} as model, ${U} as user_id, ${N} as user_email`,
+        model:   `${U} as project_id, ${N} as project_name, ${U} as feature_id, ${N} as feature_name, ${N} as agent_key, ${N} as adapter, r.model as model, ${U} as user_id, ${N} as user_email`,
+      }[by];
+
+      const params: unknown[] = [companyId];
+      const where: string[] = ["i.company_id = $1"];
+      const bind = (v: unknown): string => { params.push(v); return `$${params.length}`; };
+      if (o.project) where.push(`p.name = ${bind(o.project)}`);
+      if (o.feature) where.push(`f.name = ${bind(o.feature)}`);
+      if (o.user)    where.push(`u.email = lower(${bind(o.user.toLowerCase())})`);
+      if (o.since)   where.push(`r.started_at >= ${bind(o.since)}`);
+      if (o.until)   where.push(`r.started_at < ${bind(o.until)}`);
+
       const { rows } = await db.query<SpendRow>(
-        // `unpriced_run_count` is appended AFTER `cost_usd` deliberately —
-        // `order by 8 desc` (a real, separately-tracked bug: it orders by
-        // output_tokens, not cost_usd — see that plan for the fix) counts
-        // columns positionally, and adding a column ahead of it would change
-        // what "8" means as a side effect of an unrelated fix.
         `select ${select},
                 count(r.id)::text as run_count,
                 coalesce(sum(r.input_tokens),0)::text  as input_tokens,
                 coalesce(sum(r.output_tokens),0)::text as output_tokens,
-                coalesce(sum(r.cost_usd),0)::text      as cost_usd,
-                count(r.id) filter (where r.cost_usd is null)::text as unpriced_run_count
+                coalesce(sum(r.cost_usd),0)::text      as reported_cost_usd,
+                coalesce(sum(r.est_cost_usd),0)::text  as estimated_cost_usd,
+                (coalesce(sum(r.cost_usd),0) + coalesce(sum(r.est_cost_usd),0))::text as cost_usd,
+                count(r.id) filter (
+                  where r.cost_usd is null and r.est_cost_usd is null)::text as unpriced_run_count
            from runs r
            join issues i on i.id = r.issue_id
            left join projects p on p.id = i.project_id
-           left join agents a on a.id = r.agent_id
-          where i.company_id = $1
+           left join features f on f.id = i.feature_id
+           left join users    u on u.id = i.created_by
+           left join agents   a on a.id = r.agent_id
+          where ${where.join(" and ")}
           group by ${dimension}
-          order by 8 desc`,
-        [companyId]);
+          -- By name, not by position. The previous 'order by 8 desc' counted
+          -- columns positionally and silently ordered by output_tokens rather
+          -- than by cost; adding a column ahead of it would have changed the
+          -- sort as a side effect of an unrelated edit.
+          order by (coalesce(sum(r.cost_usd),0) + coalesce(sum(r.est_cost_usd),0)) desc,
+                   coalesce(sum(r.output_tokens),0) desc`,
+        params);
       return rows;
     },
   };

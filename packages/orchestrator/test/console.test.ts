@@ -303,3 +303,77 @@ describe("console", () => {
     expect(page).toContain("#bundle/");
   });
 });
+
+describe("the admin section", () => {
+  const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+
+  it("renders every admin tab, below a divider", () => {
+    for (const label of ["Organisations", "Users", "Projects", "Spend", "Audit"]) {
+      expect(html, `missing admin tab ${label}`).toContain(`>${label}</a>`);
+    }
+    expect(html).toContain('id="navdiv"');
+  });
+
+  it("hides admin tabs until a role is known, rather than flashing them", () => {
+    // The shell is served to anyone — it has to be, or there would be nowhere
+    // to show a login form. Admin tabs must therefore start hidden and be
+    // revealed by applyRoleToNav(), not the other way round.
+    const nav = html.slice(html.indexOf("<nav>"), html.indexOf("</nav>"));
+    const adminLinks = nav.split("<a ").filter(a => a.includes("data-admin"));
+    expect(adminLinks).toHaveLength(5);
+    for (const a of adminLinks) expect(a, a.slice(0, 60)).toContain('style="display:none"');
+  });
+
+  it("marks Organisations superadmin-only and the rest administrator-only", () => {
+    expect(html).toContain('data-tab="orgs" data-admin="super"');
+    for (const id of ["users", "projects", "spend", "audit"]) {
+      expect(html).toContain(`data-tab="${id}" data-admin="admin"`);
+    }
+  });
+
+  it("boots through the gate, not straight into a data fetch", () => {
+    // route() before authentication would fire a screenful of 401s and render
+    // an error page to someone who simply has not signed in yet.
+    expect(script).toContain("start();");
+    expect(script).toMatch(/async function start\(\)/);
+    expect(script).toContain("showGate");
+  });
+
+  it("never puts a credential anywhere the page can read", () => {
+    // The session is an httpOnly cookie set by POST /auth/login. If this ever
+    // starts stashing a token in localStorage, an injected script can take it.
+    expect(script).not.toMatch(/localStorage/);
+    expect(script).not.toMatch(/sessionStorage/);
+    expect(script).not.toMatch(/Bearer/);
+  });
+
+  it("routes each admin tab to a renderer", () => {
+    for (const r of ["renderOrgs", "renderUsers", "renderProjects", "renderSpend", "renderAudit"]) {
+      expect(script, `${r} is not wired into ROUTES`).toContain(r);
+    }
+  });
+
+  it("shows reported and estimated cost separately, never added together", () => {
+    // A merged total cannot be audited: nobody reading it can tell which half
+    // came from a vendor's billing and which from a price table we typed.
+    expect(script).toContain("reported_cost_usd");
+    expect(script).toContain("estimated_cost_usd");
+    expect(script).toContain("unpriced_run_count");
+    expect(script).toContain("costCell");
+  });
+
+  it("offers every spend dimension", () => {
+    for (const d of ["project", "feature", "user", "agent", "adapter", "model"]) {
+      expect(script).toContain(`"${d}"`);
+    }
+  });
+
+  it("still parses as JavaScript with the admin code spliced in", () => {
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("still contains no nested template literal", () => {
+    expect(script).not.toContain("`");
+    expect(script).not.toMatch(/\$\{/);
+  });
+});

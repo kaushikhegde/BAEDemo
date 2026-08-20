@@ -79,18 +79,66 @@ export function buildCodexArgs(req: RunRequest, mcpServers: Record<string, McpSe
   return a;
 }
 
-/** Read the `mcpServers` map out of the `.mcp.json` the engine points at. */
+/**
+ * Expand `${VAR}` and `${VAR:-default}` against `process.env`.
+ *
+ * Claude Code does this itself when it reads `.mcp.json`. This path does NOT
+ * go through Claude Code: it parses the same file and re-encodes each value as
+ * a `codex -c` TOML override, so without expansion a Codex run hands the MCP
+ * server the literal string `${MCP_TOKEN_FOR_AZURE}` — and every call fails
+ * with a 401 for a credential that looks perfectly present in the config file.
+ *
+ * That matters because the alternative is putting the secret in `.mcp.json`,
+ * which is committed. A PAT in that file is a PAT in the git history.
+ *
+ * A variable that resolves to nothing THROWS, naming it. Substituting an empty
+ * string would hand the server a blank credential and produce a 401 that reads
+ * like a permissions problem — an afternoon of debugging instead of a
+ * thirty-second fix.
+ */
+function expandEnv(value: string, where: string): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_m, name: string, fallback?: string) => {
+    const resolved = process.env[name];
+    if (resolved !== undefined && resolved !== "") return resolved;
+    if (fallback !== undefined) return fallback;
+    throw new Error(
+      `${where} references \${${name}}, which is not set.\n` +
+      `  Set it in the workspace root .env (which the config file loads), or give it a\n` +
+      `  default with \${${name}:-something}.`);
+  });
+}
+
+/**
+ * Read the `mcpServers` map out of the `.mcp.json` the engine points at,
+ * expanding `${VAR}` references as it goes.
+ */
 export async function readMcpServers(path: string | undefined): Promise<Record<string, McpServer>> {
   if (!path) return {};
+  let parsed: { mcpServers?: Record<string, McpServer> };
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as { mcpServers?: Record<string, McpServer> };
-    return parsed.mcpServers ?? {};
+    parsed = JSON.parse(await readFile(path, "utf8")) as { mcpServers?: Record<string, McpServer> };
   } catch {
     // A missing or malformed .mcp.json is not fatal: an agent with mcpEnabled
     // and no servers simply has no tools beyond its own. The Claude runner
     // behaves the same way — it passes the path and lets the CLI decide.
     return {};
   }
+
+  // An UNSET variable, on the other hand, IS fatal and is deliberately not
+  // caught here: it means a server was configured and its credential is
+  // missing, which fails loudly now rather than as a 401 twenty minutes in.
+  const out: Record<string, McpServer> = {};
+  for (const [name, server] of Object.entries(parsed.mcpServers ?? {})) {
+    const at = `${path} (mcpServers.${name})`;
+    out[name] = {
+      command: expandEnv(server.command, at),
+      ...(server.args ? { args: server.args.map(a => expandEnv(a, at)) } : {}),
+      ...(server.env
+        ? { env: Object.fromEntries(Object.entries(server.env).map(([k, v]) => [k, expandEnv(v, at)])) }
+        : {}),
+    };
+  }
+  return out;
 }
 
 export function createCodexRunner(

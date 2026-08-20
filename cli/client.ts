@@ -43,6 +43,7 @@ export function createClient(overrides: Partial<CliConfig> = {}): Client {
         headers: {
           ...(body === undefined ? {} : { "content-type": "application/json" }),
           ...(config.token ? { authorization: `Bearer ${config.token}` } : {}),
+          ...(config.org ? { "x-scyne-org": config.org } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
@@ -60,11 +61,30 @@ export function createClient(overrides: Partial<CliConfig> = {}): Client {
     const parsed = text ? safeJson(text) : null;
 
     if (!res.ok) {
-      const detail = (parsed && typeof parsed === "object" && "error" in parsed)
-        ? String((parsed as { error: unknown }).error)
-        : text.slice(0, 500) || res.statusText;
+      // `message` first, then `error`. Some routes answer with BOTH: a stable
+      // machine-readable code in `error` (`name_taken`) and a sentence in
+      // `message`. A person reading a terminal needs the sentence; printing
+      // the code alone makes a legible refusal look like a crash.
+      const obj = (parsed && typeof parsed === "object") ? parsed as Record<string, unknown> : null;
+      const detail = obj && typeof obj.message === "string" && obj.message
+        ? obj.message
+        : obj && "error" in obj
+          ? String(obj.error)
+          : text.slice(0, 500) || res.statusText;
       if (res.status === 401) {
         throw new ApiError(401, `not authenticated — run \`scyne login\`.\n  (${detail})`);
+      }
+      // A pinned organisation that this account may not act as is the one 403
+      // worth explaining: the command looks unrelated to the pin that caused it.
+      if (res.status === 403 && /x-scyne-org|superadmin/i.test(detail)) {
+        throw new ApiError(403,
+          `you are not a superadmin, so you cannot act as another organisation.\n` +
+          `  Clear the pin with \`scyne org use --clear\`.\n\n  (${detail})`);
+      }
+      if (res.status === 404 && /organisation/i.test(detail)) {
+        throw new ApiError(404,
+          `${detail}\n  The organisation pinned in ${"~/.scyne/config.json"} no longer resolves.\n` +
+          `  Clear it with \`scyne org use --clear\`.`);
       }
       throw new ApiError(res.status, detail);
     }

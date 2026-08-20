@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   hashPassword, verifyPassword, mintToken, hashToken, tokenPrefix, looksLikeToken,
   bearerFrom, atLeast, effectiveProjectRole, isGlobalRole, isProjectRole,
-  sessionExpiry, TOKEN_PREFIX,
+  sessionExpiry, TOKEN_PREFIX, isSuperadmin, atLeastGlobal, GLOBAL_ROLES,
 } from "../src/core/auth.js";
 
 describe("passwords", () => {
@@ -131,5 +131,36 @@ describe("sessions", () => {
     const exp = sessionExpiry(now).getTime();
     expect(exp).toBeGreaterThan(now);
     expect(exp - now).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+  });
+});
+
+describe("superadmin", () => {
+  it("is a recognised global role, ranked above admin", () => {
+    expect(isGlobalRole("superadmin")).toBe(true);
+    expect(GLOBAL_ROLES[0]).toBe("superadmin");
+    expect(atLeastGlobal("superadmin", "admin")).toBe(true);
+    expect(atLeastGlobal("admin", "superadmin")).toBe(false);
+    expect(atLeastGlobal("member", "admin")).toBe(false);
+  });
+
+  it("owns every project, exactly as an admin does", () => {
+    expect(effectiveProjectRole("superadmin", null)).toBe("owner");
+  });
+
+  it("is identifiable without a string comparison at every call site", () => {
+    expect(isSuperadmin("superadmin")).toBe(true);
+    expect(isSuperadmin("admin")).toBe(false);
+    expect(isSuperadmin("")).toBe(false);
+    expect(isSuperadmin(null)).toBe(false);
+    expect(isSuperadmin(undefined)).toBe(false);
+  });
+
+  it("does not promote a viewer, however they are granted", () => {
+    expect(effectiveProjectRole("viewer", "owner")).toBe("viewer");
+  });
+
+  it("rejects a role that is not one of the four", () => {
+    expect(atLeastGlobal("root", "viewer")).toBe(false);
+    expect(atLeastGlobal("", "viewer")).toBe(false);
   });
 });

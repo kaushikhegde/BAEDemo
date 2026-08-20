@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Eye, History as HistoryIcon, LayoutDashboard, LogOut, RotateCcw, Sparkles } from "lucide-react";
+import { ArrowUp, Eye, History as HistoryIcon, LayoutDashboard, Loader2, LogOut, RotateCcw, Sparkles } from "lucide-react";
 import { Header } from "./components/Header";
 import { HistoryView } from "./components/HistoryView";
 import { MessageBubble } from "./components/MessageBubble";
@@ -23,7 +23,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, UNAUTHENTICATED_EVENT, type RunSummary } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -114,15 +114,54 @@ function clearChatPersistence() {
 }
 
 export default function App() {
-  // Gate everything behind the hardcoded demo login. Session survives refresh via localStorage.
-  const [session, setSession] = useState<LoginSession | null>(() => loadSession());
+  // Identity lives in the orchestrator and the session lives in an httpOnly
+  // cookie, so "am I signed in" is a round trip rather than a localStorage
+  // read. That gives THREE states, not two: checking, signed out, signed in.
+  // Rendering the login form during `checking` would flash it at someone who
+  // is already signed in on every refresh.
+  const [session, setSession] = useState<LoginSession | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadSession().then((s) => {
+      if (cancelled) return;
+      setSession(s);
+      setChecking(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // A session can expire mid-use. api.ts announces the first 401 rather than
+  // every caller rendering "request failed" at someone who just needs to sign
+  // in again. Chat history is deliberately NOT cleared here — an expiry is
+  // not a sign-out, and losing the conversation would punish the user for it.
+  useEffect(() => {
+    const onExpired = () => setSession(null);
+    window.addEventListener(UNAUTHENTICATED_EVENT, onExpired);
+    return () => window.removeEventListener(UNAUTHENTICATED_EVENT, onExpired);
+  }, []);
+
+  if (checking) {
+    return (
+      <div className="h-screen w-screen grid place-items-center bg-scyne-bg">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="Signing in" />
+      </div>
+    );
+  }
   if (!session) {
     return <Login onAuthenticated={(s) => setSession(s)} />;
   }
   return (
     <AuthenticatedApp
       session={session}
-      onLogout={() => { clearSession(); clearChatPersistence(); setSession(null); }}
+      onLogout={() => {
+        // Clear the server session first; the cookie is the server's to remove.
+        void clearSession().finally(() => {
+          clearChatPersistence();
+          setSession(null);
+        });
+      }}
     />
   );
 }
@@ -944,14 +983,17 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   variant="ghost"
                   size="icon"
                   onClick={() => {
-                    if (confirm(`Sign out of Scyne (${session.user})?`)) onLogout();
+                    if (confirm(`Sign out of Scyne (${session.email})?`)) onLogout();
                   }}
-                  aria-label={`Sign out (${session.user})`}
+                  aria-label={`Sign out (${session.email})`}
                 >
                   <LogOut />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Sign out ({session.user})</TooltipContent>
+              <TooltipContent>
+                Sign out ({session.email})
+                {session.company ? ` · ${session.company.name}` : ""}
+              </TooltipContent>
             </Tooltip>
           </>
         }
@@ -1088,7 +1130,16 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                   )}
                   {/* Workflow + Agent Runs side by side, equal fixed height; each scrolls internally. */}
                   <div className={`grid gap-4 shrink-0 h-56 ${showAgentRuns && runs.length > 0 ? "lg:grid-cols-2" : "grid-cols-1"}`}>
-                    <ProgressPanel items={status.flatIssues} />
+                    <ProgressPanel
+                      items={status.flatIssues}
+                      // Refresh at once rather than waiting up to 3s for the
+                      // next poll — a Pause that appears to do nothing for
+                      // three seconds gets clicked again.
+                      onChanged={() => {
+                        if (!parentIssueId) return;
+                        void getStatus(parentIssueId).then(setStatus).catch(() => { /* the poll will catch up */ });
+                      }}
+                    />
                     {showAgentRuns && runs.length > 0 && (
                       <RunsPanel runs={runs} onHide={() => setShowAgentRuns(false)} />
                     )}

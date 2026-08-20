@@ -56,3 +56,28 @@ describe("classifyFailure", () => {
     expect(classifyFailure(result({ status: "succeeded", exitCode: 0 }), 10).retry).toBe(false);
   });
 });
+
+describe("a run somebody stopped is never retried", () => {
+  it("does not retry a cancel INSIDE the transient window with no usage recorded", () => {
+    // This is the whole point. Without an explicit branch, a cancel two
+    // seconds in with no `result` event matches the "died cheaply, retry it"
+    // rule exactly — so pressing Cancel would spawn the agent again, which is
+    // the opposite of what was asked for and costs money to discover.
+    const verdict = classifyFailure(
+      { status: "cancelled", exitCode: -1, usage: null, stderrTail: "" }, 2_000);
+    expect(verdict.retry).toBe(false);
+    expect(verdict.reason).toMatch(/stopped|cancel/i);
+  });
+
+  it("does not retry a cancel that had already done billable work", () => {
+    const verdict = classifyFailure(
+      { status: "cancelled", exitCode: -1, usage: null, stderrTail: "" }, 300_000);
+    expect(verdict.retry).toBe(false);
+  });
+
+  it("still retries an ordinary cheap failure, so the rule was not widened", () => {
+    const verdict = classifyFailure(
+      { status: "failed", exitCode: 1, usage: null, stderrTail: "socket hang up" }, 2_000);
+    expect(verdict.retry).toBe(true);
+  });
+});
