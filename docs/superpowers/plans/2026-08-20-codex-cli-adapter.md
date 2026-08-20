@@ -1116,12 +1116,25 @@ and in the inner pass, replace the classification body with:
 
 Keep the plain-text framing branch (`[paperclip]`, `[orchestrator]`, …) ahead of the JSON parse for both adapters — the engine writes those regardless of who ran.
 
-- [ ] **Step 4: Pass the adapter from the HTTP layer**
+- [ ] **Step 4: Pass the adapter at EVERY call site**
 
-In `packages/orchestrator/src/http/router.ts`, find the `/runs/{id}/transcript` handler and pass the run's recorded adapter:
+There are two, and missing the second is how a Codex transcript still renders empty
+in the CLI after the decoder is correct. Grep before you assume:
+
+```bash
+grep -rn "filterRunLog(" packages/orchestrator/src | grep -v "export function"
+```
+
+`packages/orchestrator/src/http/router.ts` — the `/runs/{id}/transcript` handler:
 
 ```ts
 const { events, consumed } = filterRunLog(raw, run.adapter);
+```
+
+`packages/orchestrator/src/cli.ts` — the `log` verb:
+
+```ts
+const { events } = filterRunLog(raw, run.adapter);
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
