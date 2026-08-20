@@ -418,7 +418,7 @@ async function main(): Promise<void> {
         if (rest.includes("--raw")) {
           process.stdout.write(raw);
         } else {
-          const { events } = filterRunLog(raw);
+          const { events } = filterRunLog(raw, run.adapter);
           for (const e of events) console.log(fmtEvent(e));
         }
         break;

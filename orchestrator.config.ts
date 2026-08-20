@@ -3,9 +3,8 @@
 // single source of truth for what a stage requires and produces. Nothing under
 // packages/orchestrator/ is touched to make this work.
 
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync, accessSync, constants as fsConstants } from "node:fs";
+import { resolve, join, delimiter } from "node:path";
 import {
   defineOrchestrator, createClaudeRunner, createCodexRunner, createLoopRunner,
   createGeminiProvider, createAzureProvider, type Runner,
@@ -20,9 +19,26 @@ const installRoot = process.env.SCYNE_INSTALL_ROOT ?? process.cwd();
  * Codex authenticates through `codex login`, cached in `$CODEX_HOME/auth.json`
  * — there is no environment variable to detect, unlike gemini and
  * azure_foundry below. Presence of the binary is the only honest signal.
+ *
+ * Walks `PATH` directly with `accessSync` rather than shelling out to
+ * `command -v` — a real shell was never needed just to answer "is this file
+ * here and executable", and `spawnSync(..., { shell: true })` makes Node
+ * print a DEP0190 warning ("can lead to security vulnerabilities") on every
+ * boot. The injection that warning is about was never reachable here (the
+ * only caller passes the hardcoded literal `"codex"`), but a security-shaped
+ * warning on every boot of an operator's console trains people to stop
+ * reading warnings.
  */
 const binaryExists = (bin: string): boolean =>
-  spawnSync("command", ["-v", bin], { shell: true, stdio: "ignore" }).status === 0;
+  (process.env.PATH ?? "").split(delimiter).some((dir) => {
+    if (!dir) return false;
+    try {
+      accessSync(join(dir, bin), fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
 /**
  * Read `.env` before anything below looks at `process.env`.
