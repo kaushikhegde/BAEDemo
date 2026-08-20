@@ -18,12 +18,30 @@ import type { RunRequest, RunResult, Runner } from "./runner.js";
 export interface McpServer { command: string; args?: string[]; env?: Record<string, string> }
 
 /**
- * Codex parses a `-c key=value` value as TOML, falling back to a raw string.
- * A bare `npx` parses as a TOML error and lands as the literal string, which
- * happens to be right — but an args ARRAY only works if it is real TOML. So
- * everything is emitted as explicit TOML: strings quoted, arrays bracketed.
+ * Codex parses a `-c key=value` value as TOML, falling back to a raw string
+ * when it fails to parse. This only ever has to encode three shapes for this
+ * file's call sites — a string, an array of strings, and a flat
+ * string-to-string map — so it is a small dispatcher, not a general TOML
+ * serialiser, and should not grow into one.
+ *
+ * `JSON.stringify` is correct for the first two: TOML and JSON agree on
+ * quoted-string and bracketed-array syntax, so `"npx"` and
+ * `["-y","@azure-devops/mcp","scyne"]` are valid TOML as well as valid JSON.
+ * It is NOT correct for the third. TOML's inline-table syntax is
+ * `{ key = "value" }` — braces, but `=` rather than `:` — so
+ * `JSON.stringify({ADO_PAT:"x"})` produces `{"ADO_PAT":"x"}`, which is JSON
+ * object syntax and fails to parse as TOML. A value that fails to parse falls
+ * back to being used as a raw string, so an `env` map encoded this way
+ * silently loses every credential in it rather than erroring loudly. The
+ * VALUES inside the table are still run through JSON.stringify so their
+ * quoting and escaping stay correct — only the `key:value` separator and the
+ * surrounding punctuation need to change.
  */
-const toml = (v: unknown): string => JSON.stringify(v);
+const toml = (v: string | string[] | Record<string, string>): string => {
+  if (typeof v === "string" || Array.isArray(v)) return JSON.stringify(v);
+  const entries = Object.entries(v).map(([k, val]) => `${k} = ${JSON.stringify(val)}`);
+  return `{ ${entries.join(", ")} }`;
+};
 
 export function buildCodexArgs(req: RunRequest, mcpServers: Record<string, McpServer>): string[] {
   const a = [
