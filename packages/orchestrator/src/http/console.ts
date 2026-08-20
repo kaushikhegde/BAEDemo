@@ -363,11 +363,18 @@ th { text-align: left; padding: .55rem .9rem; background: var(--surface-2);
 td { padding: .6rem .9rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* The controls column at the end of a row. Right-aligned like .num, but
+   WITHOUT the mono face: buttons inherit their font, so .num would set every
+   action label in monospace. Nowrap keeps two buttons on one line rather than
+   stacking them as the column narrows. */
+td.act, th.act { text-align: right; white-space: nowrap; }
+td.act > * + * { margin-left: .35rem; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--surface-2); }
 
 /* ---- controls ---- */
 button { font: inherit; font-size: .8rem; font-weight: 600; padding: .44rem .85rem;
+         white-space: nowrap;
          border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand);
          color: #fff; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem;
          transition: background .12s, border-color .12s, opacity .12s; }
@@ -381,6 +388,9 @@ button.danger:hover { background: var(--danger); color: #2A0410; border-color: v
 button.approve { background: var(--success); border-color: var(--success); color: #04231a; }
 button.approve:hover { background: color-mix(in srgb, var(--success) 82%, black); border-color: color-mix(in srgb, var(--success) 82%, black); }
 button.sm { font-size: .74rem; padding: .3rem .6rem; }
+/* The same size for a select or input sitting IN a table row. Without it a
+   full-size control makes the row taller than every other row in the table. */
+select.sm, input.sm { font-size: .74rem; padding: .28rem .45rem; }
 button:disabled { opacity: .45; cursor: default; }
 
 label { display: block; font-size: .68rem; letter-spacing: .05em; text-transform: uppercase;
@@ -580,8 +590,29 @@ ${AUTH_CSS}
    backtick is genuinely needed (markdown fences in agent comments) it is built
    with String.fromCharCode(96). */
 
+/* The organisation a superadmin is ACTING IN.
+
+   Held here, beside the two functions that send it, rather than read back off
+   the header's own select element. That is what was broken: the reader took
+   the select, renderOrgPicker() rebuilt the select from ME.company, and
+   ME.company came from a whoami() that never sent the header — so choosing an
+   organisation set a value that the next render immediately overwrote with the
+   one it started from, and the picker snapped back.
+
+   Null means "my own organisation", and the header is then omitted entirely —
+   the server refuses X-Scyne-Org from anyone who is not a superadmin, so
+   sending it unconditionally would 403 every ordinary administrator. */
+let ACTING_ORG = null;
+
+const withOrg = (h) => {
+  if (ACTING_ORG) h["X-Scyne-Org"] = ACTING_ORG;
+  return h;
+};
+
 const api = async (p, opts) => {
-  const r = await fetch(p, Object.assign({ headers: { accept: "application/json" } }, opts || {}));
+  const init = Object.assign({}, opts || {});
+  init.headers = withOrg(Object.assign({ accept: "application/json" }, init.headers || {}));
+  const r = await fetch(p, init);
   if (!r.ok) {
     let detail = "";
     try { detail = (await r.json()).error || ""; } catch (e) { detail = ""; }
@@ -592,7 +623,7 @@ const api = async (p, opts) => {
 const send = async (p, method, body) => {
   const r = await fetch(p, {
     method: method,
-    headers: { "Content-Type": "application/json", accept: "application/json" },
+    headers: withOrg({ "Content-Type": "application/json", accept: "application/json" }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let out = null;

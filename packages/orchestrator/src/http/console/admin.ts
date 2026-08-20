@@ -48,19 +48,19 @@ async function renderOrgs() {
   if (!orgs.length) { view.innerHTML = '<div class="empty"><b>No organisations</b>Create one below.</div>'; return; }
 
   view.innerHTML =
-    '<table class="grid"><thead><tr>' +
+    '<table><thead><tr>' +
       '<th>Name</th><th>Slug</th><th>Status</th>' +
-      '<th class="r">Users</th><th class="r">Projects</th><th class="r">Features</th><th class="r">Issues</th><th></th>' +
+      '<th class="num">Users</th><th class="num">Projects</th><th class="num">Features</th><th class="num">Issues</th><th class="act"></th>' +
     '</tr></thead><tbody>' +
     orgs.map(o =>
       '<tr><td><b>' + esc(o.name) + '</b></td>' +
       '<td class="mono">' + esc(o.slug) + '</td>' +
       '<td>' + st(o.status) + '</td>' +
-      '<td class="r">' + num(o.stats.users) + '</td>' +
-      '<td class="r">' + num(o.stats.projects) + '</td>' +
-      '<td class="r">' + num(o.stats.features) + '</td>' +
-      '<td class="r">' + num(o.stats.issues) + '</td>' +
-      '<td class="r"><button class="ghost sm" data-act="' + esc(o.slug) + '">Act as</button>' +
+      '<td class="num">' + num(o.stats.users) + '</td>' +
+      '<td class="num">' + num(o.stats.projects) + '</td>' +
+      '<td class="num">' + num(o.stats.features) + '</td>' +
+      '<td class="num">' + num(o.stats.issues) + '</td>' +
+      '<td class="act"><button class="ghost sm" data-act="' + esc(o.slug) + '">Act as</button>' +
       '<button class="ghost sm" data-arch="' + esc(o.id) + '" data-name="' + esc(o.name) + '">Archive</button></td>' +
       '</tr>').join("") +
     '</tbody></table>' +
@@ -74,10 +74,21 @@ async function renderOrgs() {
     '</div>';
 
   on("button[data-act]", "click", async (e) => {
-    const sel = document.getElementById("orgpick");
-    if (sel) { sel.value = e.currentTarget.dataset.act; ME = await whoami(); }
-    await renderOrgPicker();
-    location.hash = "#projects";
+    /* Through actAs(), the same path the header picker uses. This used to set
+       the select's .value directly, which fires no change event and was undone
+       by the next renderOrgPicker() anyway — and it did nothing at all when
+       the select was absent, because the whole body sat behind "if (sel)". */
+    const slug = e.currentTarget.dataset.act;
+    const msg = document.getElementById("omsg");
+    if (!(await actAs(slug))) {
+      if (msg) { msg.textContent = "could not act as " + slug; msg.className = "bad"; }
+      return;
+    }
+    /* Assigning the hash it already holds fires no hashchange, so a second
+       Act as from #organisations would change the scope and leave the screen
+       showing the organisation list of somewhere else. */
+    if (location.hash === "#projects") route(); else location.hash = "#projects";
+    renderStrip();
   });
 
   on("button[data-arch]", "click", async (e) => {
@@ -112,9 +123,9 @@ async function renderUsers() {
   spend.forEach(s => { if (s.user_id) byUser[s.user_id] = s; });
 
   view.innerHTML =
-    '<table class="grid"><thead><tr>' +
+    '<table><thead><tr>' +
       '<th>Email</th><th>Name</th><th>Role</th><th>Status</th>' +
-      '<th class="r">Runs</th><th class="r">Spend</th><th></th>' +
+      '<th class="num">Runs</th><th class="num">Spend</th><th class="act"></th>' +
     '</tr></thead><tbody>' +
     users.map(u => {
       const s = byUser[u.id];
@@ -122,10 +133,10 @@ async function renderUsers() {
         '<td>' + esc(u.name || "--") + '</td>' +
         '<td>' + st(u.role) + '</td>' +
         '<td>' + st(u.status || "active") + '</td>' +
-        '<td class="r">' + (s ? num(s.run_count) : "--") + '</td>' +
-        '<td class="r">' + (s ? costCell(s) : '<span class="muted">--</span>') + '</td>' +
-        '<td class="r">' +
-          '<select class="orgpick" data-role="' + esc(u.id) + '">' +
+        '<td class="num">' + (s ? num(s.run_count) : "--") + '</td>' +
+        '<td class="num">' + (s ? costCell(s) : '<span class="muted">--</span>') + '</td>' +
+        '<td class="act">' +
+          '<select class="sm" data-role="' + esc(u.id) + '">' +
             ["superadmin", "admin", "member", "viewer"].map(r =>
               '<option value="' + r + '"' + (u.role === r ? " selected" : "") + '>' + r + '</option>').join("") +
           '</select>' +
@@ -140,7 +151,7 @@ async function renderUsers() {
       '<label for="ue">Email</label><input id="ue" type="email" placeholder="person@client.com">' +
       '<label for="up">Password</label><input id="up" type="password" placeholder="they can change it later">' +
       '<label for="ur">Role</label>' +
-      '<select id="ur" class="orgpick">' +
+      '<select id="ur">' +
         '<option value="member">member</option><option value="admin">admin</option>' +
         '<option value="viewer">viewer</option>' +
         (isSuper() ? '<option value="superadmin">superadmin</option>' : "") +
@@ -203,8 +214,8 @@ async function renderProjects() {
   }));
 
   view.innerHTML =
-    '<table class="grid"><thead><tr>' +
-      '<th>Project</th><th>Features</th><th class="r">Runs</th><th class="r">Tokens</th><th class="r">Spend</th>' +
+    '<table><thead><tr>' +
+      '<th>Project</th><th>Features</th><th class="num">Runs</th><th class="num">Tokens</th><th class="num">Spend</th>' +
     '</tr></thead><tbody>' +
     rows.map(r => {
       const s = byName[r.p.name];
@@ -214,9 +225,9 @@ async function renderProjects() {
         '<td>' + (r.features.length
           ? r.features.map(f => '<span class="chip"><span class="l">' + esc(f.name) + '</span></span>').join(" ")
           : '<span class="muted">none yet</span>') + '</td>' +
-        '<td class="r">' + (s ? num(s.run_count) : "--") + '</td>' +
-        '<td class="r">' + (s ? num(Number(s.input_tokens) + Number(s.output_tokens)) : "--") + '</td>' +
-        '<td class="r">' + (s ? costCell(s) : '<span class="muted">--</span>') + '</td>' +
+        '<td class="num">' + (s ? num(s.run_count) : "--") + '</td>' +
+        '<td class="num">' + (s ? num(Number(s.input_tokens) + Number(s.output_tokens)) : "--") + '</td>' +
+        '<td class="num">' + (s ? costCell(s) : '<span class="muted">--</span>') + '</td>' +
         '</tr>';
     }).join("") +
     '</tbody></table>';
@@ -251,22 +262,22 @@ async function renderSpend() {
   view.innerHTML =
     '<div class="wrap" style="gap:.5rem;margin-bottom:.8rem">' +
       '<label for="sby" class="muted" style="font-size:.74rem">Group by</label>' +
-      '<select id="sby" class="orgpick">' +
+      '<select id="sby">' +
         SPEND_BY.map(d => '<option value="' + d + '"' + (d === by ? " selected" : "") + '>' + d + '</option>').join("") +
       '</select>' +
       '<label for="ssince" class="muted" style="font-size:.74rem">Since</label>' +
-      '<input id="ssince" type="date" class="orgpick" value="' + esc(since) + '">' +
+      '<input id="ssince" type="date" value="' + esc(since) + '">' +
     '</div>' +
     (rows.length
-      ? '<table class="grid"><thead><tr>' +
-          '<th>' + esc(by) + '</th><th class="r">Runs</th><th class="r">In</th><th class="r">Out</th><th class="r">Cost</th>' +
+      ? '<table><thead><tr>' +
+          '<th>' + esc(by) + '</th><th class="num">Runs</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th>' +
         '</tr></thead><tbody>' +
         rows.map(r =>
           '<tr><td>' + esc(label(r)) + '</td>' +
-          '<td class="r">' + num(r.run_count) + '</td>' +
-          '<td class="r">' + num(r.input_tokens) + '</td>' +
-          '<td class="r">' + num(r.output_tokens) + '</td>' +
-          '<td class="r">' + costCell(r) + '</td></tr>').join("") +
+          '<td class="num">' + num(r.run_count) + '</td>' +
+          '<td class="num">' + num(r.input_tokens) + '</td>' +
+          '<td class="num">' + num(r.output_tokens) + '</td>' +
+          '<td class="num">' + costCell(r) + '</td></tr>').join("") +
         '</tbody></table>'
       : '<div class="empty"><b>Nothing recorded</b>No runs match those filters.</div>') +
     '<div class="card" style="margin-top:1rem">' +
@@ -313,7 +324,7 @@ async function renderAudit() {
   users.forEach(u => { email[u.id] = u.email; });
 
   view.innerHTML =
-    '<table class="grid"><thead><tr>' +
+    '<table><thead><tr>' +
       '<th>When</th><th>Who</th><th>Did</th><th>Project</th><th>To</th><th>Detail</th>' +
     '</tr></thead><tbody>' +
     actions.map(a =>

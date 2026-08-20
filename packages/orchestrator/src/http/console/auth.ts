@@ -61,8 +61,14 @@ let ME = null;
 const isAdmin = () => Boolean(ME) && (ME.role === "admin" || ME.role === "superadmin");
 const isSuper = () => Boolean(ME) && ME.role === "superadmin";
 
+/* Asked AS the acting organisation. Sending the header here is the whole
+   switch: /auth/whoami answers with the org the REQUEST is acting in, not the
+   one the user belongs to, so this is what makes ME.company follow the picker
+   instead of dragging it back. */
 async function whoami() {
-  const r = await fetch("/auth/whoami", { headers: { accept: "application/json" } });
+  const r = await fetch("/auth/whoami", {
+    headers: withOrg({ accept: "application/json" }),
+  });
   if (!r.ok) return null;
   return r.json();
 }
@@ -80,12 +86,19 @@ function applyRoleToNav() {
   if (div) div.style.display = isAdmin() ? "" : "none";
 }
 
-/* The organisation a superadmin is acting in. Sent as X-Scyne-Org on every
-   request; the server refuses it from anyone else rather than ignoring it, so
-   this is only ever populated for a superadmin. */
-function currentOrg() {
-  const sel = document.getElementById("orgpick");
-  return sel && sel.value ? sel.value : null;
+/* Switch, then confirm. Setting ACTING_ORG optimistically and re-reading who
+   we are is what keeps the picker, the rail and every tab agreeing — and if
+   the server refuses (an archived organisation answers 404), it is put back
+   rather than left pointing somewhere no request will succeed. */
+async function actAs(slug) {
+  const previous = ACTING_ORG;
+  ACTING_ORG = slug || null;
+  const me = await whoami();
+  if (!me) { ACTING_ORG = previous; return false; }
+  ME = me;
+  await renderOrgPicker();
+  applyRoleToNav();
+  return true;
 }
 
 async function renderOrgPicker() {
@@ -109,8 +122,12 @@ async function renderOrgPicker() {
     if (pick) pick.addEventListener("change", async () => {
       /* Re-read who we are AS the newly chosen org, so every screen and the
          org label agree about which one is active. */
-      ME = await whoami();
-      await renderOrgPicker();
+      const chosen = pick.value;
+      if (!(await actAs(chosen))) {
+        /* Put the control back where the server says we actually are. */
+        await renderOrgPicker();
+        return;
+      }
       route();
       renderStrip();
     });
@@ -119,6 +136,7 @@ async function renderOrgPicker() {
   if (out) out.addEventListener("click", async () => {
     await send("/auth/logout", "POST", {}).catch(() => {});
     ME = null;
+    ACTING_ORG = null;   /* or the next sign-in inherits the last one's scope */
     showGate();
   });
 }

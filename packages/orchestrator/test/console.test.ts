@@ -30,6 +30,93 @@ describe("console", () => {
     }
   });
 
+  it("uses no class the stylesheet does not define", () => {
+    // Every one of these shipped at once on the admin tabs, and they are all
+    // the same mistake — markup naming a class that is not what it thinks:
+    //
+    //   class="grid" on a <table>  — `.grid` is the metric-TILE card grid
+    //     (display: grid), so it destroyed table layout entirely: the header
+    //     cells and the body cells landed in different tracks and the action
+    //     buttons stacked vertically outside the header's background.
+    //   class="r" for right-alignment — never defined at all; the console's
+    //     right-align is `.num`.
+    //   class="orgpick" on a standalone select — defined only as
+    //     `.whoami .orgpick`, so it did nothing outside the header.
+    //
+    // None of them is a syntax error, none fails a render, and the page looks
+    // fine until somebody opens the tab.
+    const css = html.slice(html.indexOf("<style>") + 7, html.indexOf("</style>"));
+    // The markup is BUILT by this script, so every class attribute appears in
+    // it as text. Stripping them is what makes the hook test below mean
+    // "something selects this" rather than "the attribute exists" — which is
+    // true by construction, and would pass anything at all.
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"))
+      .replace(/class="[^"]*"/g, "");
+    const defined = new Set(Array.from(css.matchAll(/\.([a-zA-Z][\w-]*)/g), m => m[1]));
+
+    const used = new Set<string>();
+    for (const m of html.matchAll(/class="([^"$'+]+)"/g)) {
+      for (const c of m[1].split(/\s+/)) if (c) used.add(c);
+    }
+    expect(used.size).toBeGreaterThan(10);   // the scan found something to check
+
+    // A class may also be a HOOK the browser script selects on and nothing
+    // styles — `.x-k`, `.b-cost` and friends on the Config and Budgets tabs
+    // are read back with querySelectorAll and never painted. Those are
+    // deliberate, so the rule is: styled, or selected, or a mistake.
+    // Matched as a SELECTOR or a quoted argument, and terminated: a bare
+    // `script.includes("r")` is true of every script ever written, and even
+    // `includes(".r")` matches `.role` — so the one-character class that
+    // started all this passed both. The name has to END where it ends.
+    const hook = (c: string): boolean => {
+      const name = c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp("\\." + name + "(?![\\w-])").test(script)
+          || new RegExp("[\"']" + name + "[\"']").test(script);
+    };
+    const orphans = [...used].filter(c => !defined.has(c) && !hook(c)).sort();
+    expect(orphans, "class(es) neither styled nor selected — a typo").toEqual([]);
+  });
+
+  it("declares no function it never calls, and switches organisation for real", () => {
+    // `currentOrg()` was declared, documented as "sent as X-Scyne-Org on every
+    // request", and never called once — while api(), send() and whoami() all
+    // used a bare fetch. So a superadmin could pick another organisation and
+    // nothing whatsoever happened: whoami answered for the home org, and
+    // renderOrgPicker() rebuilt the select from that answer, snapping the
+    // control back to where it started.
+    //
+    // Comments and string literals are stripped first. The first version of
+    // this check passed because a COMMENT elsewhere mentioned the dead
+    // function by name, which is precisely the fig leaf it was meant to catch.
+    const raw = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+    const code = raw
+      .replace(/\/\*[\s\S]*?\*\//g, " ")     // block comments
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")  // line comments (not "http://")
+      .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')  // double-quoted strings
+      .replace(/'(?:[^'\\\n]|\\.)*'/g, "''"); // single-quoted strings
+
+    const orphans: string[] = [];
+    for (const m of code.matchAll(/(?:^|\n)\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g)) {
+      const name = m[1];
+      const uses = [...code.matchAll(new RegExp("\\b" + name + "\\b", "g"))].length;
+      if (uses <= 1) orphans.push(name);
+    }
+    expect(orphans, "function(s) declared and never called").toEqual([]);
+
+    // And the switch itself is wired: the header travels, and both routes into
+    // it — the header picker and the Act as button — go through one function.
+    expect(raw).toContain("X-Scyne-Org");
+    expect([...code.matchAll(/\bactAs\b/g)].length,
+      "actAs should be declared once and called from the picker and from Act as").toBe(3);
+  });
+
+  it("never puts the card-grid class on a table", () => {
+    // Called out separately from the check above, because this one is worse:
+    // `.grid` IS defined, so nothing looks wrong until the table renders as a
+    // pile of cards.
+    expect(html).not.toMatch(/<table[^>]*class="[^"]*\bgrid\b/);
+  });
+
   it("the browser script actually parses", () => {
     // The real guard. Grepping the HTML for `id="hire"` proves a string is
     // present, not that the page RUNS — a stray apostrophe inside a
