@@ -598,5 +598,46 @@ describe("router: org and budget control", () => {
     expect(h.queue).toHaveProperty("awaitingApproval");
     expect(h).toHaveProperty("unfinishedRuns");
   });
+
+  // MINOR 7 (branch review): the version probe keyed on `key.endsWith("_local")`,
+  // so `codex` — a process adapter with its own `--version`, same as Claude
+  // Code — fell into the "n/a" bucket meant for the loop-driven adapters
+  // (gemini, azure_foundry) that have no binary to ask at all.
+  it("GET /health reports a version for codex too, not the loop-driven adapters' n/a", async () => {
+    const codexDir = mkdtempSync(join(tmpdir(), "orch-http-codex-"));
+    const codexOrch = await createOrchestrator(defineOrchestrator({
+      workspace: codexDir,
+      db: { driver: "pglite", dir: join(codexDir, "pg") },
+      adapters: { claude_local: fakeRunner, codex: fakeRunner },
+      defaults: { adapter: "claude_local" },
+      org: [{ key: "ba", name: "BA" }],
+      workflows: [{ key: "requirements", label: "Requirements", assignee: "ba",
+        steps: [{ type: "agent", phase: "generate" }] }],
+    }));
+    const codexApp = express();
+    codexApp.use(express.json());
+    codexApp.use(createRouter(codexOrch));
+    const codexServer = await new Promise<Server>((resolve) => {
+      const s = codexApp.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    try {
+      const addr = codexServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const h = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+      const codexEntry = h.adapters.find((a: { key: string }) => a.key === "codex");
+      expect(codexEntry).toBeDefined();
+      // Real version string when the binary is on PATH, "unknown" when it is
+      // not (same fallback getClaudeVersion uses) — either is a genuine probe
+      // result. What the fix rules out is the old hardcoded "n/a", which meant
+      // "never even asked".
+      expect(codexEntry.version).not.toBe("n/a");
+      expect(typeof codexEntry.version).toBe("string");
+      expect(codexEntry.version.length).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolve) => codexServer.close(() => resolve()));
+      await codexOrch.close();
+      rmSync(codexDir, { recursive: true, force: true });
+    }
+  });
 });
 

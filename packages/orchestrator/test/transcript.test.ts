@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { filterRunLog } from "../src/core/transcript.js";
 
 const wrap = (inner: object) =>
@@ -63,5 +64,88 @@ describe("filterRunLog", () => {
     const { events } = filterRunLog(log);
     // Timestamp comes from the FIRST chunk that contributed to the line.
     expect(events).toEqual([{ ts: "10:00:00", kind: "assistant", text: "split across chunks" }]);
+  });
+});
+
+describe("filterRunLog on a codex transcript", () => {
+  // The runner wraps each child line in {ts, stream, chunk}; rebuild that shape
+  // from the captured fixture so the test exercises the real outer format.
+  const envelope = readFileSync(new URL("./fixtures/codex-run.jsonl", import.meta.url), "utf8")
+    .split("\n").filter(Boolean)
+    .map(l => JSON.stringify({ ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: l + "\n" }))
+    .join("\n") + "\n";
+
+  it("produces framing events for its error content, rather than an empty transcript", () => {
+    // Fix round 1: every line in this fixture is an error/reconnect attempt (see
+    // the fixture's own header comment) — before the fix for finding (b) below,
+    // the text-extraction branch ran before the error check, so this line's
+    // `message` field was misread as assistant prose. Correctly classified, this
+    // fixture has no genuine agent prose to assert on; `framing` is what a
+    // corrected decoder actually produces for it.
+    const { events } = filterRunLog(envelope, "codex");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.some(e => e.kind === "framing")).toBe(true);
+  });
+
+  it("keeps the Claude decoder as the default for callers that pass nothing", () => {
+    const claudeLine = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "hello" }] },
+      }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(claudeLine);
+    expect(events).toContainEqual(expect.objectContaining({ kind: "assistant", text: "hello" }));
+  });
+
+  it("renders the real captured envelope rather than an empty transcript", () => {
+    // codex-envelope-unauthenticated.jsonl is a genuine capture: the run failed at
+    // the model call, but a failed run whose transcript is blank is the worst
+    // possible output — an operator cannot tell it from a run that did nothing.
+    const real = readFileSync(
+      new URL("./fixtures/codex-envelope-unauthenticated.jsonl", import.meta.url), "utf8")
+      .split("\n").filter(Boolean)
+      .map(l => JSON.stringify({ ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: l + "\n" }))
+      .join("\n") + "\n";
+    const { events } = filterRunLog(real, "codex");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.some(e => "text" in e && /401|Unauthorized/i.test(e.text))).toBe(true);
+  });
+
+  it("passes an unrecognised event through as text instead of dropping it", () => {
+    // A Codex version bump must degrade the transcript, never empty it.
+    const odd = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({ type: "some_future_event", detail: "brand new thing" }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(odd, "codex");
+    expect(events.some(e => "text" in e && e.text.includes("brand new thing"))).toBe(true);
+  });
+
+  it("renders a bare turn.failed rather than dropping it as lifecycle noise", () => {
+    // turn.failed is the one event that says WHY a run died. The lifecycle-noise
+    // regex (/^(session|thread|turn)[._]/i) also matches it, which previously
+    // swallowed it silently whenever it carried no top-level text/message/delta —
+    // exactly the "nothing happened" failure mode this decoder exists to avoid.
+    const failed = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({ type: "turn.failed", error: { message: "model call failed" } }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(failed, "codex");
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("renders an error line as framing, not assistant", () => {
+    // The text-extraction branch used to run before the explicit error check, so
+    // every Codex error line carrying a `message` was tagged kind: "assistant" —
+    // a UI that styles the two differently would show error text as agent prose.
+    const err = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({ type: "error", message: "Reconnecting... 1/5" }) + "\n",
+    }) + "\n";
+    const { events } = filterRunLog(err, "codex");
+    expect(events).toContainEqual(expect.objectContaining({ kind: "framing" }));
+    expect(events.some(e => e.kind === "assistant")).toBe(false);
   });
 });

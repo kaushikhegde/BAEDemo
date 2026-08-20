@@ -46,6 +46,7 @@ export interface RunRow {
   input_tokens: string | null; output_tokens: string | null;
   cache_read_tokens: string | null; cache_creation_tokens: string | null;
   cost_usd: string | null; duration_ms: string | null; num_turns: number | null;
+  adapter: string | null;
 }
 
 export interface GateRow {
@@ -98,6 +99,12 @@ export type GateStatus = "pending" | "approved" | "rejected" | "cancelled";
 export interface StartRunInput {
   issueId: string; agentId?: string | null; stepIndex?: number | null;
   phase?: string | null; logPath: string;
+  /**
+   * The adapter that will execute this run, resolved by the engine through
+   * step → agent → project setting → default. Nullable because a caller
+   * outside the engine (a test, a backfill) may genuinely not know.
+   */
+  adapter?: string | null;
 }
 
 export interface FinishRunResult {
@@ -332,10 +339,10 @@ export function createRepo(db: Db) {
     async startRun(input: StartRunInput): Promise<RunRow> {
       const id = newId();
       const { rows } = await db.query<RunRow>(
-        `insert into runs (id, issue_id, agent_id, step_index, phase, status, log_path)
-         values ($1,$2,$3,$4,$5,'running',$6) returning *`,
+        `insert into runs (id, issue_id, agent_id, step_index, phase, status, log_path, adapter)
+         values ($1,$2,$3,$4,$5,'running',$6,$7) returning *`,
         [id, input.issueId, input.agentId ?? null, input.stepIndex ?? null,
-         input.phase ?? null, input.logPath]);
+         input.phase ?? null, input.logPath, input.adapter ?? null]);
       return rows[0];
     },
 

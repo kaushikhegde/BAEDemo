@@ -90,3 +90,58 @@ export function extractUsage(streamJsonLines: string): RunUsage | null {
     sessionId: strOrNull(last.session_id),
   };
 }
+
+/**
+ * Parse aggregate usage out of a `codex exec --json` transcript.
+ *
+ * Written against a real capture (test/fixtures/codex-run.jsonl), the same
+ * discipline `extractUsage` above was written with — the field names are
+ * observed, not remembered.
+ *
+ * `costUsd` is ALWAYS null: Codex reports tokens and does not price them, and
+ * this repository deliberately holds no price table (see CLAUDE.md — a figure
+ * in the console is the CLI's own arithmetic, never ours). Null renders as `—`;
+ * returning 0 would render as `$0.0000` and read as a free run.
+ */
+export function extractCodexUsage(jsonlLines: string): RunUsage | null {
+  let input = 0, output = 0, cachedInput = 0;
+  let found = false;
+  let sessionId: string | null = null;
+
+  for (const line of jsonlLines.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+
+    let o: any;
+    try { o = JSON.parse(trimmed); } catch { continue; }
+
+    // Session id. `thread.started` carries a top-level `thread_id` — observed in a
+    // real capture. The others are fallbacks for versions that named it differently.
+    sessionId ??= strOrNull(o.thread_id ?? o.session_id ?? o.msg?.session_id);
+
+    // Token counts, carried on `turn.completed`. Codex has moved these between
+    // shapes across versions, so every place it has put them is checked and the LAST
+    // one wins — a transcript carries a running total, and the final one is the
+    // aggregate. Only the ENVELOPE is confirmed against a real capture; the usage
+    // key path is inferred, which is why the fallback chain is this wide.
+    const u = o.usage ?? o.msg?.usage ?? o.info?.total_token_usage ?? o.item?.usage;
+    if (u && typeof u === "object") {
+      found = true;
+      input = num(u.input_tokens ?? u.prompt_tokens ?? input);
+      output = num(u.output_tokens ?? u.completion_tokens ?? output);
+      cachedInput = num(u.cached_input_tokens ?? u.cache_read_input_tokens ?? cachedInput);
+    }
+  }
+
+  if (!found) return null;
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadTokens: cachedInput,
+    cacheCreationTokens: 0,   // Codex reports no cache-creation figure
+    costUsd: null,            // see the header — deliberately not zero
+    durationMs: null,         // the runner supplies wall clock instead
+    numTurns: null,
+    sessionId,
+  };
+}

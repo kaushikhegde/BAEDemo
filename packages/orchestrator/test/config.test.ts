@@ -112,6 +112,18 @@ describe("config", () => {
     };
     expect(validateConfig(bad as any)[0]).toMatch(/effort 'turbo'/);
   });
+
+  it("refuses an agent naming an unregistered adapter, and names what is available", () => {
+    const problems = validateConfig({
+      workspace: "/w",
+      db: { driver: "pglite", dir: "/tmp/x" },
+      adapters: { claude_local: {} as any },
+      org: [{ key: "ba", name: "BA", adapter: "codex" }],
+      workflows: [],
+    });
+    expect(problems.join("\n")).toContain("adapter 'codex', which is not registered");
+    expect(problems.join("\n")).toContain("claude_local");
+  });
 });
 
 describe("resolveRuntime", () => {
@@ -154,6 +166,65 @@ describe("resolveRuntime", () => {
     const step = { type: "agent" as const, phase: "generate" };
     expect(resolveRuntime(step, { effort: "max" }, { model: "opus", adapter: "claude_local" }))
       .toEqual({ adapter: "claude_local", model: "opus", effort: "max" });
+  });
+
+  // CRITICAL 1: model/effort/fallbackModel are meaningful only to the adapter
+  // that will run them. Before this fix, `resolveRuntime` walked adapter,
+  // model and effort INDEPENDENTLY — each doing its own step → agent →
+  // scoped → defaults search — so a level that switched only the ADAPTER
+  // still inherited a model name that belonged to whatever adapter a LESS
+  // specific level had in mind. Concretely: the global default is
+  // `claude_local` with `model: "claude-sonnet-4-6"`; pinning one agent (or
+  // one project) to codex changed the adapter but not the model, and every
+  // such run died on its first request with `--model claude-sonnet-4-6`
+  // passed to `codex exec`.
+  describe("model/effort/fallbackModel do not outlive the level that picked the adapter", () => {
+    const step = { type: "agent" as const, phase: "generate" };
+    const globalClaudeDefaults = { adapter: "claude_local", model: "claude-sonnet-4-6", effort: "medium" as const };
+
+    it("(a) an agent pinned to codex gets no model from the global Claude default", () => {
+      expect(resolveRuntime(step, { adapter: "codex" }, globalClaudeDefaults))
+        .toMatchObject({ adapter: "codex", model: undefined, effort: undefined });
+    });
+
+    it("(b) a project-scoped codex setting gets no model from the global Claude default", () => {
+      // `scoped` is most-specific-first — this is what scyne adapter set
+      // codex --project RTWSA writes: a project-level override, agent
+      // untouched.
+      const scoped = [{ adapter: "codex" }];
+      expect(resolveRuntime(step, null, globalClaudeDefaults, scoped))
+        .toMatchObject({ adapter: "codex", model: undefined, effort: undefined });
+    });
+
+    it("(c) a step that pins codex AND a model keeps that model", () => {
+      const codexStep = { ...step, adapter: "codex", model: "gpt-5-codex" };
+      expect(resolveRuntime(codexStep, { adapter: "claude_local" }, globalClaudeDefaults))
+        .toMatchObject({ adapter: "codex", model: "gpt-5-codex" });
+    });
+
+    it("(d) regression guard: everything on claude_local resolves exactly as before", () => {
+      expect(resolveRuntime(step, null, globalClaudeDefaults))
+        .toEqual({ adapter: "claude_local", model: "claude-sonnet-4-6", effort: "medium" });
+    });
+
+    it("an agent whose adapter is switched to codex does not carry its own Claude fallbackModel along", () => {
+      // Mirrors orchestrator.config.ts: every bundled agent is unconditionally
+      // given `fallbackModel: ["claude-sonnet-4-5-20250929"]` at the SAME
+      // level (the agent row) that `scyne adapter set codex` (agent scope) or
+      // the console's per-agent dropdown later overwrites with `adapter:
+      // "codex"`. A pure "level" comparison would still allow it through
+      // (same level as the adapter decision) — the guard has to be "does the
+      // FINAL resolved adapter even understand --fallback-model", which only
+      // claude_local does.
+      const agent = { adapter: "codex", fallbackModel: ["claude-sonnet-4-5-20250929"] };
+      expect(resolveRuntime(step, agent, globalClaudeDefaults).fallbackModel).toBeUndefined();
+    });
+
+    it("fallbackModel still reaches a claude_local run", () => {
+      const agent = { adapter: "claude_local", fallbackModel: ["claude-sonnet-4-5-20250929"] };
+      expect(resolveRuntime(step, agent, globalClaudeDefaults).fallbackModel)
+        .toEqual(["claude-sonnet-4-5-20250929"]);
+    });
   });
 });
 

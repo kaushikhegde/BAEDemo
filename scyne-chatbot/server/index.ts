@@ -16,7 +16,15 @@ import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
 import { ensureAtlassianTargets, provisioningConfigured } from "./services/atlassianProvision.js";
-import { filterRunLog, type TranscriptEvent } from "./services/runTranscript.js";
+// filterRunLog is the orchestrator package's own decoder — imported directly
+// rather than kept as a second local copy. This chatbot previously carried a
+// stale, Claude-vocabulary-only fork (services/runTranscript.ts) that had
+// already drifted from the real one: the same fix (decoding a Codex
+// transcript instead of rendering it empty) had already landed twice
+// upstream, in packages/orchestrator/src/http/router.ts and
+// packages/orchestrator/src/cli.ts, because nobody grepped for the sibling
+// copy. One decoder, one place to fix it, is the whole point.
+import { filterRunLog } from "../../packages/orchestrator/src/index.js";
 import { writeTranscript } from "./services/transcriptWriter.js";
 import { transcribeAudioFile } from "./services/geminiFiles.js";
 import { MeetingSession } from "./services/geminiLive.js";
@@ -1072,7 +1080,9 @@ app.get("/api/runs/:runId/transcript", async (req, res) => {
       paperclip.getRunLog(runId, offset),
       paperclip.getRun(runId),
     ]);
-    const { events, consumed } = filterRunLog(log.content || "");
+    // Pass the run's own adapter, or a Codex run decodes through the
+    // Claude-only default and renders empty — see the import comment above.
+    const { events, consumed } = filterRunLog(log.content || "", run?.adapter);
     // We trust Paperclip's nextOffset when it advances past what we consumed,
     // but never go BACKWARDS — if our consumed (bytes parsed cleanly) is less
     // than nextOffset, use ours so the partial trailing line is re-fetched.

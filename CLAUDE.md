@@ -434,6 +434,27 @@ registry, the defaults, and the workflows compiled from `scripts/pipeline.mjs`.
 It is reconciled into the database on **every** boot, so the file is the source
 of truth and cannot drift from what is running.
 
+**Adapters.** `claude_local` (Claude Code), `codex` (Codex CLI), `gemini` and
+`azure_foundry` (both loop-driven). `SCYNE_ADAPTER` picks the org-wide default;
+`scyne adapter set <name> --project <p>` overrides it per project, and an agent
+or a step can pin its own.
+
+`codex` is registered when the binary is on PATH — auth is `codex login`, not an
+API key, so there is nothing in the environment to detect. Install with
+`npm i -g @openai/codex && codex login`.
+
+`CODEX_MODEL` is optional and only read when the org-wide default adapter is
+`codex` (`SCYNE_ADAPTER=codex`) — it names the model `codex exec` is called
+with (`--model`). Leave it unset to run Codex's own default model; naming one
+this install has not verified it serves is how an entire org's runs die on
+their first request.
+
+> **Codex reports no cost.** `core/usage.ts` records `total_cost_usd` verbatim
+> from Claude Code's result event; Codex emits token counts and no dollar
+> figure, so its runs show `—` rather than `$0.00`, the closing comment says
+> `cost not reported for N runs`, and **a cost budget cannot fire on a Codex
+> run**. Token and duration ceilings still do.
+
 There are no agent UUIDs to keep in sync, no placeholder swap, and no
 `.bootstrap/ids.json` — all of that belonged to Paperclip's hire flow and is
 gone. Agents are addressed by key:
@@ -1375,6 +1396,8 @@ with the registry, the registry wins.
 | Chatbot shows "undefined" for a parameter | Frontend reading an old field name. | Search for the renamed field across `src/`. |
 | `/api/features` returns `{}` | `projects/` missing, or `WORKSPACE_PATH` pointing elsewhere. | `mkdir projects/<project>/<feature>/...`, restart the dev server. |
 | Refresh loses the workflow | `localStorage.scyne_parent_issue_id` cleared. | The workflow status panel's "New session" button starts over; otherwise it restores automatically. |
+| `SCYNE_ADAPTER='codex' is not registered` at boot | The `codex` binary is not on PATH. | `npm i -g @openai/codex && codex login`, then restart. |
+| A Codex run's transcript is empty in the console | The decoder did not recognise the event kinds — a Codex version bump. | `npm run orch -- log <runId> --raw` shows the real events; update `decodeCodexLine` in `core/transcript.ts`. Unrecognised events render as framing lines, so an empty transcript means the log itself is empty. |
 
 ---
 

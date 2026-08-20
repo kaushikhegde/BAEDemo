@@ -148,12 +148,36 @@ export function defineOrchestrator(c: OrchestratorConfig): OrchestratorConfig {
 }
 
 /**
- * Resolve adapter / model / effort, most specific wins.
- *   step → agent → defaults → (the CLI's own default, i.e. undefined)
+ * Resolve adapter / model / effort / fallbackModel, most specific wins.
+ *   step → agent → scoped (most specific first) → defaults → (the CLI's own
+ *   default, i.e. undefined — except `adapter`, whose own hard fallback is
+ *   `"claude_local"`)
+ *
+ * A model name is meaningful only to the adapter that will run it. So this
+ * does NOT resolve `adapter`, `model` and `effort` independently — first the
+ * ADAPTER is resolved (first level, in step → agent → scoped → defaults
+ * order, that names one), and model/effort/fallbackModel are then resolved
+ * from ONLY that level and anything MORE specific, never from a level less
+ * specific than the one that decided the adapter.
+ *
+ * Why: without this, switching one agent (or one project) to `codex` changed
+ * the adapter but a global `defaults.model = "claude-sonnet-4-6"` still won
+ * the independent model search, and `codex exec --model claude-sonnet-4-6`
+ * died on its first request. A level that names an adapter with no model of
+ * its own means "run this adapter's own default", not "keep whatever model a
+ * less specific level had in mind for a DIFFERENT adapter".
+ *
+ * `fallbackModel` is handled separately from that level rule: it lives only
+ * on the agent row (there is no scoped or default fallbackModel today) and is
+ * Claude Code's own CLI vocabulary (`--fallback-model`) — no other runner
+ * reads it. So it is gated on the FINAL resolved adapter being `claude_local`
+ * rather than on levels, which also covers the case a pure level comparison
+ * would miss: an agent whose row carries BOTH `adapter: "codex"` and a
+ * leftover Claude `fallbackModel` at the very same level.
  */
 export function resolveRuntime(
   step: Extract<Step, { type: "agent" }>,
-  agent: { adapter?: string; model?: string; effort?: string } | null,
+  agent: { adapter?: string; model?: string; effort?: string; fallbackModel?: string[] } | null,
   defaults: OrchestratorDefaults = {},
   /**
    * Settings that apply to THIS issue because of what it is about — the
@@ -166,15 +190,31 @@ export function resolveRuntime(
    * should still beat the global fallback.
    */
   scoped: Array<Partial<OrchestratorDefaults>> = [],
-): { adapter: string; model?: string; effort?: string } {
-  const fromScope = <K extends keyof OrchestratorDefaults>(key: K): OrchestratorDefaults[K] | undefined => {
-    for (const s of scoped) if (s?.[key] !== undefined) return s[key];
+): { adapter: string; model?: string; effort?: string; fallbackModel?: string[] } {
+  type Level = { adapter?: string; model?: string; effort?: string };
+  // step → agent → scoped (most specific first) → defaults, flattened into one
+  // ordered list so "which level decided the adapter" is a single index.
+  const levels: Level[] = [step, agent ?? {}, ...scoped, defaults];
+
+  const adapterLevel = levels.findIndex(l => l.adapter !== undefined);
+  // No level named an adapter at all: nothing has an opinion yet, so every
+  // level stays eligible for model/effort — identical to the old independent
+  // walk. Otherwise, only the level that decided the adapter and anything
+  // MORE specific than it (i.e. earlier in this list) are eligible.
+  const eligible = adapterLevel === -1 ? levels : levels.slice(0, adapterLevel + 1);
+
+  const pick = (key: "model" | "effort"): string | undefined => {
+    for (const l of eligible) { const v = l[key]; if (v !== undefined) return v; }
     return undefined;
   };
+
+  const adapter = adapterLevel === -1 ? "claude_local" : levels[adapterLevel].adapter!;
+
   return {
-    adapter: step.adapter ?? agent?.adapter ?? fromScope("adapter") ?? defaults.adapter ?? "claude_local",
-    model:   step.model   ?? agent?.model   ?? fromScope("model")   ?? defaults.model,
-    effort:  step.effort  ?? agent?.effort  ?? fromScope("effort")  ?? defaults.effort,
+    adapter,
+    model: pick("model"),
+    effort: pick("effort"),
+    fallbackModel: adapter === "claude_local" ? agent?.fallbackModel : undefined,
   };
 }
 

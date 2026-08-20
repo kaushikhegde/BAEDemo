@@ -24,7 +24,7 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { skillFilePath } from "./skills.js";
+import { buildSystemPrompt, loadSkill } from "./prompt.js";
 import { runTool, TOOL_SCHEMAS, type ToolContext } from "./tools.js";
 import type { RunRequest, RunResult, Runner } from "./runner.js";
 import type { RunUsage } from "./usage.js";
@@ -87,49 +87,6 @@ function envelope(stream: "stdout" | "stderr", chunk: string): string {
 /** A stream-json line, wrapped in its envelope, ready to append to the log. */
 function event(payload: unknown): string {
   return envelope("stdout", JSON.stringify(payload) + "\n");
-}
-
-/**
- * Read the SKILL.md an agent step names, so it can be put in the system
- * prompt. A missing skill is fatal and says so in the same words Claude Code
- * uses — `Unknown skill: <slug>` is what every existing runbook, and this
- * repository's own troubleshooting table, tells someone to look for.
- */
-async function loadSkill(installRoot: string, skillsDir: string, name: string): Promise<string> {
-  const path = skillFilePath(installRoot, skillsDir, name);
-  if (!path) throw new Error(`Unknown skill: ${name}`);
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    throw new Error(`Unknown skill: ${name} (no SKILL.md at ${path})`);
-  }
-}
-
-function buildSystemPrompt(bundle: string, skill: { name: string; body: string } | null): string {
-  const parts = [bundle.trim()];
-  if (skill) {
-    parts.push(
-      ``,
-      `# Skill: ${skill.name}`,
-      ``,
-      `The following is the method you must follow for this task. It is not`,
-      `background reading — it defines the outputs you produce and their shape.`,
-      ``,
-      skill.body.trim());
-  }
-  parts.push(
-    ``,
-    `# Working rules`,
-    ``,
-    `- You are working inside a project directory. Every path you use is`,
-    `  relative to it; paths outside it are refused.`,
-    `- Use the tools to read and write files. Describing a file you have not`,
-    `  written does not create it.`,
-    `- Finish by writing the files the skill specifies, then stop and briefly`,
-    `  summarise what you wrote.`,
-    `- Do not call any API and do not change any issue status — the`,
-    `  orchestrator owns all of that.`);
-  return parts.filter(s => s !== undefined).join("\n");
 }
 
 /**

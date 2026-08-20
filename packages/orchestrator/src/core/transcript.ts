@@ -80,7 +80,7 @@ export interface FilterResult {
   consumed: number; // length of joined text actually parsed; leftover is left for next call
 }
 
-export function filterRunLog(rawLog: string): FilterResult {
+export function filterRunLog(rawLog: string, adapter?: string | null): FilterResult {
   // 1. Outer pass: each line is {ts, stream, chunk}. Re-assemble the inner stream.
   const outerLines = rawLog.split("\n");
   // Last line may be partial — process all but the last (unless rawLog ends with \n).
@@ -130,7 +130,9 @@ export function filterRunLog(rawLog: string): FilterResult {
   for (const { ts, line } of innerLines) {
     const tsLocal = localTime(ts);
 
-    // Plain-text Paperclip framing line ("[paperclip] …", "[event] …", etc.)
+    // Plain-text framing line ("[paperclip] …", "[event] …", etc.) — the engine
+    // writes these regardless of which adapter ran, so they are checked ahead of
+    // the JSON parse for both decoders.
     if (line.startsWith("[paperclip]") || line.startsWith("[orchestrator]") ||
         line.startsWith("[event]") || line.startsWith("Status:") || line.startsWith("Run ")) {
       const text = scrub(summarise(line, 200));
@@ -141,55 +143,127 @@ export function filterRunLog(rawLog: string): FilterResult {
 
     let obj: any;
     try { obj = JSON.parse(line); } catch { continue; } // skip non-JSON noise
-
-    // Anthropic stream-json: { type: 'assistant' | 'user' | 'system' | 'result', ... }
-    const type = obj.type;
-
-    if (type === "system") continue; // hook_started / hook_response / init — too noisy
-    if (type === "result") continue; // usage is extracted separately by usage.ts
-
-    if (type === "assistant") {
-      const blocks = obj.message?.content ?? obj.content ?? [];
-      if (!Array.isArray(blocks)) continue;
-      for (const b of blocks) {
-        if (b?.type === "text" && typeof b.text === "string") {
-          const text = scrub(summarise(b.text, 600));
-          if (text) events.push({ ts: tsLocal, kind: "assistant", text });
-        } else if (b?.type === "tool_use") {
-          const tool = String(b.name || "Tool");
-          if (tool === "Skill") {
-            events.push({ ts: tsLocal, kind: "skill", name: scrub(summarise(String(b.input?.skill ?? ""), 80)) });
-          } else {
-            const preview = scrub(describeToolInput(tool, b.input));
-            events.push({ ts: tsLocal, kind: "tool_use", tool, preview });
-          }
-        } else if (b?.type === "thinking") {
-          // Surface extended thinking as assistant prose (clients asked for chatty).
-          const text = scrub(summarise(String(b.thinking ?? ""), 600));
-          if (text) events.push({ ts: tsLocal, kind: "assistant", text });
-        }
-      }
-      continue;
-    }
-
-    if (type === "user") {
-      // tool_result blocks come back wrapped as user-role messages.
-      const blocks = obj.message?.content ?? obj.content ?? [];
-      if (!Array.isArray(blocks)) continue;
-      for (const b of blocks) {
-        if (b?.type === "tool_result") {
-          const raw = typeof b.content === "string"
-            ? b.content
-            : Array.isArray(b.content)
-              ? b.content.map((c: any) => c?.text ?? "").join("\n")
-              : "";
-          const preview = scrub(summarise(raw, 240));
-          if (preview) events.push({ ts: tsLocal, kind: "tool_result", preview });
-        }
-      }
-      continue;
-    }
+    if (adapter === "codex") decodeCodexLine(tsLocal, obj, events);
+    else decodeClaudeLine(tsLocal, obj, events);
   }
 
   return { events, consumed };
+}
+
+/** Claude Code's `stream-json` vocabulary — the original (and default) decoder. */
+function decodeClaudeLine(tsLocal: string, obj: any, events: TranscriptEvent[]): void {
+  // Anthropic stream-json: { type: 'assistant' | 'user' | 'system' | 'result', ... }
+  const type = obj.type;
+
+  if (type === "system") return; // hook_started / hook_response / init — too noisy
+  if (type === "result") return; // usage is extracted separately by usage.ts
+
+  if (type === "assistant") {
+    const blocks = obj.message?.content ?? obj.content ?? [];
+    if (!Array.isArray(blocks)) return;
+    for (const b of blocks) {
+      if (b?.type === "text" && typeof b.text === "string") {
+        const text = scrub(summarise(b.text, 600));
+        if (text) events.push({ ts: tsLocal, kind: "assistant", text });
+      } else if (b?.type === "tool_use") {
+        const tool = String(b.name || "Tool");
+        if (tool === "Skill") {
+          events.push({ ts: tsLocal, kind: "skill", name: scrub(summarise(String(b.input?.skill ?? ""), 80)) });
+        } else {
+          const preview = scrub(describeToolInput(tool, b.input));
+          events.push({ ts: tsLocal, kind: "tool_use", tool, preview });
+        }
+      } else if (b?.type === "thinking") {
+        // Surface extended thinking as assistant prose (clients asked for chatty).
+        const text = scrub(summarise(String(b.thinking ?? ""), 600));
+        if (text) events.push({ ts: tsLocal, kind: "assistant", text });
+      }
+    }
+    return;
+  }
+
+  if (type === "user") {
+    // tool_result blocks come back wrapped as user-role messages.
+    const blocks = obj.message?.content ?? obj.content ?? [];
+    if (!Array.isArray(blocks)) return;
+    for (const b of blocks) {
+      if (b?.type === "tool_result") {
+        const raw = typeof b.content === "string"
+          ? b.content
+          : Array.isArray(b.content)
+            ? b.content.map((c: any) => c?.text ?? "").join("\n")
+            : "";
+        const preview = scrub(summarise(raw, 240));
+        if (preview) events.push({ ts: tsLocal, kind: "tool_result", preview });
+      }
+    }
+    return;
+  }
+}
+
+/**
+ * Codex CLI's JSONL vocabulary.
+ *
+ * Written against a real capture, like the Claude decoder. Codex has moved
+ * event names between versions, so anything unrecognised is emitted as text
+ * rather than dropped: a version bump must degrade this transcript, never empty
+ * it — an operator reading "nothing happened" for a working run is the failure
+ * mode worth engineering against.
+ */
+function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void {
+  // Envelope confirmed against a real capture: thread.started / turn.started /
+  // turn.completed / turn.failed / item.completed / error, with the payload of an
+  // item nested under `item` and its own kind on `item.type` (agent_message,
+  // command_execution, error). `msg` is a fallback for older builds.
+  const kind = obj.type ?? obj.msg?.type ?? "";
+  const body = obj.item ?? obj.msg ?? obj;
+
+  // Errors and failures are checked FIRST, ahead of prose extraction below.
+  // Two reasons this has to come first rather than fall out of the generic
+  // checks further down:
+  //  - `turn.failed` is the one event that says WHY a run died. It would
+  //    otherwise be caught by the lifecycle-noise regex below (it matches
+  //    `^turn[._]`) and dropped silently whenever it carries no top-level
+  //    text/message/delta — the exact "nothing happened" failure mode this
+  //    decoder exists to prevent. It is deliberately NOT lifecycle noise.
+  //  - an error line's `message` field would otherwise be read as assistant
+  //    prose by the text-extraction branch below, mislabelling error text as
+  //    something the agent said to a UI that styles the two kinds differently.
+  // If no message can be found anywhere this looks, DO NOT return — fall
+  // through to the generic dump at the bottom so the event still appears
+  // rather than being silently lost.
+  if (kind === "error" || kind === "turn.failed" || body?.type === "error") {
+    const errMessage = obj.error?.message ?? (typeof obj.error === "string" ? obj.error : undefined);
+    const m = scrub(summarise(String(obj.message ?? errMessage ?? body?.message ?? ""), 300));
+    if (m) {
+      events.push({ ts, kind: "framing", text: m });
+      return;
+    }
+    // else fall through — no message found anywhere; try the generic dump below.
+  } else {
+    // Assistant prose, wherever this version puts it.
+    const text = body.text ?? body.message ?? body.delta ?? body.last_agent_message;
+    if (typeof text === "string" && text.trim() && !/token|usage/i.test(kind)) {
+      events.push({ ts, kind: "assistant", text: scrub(summarise(text, 600)) });
+      return;
+    }
+
+    // Shell commands Codex ran. `run_command` is this repo's own tool vocabulary
+    // in tools.ts, so the transcript reads the same across adapters.
+    const command = body.command ?? body.cmd;
+    if (command) {
+      const shown = Array.isArray(command) ? command.join(" ") : String(command);
+      events.push({ ts, kind: "tool_use", tool: "run_command", preview: scrub(summarise(shown)) });
+      return;
+    }
+  }
+
+  if (/token_count|usage|turn\.completed/i.test(kind)) return;   // usage.ts owns these
+  // Lifecycle noise — `turn.failed` is excluded: it is handled (with a
+  // generic-dump fallback) by the error branch above, never here.
+  if (kind !== "turn.failed" && /^(session|thread|turn)[._]/i.test(kind)) return;
+
+  // Unrecognised: show it rather than lose it.
+  const dump = scrub(summarise(JSON.stringify(obj), 240));
+  if (dump) events.push({ ts, kind: "framing", text: dump });
 }

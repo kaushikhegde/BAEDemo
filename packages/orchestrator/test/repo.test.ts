@@ -58,6 +58,30 @@ describe("repo", () => {
     expect(Number(got?.cost_usd)).toBeCloseTo(0.0123, 4);
   });
 
+  it("records the adapter a run used", async () => {
+    const issue = await repo.createIssue({
+      companyId, title: "adapter round-trip", workflowKey: "requirements",
+    });
+    const run = await repo.startRun({
+      issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate",
+      logPath: "/tmp/x.jsonl", adapter: "codex",
+    });
+    expect(run.adapter).toBe("codex");
+
+    const back = await repo.listRuns(issue.id);
+    expect(back[0].adapter).toBe("codex");
+  });
+
+  it("leaves the adapter null when the caller does not supply one", async () => {
+    const issue = await repo.createIssue({
+      companyId, title: "no adapter", workflowKey: "requirements",
+    });
+    const run = await repo.startRun({
+      issueId: issue.id, agentId: null, stepIndex: 0, phase: "generate", logPath: "/tmp/y.jsonl",
+    });
+    expect(run.adapter).toBeNull();
+  });
+
   it("decides a gate", async () => {
     const i = await repo.createIssue({ companyId, title: "X", workflowKey: "requirements", params: {} });
     const g = await repo.createGate(i.id, { title: "Approve", summary: "" });

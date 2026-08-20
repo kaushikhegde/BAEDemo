@@ -63,6 +63,18 @@ export interface SpendRow {
   project_id: string | null; project_name: string | null;
   agent_key: string | null; adapter: string | null; user_id: string | null;
   run_count: string; input_tokens: string; output_tokens: string; cost_usd: string;
+  /**
+   * How many of `run_count` reported no `cost_usd` at all (Codex does not
+   * price its own runs). `sum(cost_usd)` already skips those rows on its
+   * own — SQL SUM ignores NULLs — so `cost_usd` above is already correct
+   * for a MIXED group. What it cannot express is a group that is unpriced
+   * ALL THE WAY THROUGH: `coalesce(sum(...),0)` then reports "0", which is
+   * indistinguishable from "every run here genuinely cost nothing". A
+   * caller must check this before presenting `cost_usd` as a complete
+   * total — same discipline `closingNote` (core/engine.ts) applies to one
+   * issue's own timeline.
+   */
+  unpriced_run_count: string;
 }
 
 const asJson = (v: unknown): Record<string, unknown> =>
@@ -508,20 +520,26 @@ export function createPlatformRepo(db: Db) {
       const dimension = {
         project: `p.id, p.name`,
         agent: `a.key`,
-        adapter: `a.adapter`,
+        adapter: `r.adapter`,
       }[by];
       const select = {
         project: `p.id as project_id, p.name as project_name, null::text as agent_key, null::text as adapter, null::uuid as user_id`,
         agent: `null::uuid as project_id, null::text as project_name, a.key as agent_key, null::text as adapter, null::uuid as user_id`,
-        adapter: `null::uuid as project_id, null::text as project_name, null::text as agent_key, a.adapter as adapter, null::uuid as user_id`,
+        adapter: `null::uuid as project_id, null::text as project_name, null::text as agent_key, r.adapter as adapter, null::uuid as user_id`,
       }[by];
 
       const { rows } = await db.query<SpendRow>(
+        // `unpriced_run_count` is appended AFTER `cost_usd` deliberately —
+        // `order by 8 desc` (a real, separately-tracked bug: it orders by
+        // output_tokens, not cost_usd — see that plan for the fix) counts
+        // columns positionally, and adding a column ahead of it would change
+        // what "8" means as a side effect of an unrelated fix.
         `select ${select},
                 count(r.id)::text as run_count,
                 coalesce(sum(r.input_tokens),0)::text  as input_tokens,
                 coalesce(sum(r.output_tokens),0)::text as output_tokens,
-                coalesce(sum(r.cost_usd),0)::text      as cost_usd
+                coalesce(sum(r.cost_usd),0)::text      as cost_usd,
+                count(r.id) filter (where r.cost_usd is null)::text as unpriced_run_count
            from runs r
            join issues i on i.id = r.issue_id
            left join projects p on p.id = i.project_id
