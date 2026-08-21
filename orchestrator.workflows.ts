@@ -27,14 +27,35 @@ const root = (s: Stage): string =>
   s.level === LEVEL.PROJECT ? "projects/{project}/" : "projects/{project}/{feature}/";
 
 /** `pipeline.mjs` writes commands with `<angle>` placeholders; the engine interpolates `{brace}` ones. */
+/**
+ * `<project>` / `<feature>` in pipeline.mjs become the engine's placeholders,
+ * ALWAYS quoted.
+ *
+ * An `exec` step runs through `child_process.exec`, which is `/bin/sh -c`, so
+ * an unquoted placeholder word-splits. A project called `SA Demo` reached
+ * `stage.mjs` as two argv entries and it refused with
+ * `no such project: projects/SA` — naming a project nobody had typed, while
+ * listing `SA Demo` as available two lines below. Feature names happened to be
+ * quoted by hand in `stageArgs` and project names were not, and `<feature>` in
+ * `render-mockups.mjs <project> <feature>` was bare as well, so every feature
+ * with a space in it had the same fault waiting.
+ *
+ * Quoting HERE rather than in each template is what keeps "add a stage to
+ * pipeline.mjs and get a workflow for free" true: a stage author cannot forget
+ * it, and there is no second place for the two to disagree. An already-quoted
+ * form is absorbed rather than doubled — `""x""` is two words to a shell, not
+ * one, so naive wrapping would break exactly what it set out to fix.
+ */
 const swap = (cmd: string): string =>
-  cmd.replaceAll("<project>", "{project}").replaceAll("<feature>", "{feature}");
+  cmd
+    .replaceAll(/"?<project>"?/g, '"{project}"')
+    .replaceAll(/"?<feature>"?/g, '"{feature}"');
 
 const isProject = (s: Stage): boolean => s.level === LEVEL.PROJECT;
 
 /** `stage.mjs` resolves the LEVEL before the name, so a project stage passes no feature. */
 const stageArgs = (s: Stage, key: string): string =>
-  isProject(s) ? `{project} ${key}` : `{project} "{feature}" ${key}`;
+  isProject(s) ? `"{project}" ${key}` : `"{project}" "{feature}" ${key}`;
 
 const scope = (s: Stage): string => (isProject(s) ? "{project}" : "{project} / {feature}");
 
@@ -279,7 +300,7 @@ function verifyPublishStep(key: string, s: Stage, publishStepIndex: number): Ste
   return {
     type: "exec",
     label: "Confirming the page is really there",
-    cmd: `node scripts/verify-published.mjs {project}` +
+    cmd: `node scripts/verify-published.mjs "{project}"` +
          ` --artefact "${artefactKeyTpl(key, s)}"` +
          ` --path "${wikiPathTpl(s)}"`,
     timeoutMs: 5 * MINUTES,

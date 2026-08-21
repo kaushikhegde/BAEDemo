@@ -1257,6 +1257,30 @@ app.get("/api/runs/:runId/transcript", async (req, res) => {
 
 const SAFE_PROJECT = /^[A-Za-z0-9._ &-]+$/;
 
+/**
+ * What a NEW project may be called. Stricter than SAFE_PROJECT by one
+ * character: no spaces.
+ *
+ * FEATURES keep their spaces — "Interim Benefit", "Appeals & Reviews" — and
+ * always will; every command that interpolates one quotes it. A project name
+ * is different because it is also the Azure DevOps project name, the wiki path
+ * segment, the `--project` argument on every CLI verb, and the folder every
+ * agent resolves paths against. `SA Demo` was all four, and it reached
+ * `stage.mjs` as `SA` because one generated command forgot a pair of quotes.
+ * Those quotes are all in place now, so this rule is not what makes spaces
+ * work — it is what stops a name from depending on every future caller
+ * remembering.
+ *
+ * Deliberately CREATION-only. SAFE_PROJECT still admits spaces everywhere a
+ * project is read, because projects with spaces already exist and refusing to
+ * open one would be a far worse bug than the one this prevents.
+ */
+const SAFE_NEW_PROJECT = /^[A-Za-z0-9._&-]+$/;
+
+/** `SA Demo` → `SA-Demo`, to offer rather than to apply. */
+const suggestProjectName = (name: string): string =>
+  name.trim().replace(/\s+/g, "-").replace(/-+/g, "-");
+
 app.get("/api/project-description/:project", async (req, res) => {
   try {
     const fs = await import("node:fs/promises");
@@ -1487,7 +1511,17 @@ app.post("/api/projects", async (req, res) => {
     const website = String(req.body?.website || "").trim();
 
     if (!project || !SAFE_PROJECT.test(project)) {
-      return res.status(400).json({ error: "bad_project", message: "Use letters, numbers, spaces, and . _ & - only." });
+      return res.status(400).json({ error: "bad_project", message: "Use letters, numbers, and . _ & - only." });
+    }
+    if (!SAFE_NEW_PROJECT.test(project)) {
+      // Named separately from `bad_project` so a caller can offer the
+      // suggestion instead of repeating a rule the person just broke.
+      return res.status(400).json({
+        error: "project_name_has_spaces",
+        suggestion: suggestProjectName(project),
+        message: `A project name cannot contain spaces — try "${suggestProjectName(project)}". ` +
+          `Feature names still can.`,
+      });
     }
     const root = path.join(WORKSPACE_PATH, "projects", project);
     let exists = false;

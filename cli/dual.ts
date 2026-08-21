@@ -54,6 +54,25 @@ export interface DualResult {
   extra?: Record<string, unknown>;
 }
 
+/**
+ * What a NEW project may be called. Mirrors SAFE_NEW_PROJECT in the chatbot
+ * server, which refuses the same names regardless — this copy exists so the
+ * wizard can say so before asking four more questions, not as the authority.
+ *
+ * FEATURE names are unaffected and keep their spaces: "Interim Benefit",
+ * "Appeals & Reviews". Every generated command quotes both, so a space is no
+ * longer what breaks a run; a project name is restricted because it is also
+ * the Azure DevOps project, the wiki path segment and the `--project`
+ * argument on every verb, and it only has to survive one caller forgetting.
+ *
+ * Only NEW names. Existing projects with spaces stay usable everywhere.
+ */
+export const PROJECT_NAME = /^[A-Za-z0-9._&-]+$/;
+
+/** `SA Demo` -> `SA-Demo`, to offer rather than to apply. */
+export const suggestProjectName = (name: string): string =>
+  name.trim().replace(/\s+/g, "-").replace(/-+/g, "-");
+
 /** `sop` → the folder the pipeline expects. Matches fileRouter.ts. */
 export const CATEGORY_DIR: Record<string, string> = {
   sop: "requirements/SOP",
@@ -97,6 +116,15 @@ async function postChat<T = unknown>(
 export async function createProject(
   client: Client, input: { name: string; description?: string; website?: string },
 ): Promise<DualResult> {
+  // Checked HERE rather than only in the wizard, because `scyne project create`
+  // reaches this function without passing through it. The server refuses the
+  // name too; this one just fails before EITHER half is written, so a refused
+  // name cannot leave a database row with no folder behind it.
+  if (!PROJECT_NAME.test(input.name)) {
+    throw new ApiError(400, /\s/.test(input.name)
+      ? `a project name cannot contain spaces — try "${suggestProjectName(input.name)}". Feature names still can.`
+      : "a project name may use letters, numbers and . _ & - only");
+  }
   // The chatbot's route is what fetches the client's website and writes
   // design/style-guides/theme.json, so passing `website` here is what makes
   // branding happen at all.

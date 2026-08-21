@@ -613,7 +613,14 @@ async function runStage(key, ctx) {
   for (const line of staged) console.log(`   ${line}`);
   console.log("");
 
-  const sub = (s) => s.replace("<project>", ctx.project).replace("<feature>", `"${ctx.feature ?? ""}"`);
+  // Quoted, and EVERY occurrence. These lines exist to be copy-pasted into a
+  // shell, and a project called `SA Demo` pasted bare becomes two arguments —
+  // the same fault the workflow compiler had, printed as advice. `.replace`
+  // also stopped at the first match, which `render-mockups.mjs <project>
+  // <feature>` would have hit the moment a template named either one twice.
+  const sub = (s) => s
+    .replaceAll("<project>", `"${ctx.project}"`)
+    .replaceAll("<feature>", `"${ctx.feature ?? ""}"`);
   const scope = level === LEVEL.PROJECT
     ? `project: ${ctx.project}`
     : `project: ${ctx.project}, feature: ${ctx.feature}`;
@@ -700,13 +707,13 @@ async function main() {
     const p = ctx.project;
     console.log(`── PROJECT BASELINE — run these in ONE session, in order\n`);
     console.log(`   1. /capability-process-map`);
-    console.log(`   2. node scripts/render-capability-map.mjs ${p} --validate-only`);
-    console.log(`   3. npm run stage ${p} personas        (needs step 1's output on disk)`);
+    console.log(`   2. node scripts/render-capability-map.mjs "${p}" --validate-only`);
+    console.log(`   3. npm run stage "${p}" personas      (needs step 1's output on disk)`);
     console.log(`   4. /persona-journey-map               ← do NOT re-read the discovery`);
     console.log(`                                           documents; they are already in`);
     console.log(`                                           context from step 1`);
-    console.log(`   5. node scripts/validate-experience.mjs ${p}`);
-    console.log(`   6. node scripts/render-companion-app.mjs ${p}   (ONCE — covers both)\n`);
+    console.log(`   5. node scripts/validate-experience.mjs "${p}"`);
+    console.log(`   6. node scripts/render-companion-app.mjs "${p}"   (ONCE — covers both)\n`);
     console.log(`   Then raise ONE approval gate covering both artefacts.\n`);
     return;
   }

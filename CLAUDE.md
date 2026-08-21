@@ -1597,6 +1597,25 @@ The `solutions/` working folders under a feature are created on demand by each
 stage. No code change is needed — `/api/features` auto-discovers a new folder on
 the next chat turn.
 
+> **Project names take no spaces; feature names still do.** A feature is
+> routinely "Interim Benefit" or "Appeals & Reviews" and always will be, so
+> every generated command quotes BOTH `{project}` and `{feature}` — `swap()` in
+> `orchestrator.workflows.ts` emits them already quoted, which is what keeps
+> "add a stage to `pipeline.mjs`, get a workflow for free" true: a stage author
+> cannot forget it. It was not always so, and an `exec` step runs through
+> `child_process.exec`, i.e. `/bin/sh -c`, so an unquoted placeholder
+> word-splits: a project called `SA Demo` reached `stage.mjs` as `SA` and it
+> refused with `no such project: projects/SA`, while listing `SA Demo` as
+> available two lines below.
+>
+> A NEW project name is refused if it has a space (`400 project_name_has_spaces`,
+> with a hyphenated `suggestion`), because that name is also the Azure DevOps
+> project, the wiki path segment and the `--project` argument on every verb —
+> it should not have to survive every future caller remembering. The rule is
+> **creation-time only**: `SAFE_PROJECT` still admits spaces everywhere a
+> project is READ, since projects with spaces already exist and refusing to
+> open one would be worse than the bug it prevents.
+
 **Reserved feature names:** `capabilities`, `personas`, `app`, `all`, `baseline`, plus the
 project's own folder names (`solutions`, `documents`, `design`, `original-files`,
 `outputs`). A feature by one of those names would be unreachable from the CLI and
@@ -1891,6 +1910,7 @@ with the registry, the registry wins.
 | Every story fails with "work item type does not exist" | The project's process template has no `User Story` — Basic has Epic → Issue → Task. | `ado-workitems.mjs` discovers the type; if something else hard-codes one, use `--type` or let the script choose. |
 | An ADO call 401s only on Codex runs, and works on Claude | `.mcp.json` holds `${MCP_TOKEN_FOR_AZURE}` and something is not expanding it, so the server receives the literal string. | `readMcpServers` in `core/codex-runner.ts` does the expansion. Check the variable is set in the ROOT `.env` — an unset one now throws by name rather than substituting an empty string. |
 | A published wiki page has the placeholder `{{PRODUCT_SUMMARY_URL}}` in its stories | `ado-workitems.mjs` was run without `--summary-url`. | It refuses this now. If you see it on an older item, re-run with `--summary-url`; the script updates in place. |
+| A stage fails with `no such project: projects/<first-word>` | Something interpolated a project or feature into a shell command without quotes. An `exec` step is `/bin/sh -c`, so `SA Demo` word-splits. | `swap()` and `stageArgs()` in `orchestrator.workflows.ts` quote both placeholders; `sub()` in `stage.mjs` quotes the advice it prints. If a new command is added, quote it there rather than at the call site. |
 | A stage is refused `no documents` while `/docs` lists documents | Those rows are in the DATABASE and the files are not on DISK, and every gate counts `.md` on disk. Either the upload was refused (`ambiguous_kind` — a `.docx`/`.pdf` whose name matches neither the SOP nor the transcript pattern needs `--as`) and a pre-`51dec6e` CLI recorded the row anyway, or the file landed but never converted. | `find projects/<p> -name '*.md'` is what the gate sees. Re-upload with `--as sop\|transcripts\|notes`, or with no feature pinned for client-wide material. `node scripts/convert-to-md.mjs <p> [<f>]` converts what is already there. |
 | Every conversion fails with `markitdown-ts is not installed` | It resolves from `scyne-chatbot/node_modules` and was missing from that package's dependencies. | `cd scyne-chatbot && npm install`. Nothing under `requirements/` or `documents/` becomes readable until this works. |
 | A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |

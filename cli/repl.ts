@@ -18,7 +18,7 @@ import { load, patch, DEFAULT_API_URL } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
 import {
   createProject, createFeature, uploadDocument, saveProjectDefinition, extractBrand,
-  chatAuth, CATEGORY_DIR, type DualResult,
+  chatAuth, CATEGORY_DIR, PROJECT_NAME, suggestProjectName, type DualResult,
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
 import { readSecret, setPromptReader } from "./prompt.ts";
@@ -858,10 +858,20 @@ export async function repl(): Promise<void> {
 
     out();
     out(`  ${c.bold("Step 1 — the client")}`);
-    const name = await askLine("  Project name: ");
+    let name = await askLine("  Project name: ");
     if (!name) { out(`  ${cross} nothing entered — cancelled`); return; }
-    if (!/^[A-Za-z0-9 ._&-]+$/.test(name)) {
-      out(`  ${cross} letters, numbers, spaces and . _ & - only`);
+    // A space is the one failure worth RECOVERING from rather than cancelling:
+    // it is the first question of a five-step wizard and the repair is
+    // mechanical. Offered, never applied silently — the name becomes the Azure
+    // DevOps project and the wiki path, so it is not ours to choose.
+    if (/\s/.test(name) && PROJECT_NAME.test(suggestProjectName(name))) {
+      const suggested = suggestProjectName(name);
+      out(`  ${c.yellow("!")} ${c.grey("project names cannot contain spaces. Feature names still can.")}`);
+      const answer = await askLine(`  Use ${c.brand(suggested)}? (enter to accept, or type another): `);
+      name = answer || suggested;
+    }
+    if (!PROJECT_NAME.test(name)) {
+      out(`  ${cross} letters, numbers and . _ & - only — no spaces`);
       return;
     }
     if (RESERVED.has(name.toLowerCase())) {
