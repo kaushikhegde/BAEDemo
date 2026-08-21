@@ -34,6 +34,41 @@ describe("buildCodexArgs", () => {
     expect(a).toContain("--ignore-user-config");
   });
 
+  it("routes to no provider unless one is declared", () => {
+    const a = buildCodexArgs(base, {});
+    expect(a.join(" ")).not.toContain("model_provider");
+  });
+
+  it("declares the endpoint, so --ignore-user-config cannot silently redirect a run", () => {
+    // The measured failure: config.toml named a proxied endpoint, the flag
+    // discarded it, and every run went to api.openai.com and 401'd — while
+    // interactive `codex` on the same machine worked.
+    const a = buildCodexArgs(base, {}, {
+      baseUrl: "http://127.0.0.1:8788/openai/v1", wireApi: "responses", envKey: "CODEX_API_KEY",
+    });
+    const joined = a.join(" ");
+    expect(a).toContain("--ignore-user-config");
+    expect(joined).toContain(`model_provider="scyne"`);
+    expect(joined).toContain(`model_providers.scyne.base_url="http://127.0.0.1:8788/openai/v1"`);
+    expect(joined).toContain(`model_providers.scyne.wire_api="responses"`);
+  });
+
+  it("names the key's VARIABLE, never the key — argv is readable through ps", () => {
+    const a = buildCodexArgs(base, {}, { baseUrl: "https://x/v1", envKey: "CODEX_API_KEY" });
+    const joined = a.join(" ");
+    expect(joined).toContain(`model_providers.scyne.env_key="CODEX_API_KEY"`);
+    expect(joined).not.toContain("api_key");
+  });
+
+  it("defaults the wire API and the display name rather than omitting them", () => {
+    const joined = buildCodexArgs(base, {}, { baseUrl: "https://x/v1" }).join(" ");
+    expect(joined).toContain(`model_providers.scyne.wire_api="responses"`);
+    expect(joined).toContain(`model_providers.scyne.name="scyne"`);
+    // No key named, so no env_key line at all — an empty one would point Codex
+    // at a variable that does not exist.
+    expect(joined).not.toContain("env_key");
+  });
+
   it("passes a model only when one is configured", () => {
     expect(buildCodexArgs(base, {})).not.toContain("--model");
     const a = buildCodexArgs({ ...base, model: "gpt-5-codex" }, {});

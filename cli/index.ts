@@ -16,9 +16,10 @@ import { basename } from "node:path";
 import { createClient, resolveProject, targetProject, ApiError, type Client } from "./client.ts";
 import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
 import {
-  createProject, createFeature, uploadDocument, chatUrl, CATEGORY_DIR, type DualResult,
+  createProject, createFeature, uploadDocument, saveProjectDefinition,
+  CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
-import { fetchStages, callerParams, type Stage } from "./stages.ts";
+import { fetchStages, fetchWorkflowSteps, callerParams, type Stage } from "./stages.ts";
 import { prompt } from "./prompt.ts";
 
 /* Not a const, and not read straight from process.argv at each site.
@@ -55,7 +56,19 @@ function positionals(): string[] {
   }
   return out;
 }
-const BOOLEAN_FLAGS = new Set(["all", "follow", "json", "yes", "help", "quiet", "clear", "force"]);
+/**
+ * Flags that take NO value.
+ *
+ * `positionals()` skips a flag and the token after it, so a boolean missing
+ * from this set silently eats its neighbour: `issues --open --project SAPN`
+ * parsed as `--open=--project` and left `SAPN` looking like a positional. It
+ * only shows up when the flag is not last on the line — which is exactly what
+ * the session does, since it appends the pinned `--project` after whatever was
+ * typed. Adding a boolean flag means adding it here.
+ */
+const BOOLEAN_FLAGS = new Set([
+  "all", "follow", "json", "yes", "help", "quiet", "clear", "force", "open",
+]);
 
 const out = (s = ""): void => { process.stdout.write(s + "\n"); };
 const json = (v: unknown): void => out(JSON.stringify(v, null, 2));
@@ -271,15 +284,13 @@ async function cmdProject(client: Client, args: string[]): Promise<void> {
       if (!name) throw new ApiError(400, `usage: scyne project describe <name> "<the definition>"`);
       const text = args.slice(2).join(" ") || flag("description");
       if (!text) throw new ApiError(400, `usage: scyne project describe <name> "<the definition>"`);
-      const proj = await resolveProject(client, name);
-      await client.patch(`/projects/${proj.id}`, { description: text });
-      // The definition also has to reach description.md, which is what the
-      // skills actually read.
-      await fetch(`${chatUrl()}/api/project-description`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project: name, description: text }),
-      }).catch(() => null);
-      out(`✓ definition saved for ${name}`);
+      // Both sides. The database column is what `project show` prints; the file
+      // at projects/<p>/description.md is what every SKILL reads. This wrote
+      // the second with NO credential, and every /api route but /api/auth needs
+      // one — so it 401'd, the bare `.catch` swallowed it, and the definition
+      // reached no agent while reporting success.
+      reportDual(`${name} — project definition`, await saveProjectDefinition(client, { project: name, description: text }));
+      out(`  every skill reads this before any discovery document.`);
       return;
     }
     case "show": {
@@ -322,18 +333,25 @@ async function cmdFeature(client: Client, args: string[]): Promise<void> {
 
 /** Render what each half of the split did. Shared with the session's version. */
 function reportDual(title: string, r: DualResult): void {
+  // A detail can be several lines — `no project named 'X'.` carries a second
+  // line listing the ones that do exist. Printing it raw put line two in column
+  // zero, so the rest is indented under the block instead.
+  const rest: string[] = [];
   const show = (s: DualResult["disk"]): string => {
+    const [head, ...more] = (s.detail ?? "").split("\n");
+    rest.push(...more.filter(l => l.trim()).map(l => l.trim()));
     switch (s.state) {
-      case "created": return `✓ ${s.detail ?? "created"}`;
-      case "exists":  return s.detail ? `· ${s.detail}` : `· already there`;
-      case "skipped": return `· ${s.detail}`;
-      case "failed":  return `✗ ${s.detail}`;
+      case "created": return `✓ ${head || "created"}`;
+      case "exists":  return head ? `· ${head}` : `· already there`;
+      case "skipped": return `· ${head}`;
+      case "failed":  return `✗ ${head}`;
     }
   };
   out(``);
   out(`  ${title}`);
   out(`    folder tree (agents read this)  ${show(r.disk)}`);
   out(`    database (scyne reads this)     ${show(r.db)}`);
+  for (const line of rest) out(`      ${line}`);
 }
 
 async function cmdDoc(client: Client, args: string[]): Promise<void> {
@@ -617,6 +635,136 @@ async function cmdRun(client: Client, args: string[]): Promise<void> {
   out(`✓ started ${def.label} — ${issue.identifier}`);
   out(`  watch:   scyne status ${issue.identifier}`);
   out(`  approve: scyne gate list`);
+}
+
+/** How long ago, in a column narrow enough to sit beside five others. */
+function ago(iso?: string | null): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return "—";
+  // A clock skew between this machine and the server reads as a negative age.
+  // "just now" is the honest rendering; a negative number looks like a bug.
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** The statuses an issue can sit at without anyone noticing. */
+const NEEDS_A_HUMAN: Record<string, string> = {
+  in_review: "awaiting approval",
+  blocked:   "blocked",
+  paused:    "paused",
+};
+
+/**
+ * Every issue, as a table.
+ *
+ * `status <id>` answers "what happened to this one" and `gate list` answers
+ * "what needs approving", but there was nothing that answered "what is going
+ * on" — the console has an Issues tab and the terminal had no equivalent, so
+ * the only way to find an identifier was to remember it.
+ *
+ * Scoped to the pinned project by default, because that is the question being
+ * asked nine times in ten; `--all` is how you see the rest.
+ */
+async function cmdIssues(client: Client, args: string[]): Promise<void> {
+  if (args[0] && !args[0].startsWith("--")) {
+    throw new ApiError(400,
+      `usage: scyne issues [--open] [--status S] [--project P] [--feature F] [--all] [--limit N]\n` +
+      `  For one issue's detail, use \`scyne status ${args[0]}\`.`);
+  }
+
+  // The server filters by status (it is indexed); project and feature live
+  // inside `params` as JSON, so those are filtered here.
+  const status = flag("status");
+  const issues = await client.get<any[]>(`/issues${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+
+  const all = has("all");
+  const wantProject = all ? undefined : (flag("project") ?? load().project);
+  const wantFeature = all ? undefined : (flag("feature") ?? load().feature);
+  const eq = (a: unknown, b?: string): boolean =>
+    !b || String(a ?? "").toLowerCase() === b.toLowerCase();
+
+  let rows = issues.filter(i =>
+    eq(i.params?.project, wantProject) && eq(i.params?.feature, wantFeature));
+  // `--open` is the triage view: everything that has not finished one way or
+  // the other. Composed with --status rather than replacing it.
+  if (has("open")) rows = rows.filter(i => i.status !== "done" && i.status !== "cancelled");
+
+  if (has("json")) return json(rows);
+
+  if (!rows.length) {
+    const scope = [wantProject, wantFeature].filter(Boolean).join(" / ");
+    out(`  (no issues${scope ? ` for ${scope}` : ""}${has("open") ? " still open" : ""})`);
+    if (scope && !all) out(`  ${"Use --all to see every project's."}`);
+    return;
+  }
+
+  // Newest LAST: the server orders ascending, and in a terminal the final row
+  // is the one nearest the cursor. Reversing it would put the issue you just
+  // started at the top of a screen you have to scroll back to.
+  const limit = Number(flag("limit") ?? 30);
+  const dropped = Math.max(0, rows.length - limit);
+  const shown = dropped ? rows.slice(-limit) : rows;
+
+  // One extra request, and only when there is something to annotate: without
+  // it `step_index` is a number with no denominator.
+  const steps = await fetchWorkflowSteps(client).catch(() => ({} as Record<string, { count: number; types: string[] }>));
+
+  const table_ = shown.map(i => {
+    const w = steps[i.workflow_key ?? ""];
+    const at = w?.types?.[i.step_index];
+    return {
+      issue: i.identifier,
+      status: i.status,
+      // `5/6 gate` — where it is AND what that step does. A done issue has run
+      // off the end of its own list, so it reads `6/6` with no step name.
+      step: w ? `${Math.min(i.step_index + 1, w.count)}/${w.count}${at ? ` ${at}` : ""}` : String(i.step_index),
+      workflow: i.workflow_key ?? "—",
+      target: [i.params?.project, i.params?.feature].filter(Boolean).join(" / ") || "—",
+      updated: ago(i.updated_at),
+      // A control request is a REQUEST, not a status: it is honoured at the
+      // engine's next step boundary, which can be twenty minutes away. An
+      // issue reading `in_progress` half an hour after someone pressed Cancel
+      // is the single most confusing state this system has, so it is named.
+      note: i.control_request ? `${String(i.control_request).replace("_", " ")} requested` : "",
+    };
+  });
+
+  const columns = ["issue", "status", "step", "workflow", "target", "updated"];
+  if (table_.some(r => r.note)) columns.push("note");
+  table(table_.map(r => ({ ...r, note: r.note || "—" })), columns);
+
+  if (dropped) {
+    out(``);
+    out(`  ${dropped} older ${dropped === 1 ? "issue" : "issues"} not shown — pass --limit ${rows.length} for all of them.`);
+  }
+
+  // What to do next, and only about issues that are actually waiting. A list
+  // that ends without saying which of twelve rows needs a person is a list
+  // somebody has to re-read.
+  //
+  // Counted over `rows`, the whole scope — NOT `shown`. A pending gate hidden
+  // because a display limit pushed it off the top is a gate nobody approves,
+  // and the identifiers are named here anyway, so the footer stays actionable
+  // whether or not its issue made the window.
+  const waiting = rows.filter(i => NEEDS_A_HUMAN[i.status]);
+  if (waiting.length) {
+    out(``);
+    for (const [status, label] of Object.entries(NEEDS_A_HUMAN)) {
+      const these = waiting.filter(i => i.status === status);
+      if (!these.length) continue;
+      const ids = these.map(i => i.identifier).join(", ");
+      out(`  ${String(these.length).padStart(2)} ${label.padEnd(18)} ${ids}`);
+    }
+    const gated = waiting.find(i => i.status === "in_review");
+    const stuck = waiting.find(i => i.status === "blocked" || i.status === "paused");
+    if (gated) out(`     ${"scyne gate list"}`);
+    if (stuck) out(`     scyne status ${stuck.identifier}   ${"# then: scyne run resume " + stuck.identifier}`);
+  }
 }
 
 async function cmdStatus(client: Client, args: string[]): Promise<void> {
@@ -1070,6 +1218,8 @@ scyne — the Scyne pipeline, from the command line
 
   Running the pipeline
     run <stage>                      start a stage (run with no stage to list them)
+    issues [--open] [--all]          every issue, where it is, what needs you
+           [--status S] [--project P] [--feature F] [--limit N] [--json]
     status <issue>                   activity, gates and work products
     gate list | approve <id> | reject <id> [--note "..."]
     logs <runId> [--follow]          an agent's transcript
@@ -1171,6 +1321,7 @@ async function dispatch(): Promise<void> {
     case "member":   return cmdMember(client, rest);
     case "doc":      return cmdDoc(client, rest);
     case "run":      return cmdRun(client, rest);
+    case "issues":   return cmdIssues(client, rest);
     case "status":   return cmdStatus(client, rest);
     case "gate":     return cmdGate(client, rest);
     case "logs":     return cmdLogs(client, rest);

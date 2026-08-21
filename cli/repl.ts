@@ -17,7 +17,8 @@ import { createInterface, type Interface } from "node:readline/promises";
 import { load, patch, DEFAULT_API_URL } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
 import {
-  createProject, createFeature, uploadDocument, chatAuth, CATEGORY_DIR, type DualResult,
+  createProject, createFeature, uploadDocument, saveProjectDefinition, extractBrand,
+  chatAuth, CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
 import { readSecret, setPromptReader } from "./prompt.ts";
@@ -44,6 +45,27 @@ const TRIGGERS: Record<string, { path: string; label: string }> = {
   trigger_ui_mockups: { path: "/api/ui-mockups/trigger", label: "UI Mockups" },
   trigger_ui_build: { path: "/api/ui-agent/trigger", label: "Companion App" },
 };
+
+/**
+ * Names a project or feature may not take.
+ *
+ * `stage.mjs` resolves the LEVEL before the name, so a single trailing token is
+ * read as a stage rather than as a feature — which makes a feature called
+ * `personas` unreachable from the CLI and makes it appear as a stage in the
+ * target picker. The rest are the project's own folder names. `/api/features`
+ * refuses the same list; checking here too means the wizard says so before
+ * asking three more questions.
+ */
+const RESERVED = new Set([
+  "capabilities", "personas", "app", "all", "baseline",
+  "solutions", "documents", "design", "original-files", "outputs",
+]);
+
+/** The palette, as both `/api/projects` and `/api/brand/extract` report it. */
+interface BrandTheme {
+  brand?: string; brandDeep?: string; accent?: string;
+  logoText?: string; fontFamily?: string; hasLogo?: boolean;
+}
 
 /** 409 codes the backend returns for an unmet prerequisite, in plain words. */
 const GATE_REASONS: Record<string, string> = {
@@ -152,6 +174,7 @@ const HELP = `
   ${c.grey("Anything taking --project / --feature uses what you pinned.")}
 
   ${c.bold("Target")}
+    ${c.cyan("/new")}                              new project, step by step
     ${c.cyan("/use")} <project> [feature]          pin what you are working on
     ${c.cyan("/projects")}                         projects in the database
     ${c.cyan("/whoami")}                           who you are, and what is pinned
@@ -159,7 +182,7 @@ const HELP = `
     ${c.cyan("/logout")}                           forget the stored token
 
   ${c.bold("Documents")}
-    ${c.cyan("/upload")} <file...> --as TYPE       ${c.grey("sop | transcripts | notes | ui | template")}
+    ${c.cyan("/upload")} <file...> [--as TYPE]     ${c.grey("sop | transcripts | notes | ui | template")}
       ${c.grey("--as needs a feature. WITHOUT it a file lands in requirements/")}
       ${c.grey("uncategorised (feature pinned), or in the project's documents/")}
       ${c.grey("(no feature) — which is right for policy and legislation.")}
@@ -168,6 +191,7 @@ const HELP = `
   ${c.bold("Running")}
     ${c.cyan("/run")} <stage>                      ${c.grey("no stage lists them")}
     ${c.cyan("/run")} pause|cancel|resume <issue>  ${c.grey("pause --force stops the agent now")}
+    ${c.cyan("/issues")} [--open] [--all]          ${c.grey("every issue, and what needs you")}
     ${c.cyan("/status")} [issue]                   activity, gates and work products
     ${c.cyan("/gates")}                            everything awaiting approval
     ${c.cyan("/approve")} <gateId>                 approve it
@@ -195,6 +219,48 @@ const HELP = `
   ${c.grey("Every scyne command works here — drop the prefix. --follow needs its")}
   ${c.grey("own terminal, since it would hold this prompt for a whole run.")}
 `;
+
+/**
+ * Split a slash-command line into arguments the way a shell would.
+ *
+ * NOT `split(/\s+/)`. Every path in this workspace is a candidate argument and
+ * a great many of them contain spaces — `projects/RTWSA/Review & Verify
+ * Evidence/...` — so a naive split turned one file into four arguments, none
+ * of which existed. Quoting it, which is what anyone would try next, was no
+ * better: the quotes stayed in the token and `readFile` was handed a path
+ * beginning with a literal `"`.
+ *
+ * Single and double quotes group; a backslash escapes the next character.
+ * That is the whole grammar — enough for a filename, and deliberately not a
+ * shell (no globs, no variables, no operators).
+ */
+export function tokenize(line: string): string[] {
+  const tokens: string[] = [];
+  let cur = "";
+  let started = false;      // distinguishes "" (an empty argument) from no argument
+  let quote: '"' | "'" | null = null;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "\\" && i + 1 < line.length && quote !== "'") {
+      cur += line[++i]; started = true; continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      started = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
+    if (/\s/.test(ch)) {
+      if (started) { tokens.push(cur); cur = ""; started = false; }
+      continue;
+    }
+    cur += ch; started = true;
+  }
+  if (started) tokens.push(cur);
+  return tokens;
+}
 
 export async function repl(): Promise<void> {
   const cfg = load();
@@ -301,7 +367,7 @@ export async function repl(): Promise<void> {
   const say = (text: string): void => { out(); out(markdown(text)); };
 
   async function slash(line: string): Promise<boolean> {
-    const [verb, ...rest] = line.slice(1).trim().split(/\s+/);
+    const [verb, ...rest] = tokenize(line.slice(1).trim());
     const arg = rest.join(" ");
     try {
       switch (verb) {
@@ -347,6 +413,12 @@ export async function repl(): Promise<void> {
         case "whoami": {
           const me = await client.get("/auth/whoami");
           out(); out(markdown("```\n" + JSON.stringify(me, null, 2) + "\n```"));
+          return false;
+        }
+
+        case "new": {
+          if (signedOut) { out(`  ${cross} sign in first: ${c.cyan("/login")}`); return false; }
+          await wizard();
           return false;
         }
 
@@ -399,10 +471,17 @@ export async function repl(): Promise<void> {
           const parts = rest.filter(Boolean);
           const asFlag = parts.indexOf("--as");
           const as = asFlag >= 0 ? parts[asFlag + 1] : undefined;
-          const files = parts.filter((p, i) => !p.startsWith("--") && i !== asFlag + 1);
+          // `asFlag + 1` is the flag's VALUE — but only when the flag is
+          // present. With no `--as`, indexOf returns -1, so this guarded index
+          // 0 and every plain `/upload <file>` silently lost its only file and
+          // printed the usage line as though nothing had been typed.
+          const files = parts.filter((p, i) =>
+            !p.startsWith("--") && !(asFlag >= 0 && i === asFlag + 1));
 
           if (!files.length) {
             out(`  ${cross} usage: /upload <file...> [--as ${Object.keys(CATEGORY_DIR).join("|")}]`);
+            out(`    ${c.grey("--as is optional. Without it a file lands in the project's documents/,")}`);
+            out(`    ${c.grey("or in requirements/ uncategorised when a feature is pinned.")}`);
             return false;
           }
           if (!project) { out(`  ${cross} pin a project first: /use <project> [feature]`); return false; }
@@ -411,6 +490,15 @@ export async function repl(): Promise<void> {
             return false;
           }
           if (as && !feature) { out(`  ${cross} --as ${as} needs a feature: /use ${project} <feature>`); return false; }
+
+          // Uncategorised INTO A FEATURE is almost always a slip — the file
+          // lands at the root of requirements/ rather than in SOP/,
+          // Transcripts/, Notes/ or UI/, and the BA is told what each of those
+          // means. Said once, not refused, exactly as `scyne doc upload` does.
+          if (!as && feature) {
+            out(`  ${dot} ${c.grey("no --as, so this goes to requirements/ uncategorised.")}`);
+            out(`    ${c.grey("the BA treats " + Object.keys(CATEGORY_DIR).join(", ") + " differently — pass one.")}`);
+          }
 
           for (const file of files) {
             try {
@@ -521,20 +609,190 @@ export async function repl(): Promise<void> {
     }
   }
 
+  /**
+   * The New Project wizard, as four prompts.
+   *
+   * The browser has this and the terminal did not: a project could be created
+   * here, but its DEFINITION and its BRANDING could only be supplied as flags
+   * somebody had to know about, or by hoping the assistant asked. Both change
+   * every artefact the pipeline goes on to produce — the definition is read by
+   * every skill before any discovery document — so they are asked for at
+   * creation time rather than chased afterwards.
+   *
+   * Deterministic and free: no model call, so it cannot decide to skip a step.
+   * Every step takes enter for "skip", because a wizard that cannot be got out
+   * of is one people avoid starting.
+   */
+  async function wizard(): Promise<void> {
+    out();
+    out(`  ${c.bold("New project")}  ${c.grey("— enter skips any step. ^C leaves it unfinished, not undone.")}`);
+
+    out();
+    out(`  ${c.bold("Step 1 — the client")}`);
+    const name = (await ask("  Project name: ")).trim();
+    if (!name) { out(`  ${cross} nothing entered — cancelled`); return; }
+    if (!/^[A-Za-z0-9 ._&-]+$/.test(name)) {
+      out(`  ${cross} letters, numbers, spaces and . _ & - only`);
+      return;
+    }
+    if (RESERVED.has(name.toLowerCase())) {
+      out(`  ${cross} '${name}' is a reserved name — the CLI reads it as a stage, not a project`);
+      return;
+    }
+
+    out(`  ${c.grey("Who are they? What are they regulated or obliged to do, who are")}`);
+    out(`  ${c.grey("their customers really, what can they not do? Every skill reads")}`);
+    out(`  ${c.grey("this before any discovery document, so it is worth a paragraph.")}`);
+    let description = (await ask("  > ")).trim();
+    // The server refuses anything under 40 characters, and silently NOT writing
+    // description.md is the one outcome nobody would notice until an agent
+    // produced generic requirements. Say so and offer the retype once.
+    if (description && description.length < 40) {
+      out(`  ${c.yellow("!")} ${c.grey("that is too short to be a definition — a couple of sentences at least.")}`);
+      const retry = (await ask("  > ")).trim();
+      description = retry.length >= 40 ? retry : "";
+      if (!description) out(`    ${c.grey("skipped — add it later with")} ${c.cyan(`project describe ${name} "…"`)}`);
+    }
+
+    out();
+    out(`  ${c.bold("Step 2 — the branding")}`);
+    out(`  ${c.grey("The companion app comes out in the client's colours. Without one it")}`);
+    out(`  ${c.grey("falls back to the Scyne palette, which is perfectly presentable.")}`);
+    const website = (await ask("  Their website? (enter to skip): ")).trim();
+
+    // One call does all three: scaffolds the tree, writes description.md, and
+    // runs extract-brand inline. Re-extracting afterwards to show the palette
+    // would fetch the same site twice.
+    const spin = spinner(website ? `creating ${name} and reading the brand…` : `creating ${name}…`);
+    let created: DualResult;
+    try {
+      created = await createProject(client, { name, description, website });
+    } finally {
+      spin.stop();
+    }
+    reportDual(name, created);
+    if (created.disk.state === "failed" && created.db.state === "failed") {
+      out(`  ${cross} neither side was created — stopping here.`);
+      return;
+    }
+
+    if (description) {
+      out(`    ${created.extra?.definitionWritten
+        ? `${tick} ${c.grey("projects/" + name + "/description.md")}`
+        : `${cross} ${c.grey("the definition was not written — retry with")} ${c.cyan(`project describe ${name} "…"`)}`}`);
+    }
+    if (website) reportBrand(name, created.extra?.brand as BrandTheme | null, created.extra?.brandError as string | null);
+
+    project = name; feature = null;
+    patch({ project: name, feature: undefined });
+
+    out();
+    out(`  ${c.bold("Step 3 — client-wide documents")}`);
+    out(`  ${c.grey("Policy, legislation, standards, current-state architecture — what")}`);
+    out(`  ${c.grey("describes the CLIENT rather than one feature. .docx and .pdf are")}`);
+    out(`  ${c.grey("converted to markdown on arrival. Feature material comes later.")}`);
+    const docLine = (await ask("  Paths, space separated (enter to skip): ")).trim();
+    const docs = tokenize(docLine);
+    // A glob reaches here unexpanded — the session is not a shell — and would
+    // fail as a filename containing a literal asterisk, which reads like the
+    // file is missing rather than like the pattern was never expanded.
+    const globbed = docs.filter(d => /[*?]/.test(d));
+    if (globbed.length) {
+      out(`  ${c.yellow("!")} ${c.grey("globs are not expanded here: " + globbed.join(", "))}`);
+      out(`    ${c.grey("run")} ${c.cyan(`scyne doc upload ${globbed[0]} --project ${name}`)} ${c.grey("from your shell instead.")}`);
+    }
+    for (const file of docs.filter(d => !/[*?]/.test(d))) {
+      try {
+        const r = await uploadDocument(client, { project: name, feature: null, file });
+        reportDual(String(r.extra?.path ?? file), r);
+      } catch (err) {
+        out(`  ${cross} ${file}: ${(err as Error).message.split("\n")[0]}`);
+      }
+    }
+
+    out();
+    out(`  ${c.bold("Step 4 — a first feature")}`);
+    out(`  ${c.grey("One slice of work: 'Appeals & Reviews', 'Interim Benefit'.")}`);
+    const featureName = (await ask("  Feature name (enter to skip): ")).trim();
+    if (featureName && RESERVED.has(featureName.toLowerCase())) {
+      out(`  ${cross} '${featureName}' is reserved — the CLI would read it as a stage`);
+    } else if (featureName) {
+      reportDual(`${name} / ${featureName}`, await createFeature(client, { project: name, feature: featureName }));
+      feature = featureName;
+      patch({ project: name, feature: featureName });
+    }
+
+    // What to do next depends on what they actually gave us, so it is computed
+    // rather than a fixed list. A "next" step whose prerequisite is missing is
+    // how someone gets a 409 on their first command.
+    out();
+    out(`  ${c.bold("Next")}`);
+    // Padded on the RAW text: c.cyan() wraps it in escape codes that padEnd
+    // counts as visible width, so colouring first indents every row differently.
+    const nextStep = (cmd: string, hint: string): void => {
+      out(`    ${c.cyan(cmd)}${" ".repeat(Math.max(2, 34 - cmd.length))}${c.grey(hint)}`);
+    };
+    if (!docs.length && !featureName) {
+      out(`    ${c.grey("nothing to run yet — every stage reads documents.")}`);
+      nextStep("/upload <file...>", "client-wide policy and legislation");
+    }
+    if (docs.length) nextStep("/run capabilities", "capability map — reads what you just uploaded");
+    if (featureName) {
+      nextStep("/upload <file...> --as transcripts", `discovery material for ${featureName}`);
+      nextStep("/run requirements", "once that feature has documents");
+    }
+    if (!description) nextStep(`project describe ${name} "…"`, "the definition, which every skill reads");
+  }
+
+  /**
+   * One palette block, whichever route fetched it.
+   *
+   * `forProject` is passed rather than read off the pin: the wizard reports the
+   * palette BEFORE it pins the new project, so reading the pin printed the
+   * previous target's path — or `<project>` on a first run.
+   */
+  function reportBrand(forProject: string, theme: BrandTheme | null, error: string | null): void {
+    if (error || !theme) {
+      out(`    ${cross} ${c.grey("no branding: " + (error ?? "nothing readable on that page"))}`);
+      out(`      ${c.grey("some sites build their CSS in the browser, so there is nothing")}`);
+      out(`      ${c.grey("to read server-side. The Scyne palette is used instead.")}`);
+      return;
+    }
+    const row = (label: string, value?: string): void => {
+      if (value) out(`    ${c.grey(label.padEnd(9))} ${value}`);
+    };
+    row("brand", theme.brand);
+    row("deep", theme.brandDeep);
+    row("accent", theme.accent);
+    row("wordmark", theme.logoText);
+    row("logo", theme.hasLogo ? "found and inlined" : "none found");
+    row("type", theme.fontFamily);
+    out(`    ${c.grey("read off the site's own CSS — a first pass. Correct a wrong colour")}`);
+    out(`    ${c.grey("in projects/" + forProject + "/design/style-guides/theme.json")}`);
+  }
+
   /** Render what each half of the split did. */
   function reportDual(title: string, r: DualResult): void {
+    // A detail can be several lines — `no project named 'X'.` carries a second
+    // line listing the ones that do exist. Printing it raw put line two in
+    // column zero and broke the two-row block into something that read like
+    // output from a different command, so the rest is indented under it.
+    const rest: string[] = [];
     const show = (s: DualResult["disk"]): string => {
+      const [head, ...more] = (s.detail ?? "").split("\n");
+      rest.push(...more.filter(l => l.trim()).map(l => l.trim()));
       switch (s.state) {
-        case "created": return `${tick} ${c.grey(s.detail ?? "created")}`;
+        case "created": return `${tick} ${c.grey(head || "created")}`;
         case "exists":  return `${dot} ${c.grey("already there")}`;
-        case "skipped": return `${dot} ${c.grey(s.detail)}`;
-        case "failed":  return `${cross} ${s.detail}`;
+        case "skipped": return `${dot} ${c.grey(head)}`;
+        case "failed":  return `${cross} ${head}`;
       }
     };
     out();
     out(`  ${c.bold(title)}`);
     out(`    ${c.grey("folder tree (agents read this)")}  ${show(r.disk)}`);
     out(`    ${c.grey("database (scyne reads this)   ")}  ${show(r.db)}`);
+    for (const line of rest) out(`      ${c.grey(line)}`);
   }
 
   async function createBoth(tool: string, args: Record<string, string>): Promise<void> {
@@ -610,6 +868,56 @@ export async function repl(): Promise<void> {
     // "(no projects yet)".
     if (tool.name === "create_project" || tool.name === "create_feature") {
       await createBoth(tool.name, args);
+      return;
+    }
+
+    // The two SYNCHRONOUS tools. Neither raises an issue, so neither is in
+    // TRIGGERS — and until now that meant the fall-through below dropped both
+    // silently: the assistant asked for the client's description and their
+    // website exactly as it does in the browser, said it had saved them, and
+    // nothing was written. A tool call the session cannot act on must not be
+    // reported as done.
+    if (tool.name === "save_project_definition") {
+      const name = String(args.project ?? project ?? "");
+      const description = String(args.description ?? "");
+      if (name) { project = name; patch({ project: name }); }
+      if (!name || description.trim().length < 40) {
+        out(`  ${cross} I need a project and a couple of sentences to save.`);
+        return;
+      }
+      try {
+        reportDual(`${name} — project definition`, await saveProjectDefinition(client, { project: name, description }));
+        out(`    ${c.grey("every skill reads this before any discovery document.")}`);
+      } catch (err) {
+        out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+      }
+      return;
+    }
+
+    if (tool.name === "extract_brand") {
+      const name = String(args.project ?? project ?? "");
+      const url = String(args.url ?? "");
+      if (name) { project = name; patch({ project: name }); }
+      // Branding is per PROJECT — one companion app, one palette. A feature is
+      // neither needed nor asked for.
+      if (!name || !url) {
+        out(`  ${cross} I need a URL plus a project to pull the branding into.`);
+        return;
+      }
+      const spin = spinner(`reading the brand from ${url}…`);
+      try {
+        const r = await extractBrand({ project: name, url });
+        spin.stop();
+        out();
+        out(`  ${c.bold(`branding applied to ${name}`)}`);
+        reportBrand(name, r.theme, null);
+        out(`    ${c.grey(r.rerendered
+          ? "the companion app has been re-rendered with it."
+          : "no companion app built yet — the theme applies on the first build.")}`);
+      } catch (err) {
+        spin.stop();
+        reportBrand(name, null, `couldn't read ${url}: ${(err as Error).message.split("\n")[0]}`);
+      }
       return;
     }
 

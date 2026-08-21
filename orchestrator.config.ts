@@ -134,7 +134,35 @@ function adapters(): Record<string, Runner> {
   // Codex CLI. A whole agent like Claude Code, so it runs the stage itself
   // rather than through the shared loop — see core/codex-runner.ts.
   if (binaryExists("codex")) {
-    registry.codex = createCodexRunner({ installRoot, skillsDir: "skills" });
+    registry.codex = createCodexRunner({
+      installRoot,
+      skillsDir: "skills",
+      // Where Codex runs actually go.
+      //
+      // The runner passes `--ignore-user-config`, so `~/.codex/config.toml` —
+      // where a proxied or private endpoint is normally declared — reaches no
+      // run. An install configured that way therefore worked in a terminal and
+      // 401'd in every run, because Codex fell back to api.openai.com with
+      // whatever credential auth.json held. Declaring it here is what makes a
+      // run reproduce what the terminal does, on any machine rather than the
+      // one whose config.toml happens to be right.
+      //
+      // Unset means Codex's own default endpoint, which is correct for anyone
+      // signed in with `codex login` against OpenAI directly.
+      ...(process.env.CODEX_BASE_URL
+        ? {
+            provider: {
+              baseUrl: process.env.CODEX_BASE_URL,
+              ...(process.env.CODEX_PROVIDER_NAME ? { name: process.env.CODEX_PROVIDER_NAME } : {}),
+              ...(process.env.CODEX_WIRE_API ? { wireApi: process.env.CODEX_WIRE_API } : {}),
+              // The NAME of the variable, not its value: these become argv,
+              // and argv is readable by `ps`. The spawned child inherits this
+              // process's environment, so Codex reads the key from there.
+              ...(process.env.CODEX_API_KEY ? { envKey: "CODEX_API_KEY" } : {}),
+            },
+          }
+        : {}),
+    });
   }
 
   if (process.env.AZURE_AI_PROJECT_ENDPOINT && (process.env.AZURE_AI_TOKEN || process.env.AZURE_AI_API_KEY)) {

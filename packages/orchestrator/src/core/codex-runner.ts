@@ -46,7 +46,50 @@ const toml = (v: string | string[] | Record<string, string>): string => {
   return `{ ${entries.join(", ")} }`;
 };
 
-export function buildCodexArgs(req: RunRequest, mcpServers: Record<string, McpServer>): string[] {
+/**
+ * A model endpoint to route runs through, instead of Codex's built-in one.
+ *
+ * This exists because of `--ignore-user-config` below. That flag is right —
+ * a developer's `~/.codex/config.toml` must never decide what an agent run
+ * does — but it also discards `model_provider`, which is where a private or
+ * proxied endpoint is declared. An install pointed at one through that file
+ * therefore worked perfectly in a terminal and, in a RUN, silently fell back
+ * to `api.openai.com` with whatever credential `auth.json` happened to hold:
+ * measured here as `401 Incorrect API key`, on an installation whose
+ * interactive `codex` had never failed once.
+ *
+ * Declaring the provider explicitly restores the routing without restoring
+ * the config file — the same argument the MCP block below already makes.
+ */
+export interface CodexProvider {
+  /** Where requests go. The whole reason this type exists. */
+  baseUrl: string;
+  /** What Codex calls it. Cosmetic; defaults to the provider key. */
+  name?: string;
+  /** `responses` (Codex's default) or `chat`. */
+  wireApi?: string;
+  /**
+   * The NAME of an environment variable holding the API key — never the key.
+   *
+   * Codex accepts a literal `api_key` too, and it must not be used from here:
+   * these strings become argv, and argv is world-readable through `ps` on a
+   * shared machine. The child inherits `process.env`, so naming the variable
+   * gets the credential there without it ever appearing on a command line.
+   */
+  envKey?: string;
+}
+
+/**
+ * The provider key. Ours, and fixed, so it can never collide with a name the
+ * install happens to use for something else.
+ */
+const PROVIDER = "scyne";
+
+export function buildCodexArgs(
+  req: RunRequest,
+  mcpServers: Record<string, McpServer>,
+  provider?: CodexProvider,
+): string[] {
   const a = [
     "exec",
     "--json",              // JSONL events on stdout — the transcript's raw material
@@ -62,6 +105,18 @@ export function buildCodexArgs(req: RunRequest, mcpServers: Record<string, McpSe
   // Codex has no --effort. Its equivalent is a config key, so an explicit pin
   // on a step or an agent still reaches the model.
   if (req.effort) a.push("-c", `model_reasoning_effort=${toml(req.effort)}`);
+
+  // The endpoint, when the install declares one — see CodexProvider above for
+  // why `--ignore-user-config` makes this necessary rather than optional.
+  if (provider?.baseUrl) {
+    a.push("-c", `model_provider=${toml(PROVIDER)}`);
+    a.push("-c", `model_providers.${PROVIDER}.name=${toml(provider.name ?? PROVIDER)}`);
+    a.push("-c", `model_providers.${PROVIDER}.base_url=${toml(provider.baseUrl)}`);
+    a.push("-c", `model_providers.${PROVIDER}.wire_api=${toml(provider.wireApi ?? "responses")}`);
+    if (provider.envKey) {
+      a.push("-c", `model_providers.${PROVIDER}.env_key=${toml(provider.envKey)}`);
+    }
+  }
 
   // MCP is configuration here rather than a file path. The SAME .mcp.json the
   // Claude runner is handed is expanded into overrides, so there is one source
@@ -142,7 +197,7 @@ export async function readMcpServers(path: string | undefined): Promise<Record<s
 }
 
 export function createCodexRunner(
-  opts: { installRoot: string; skillsDir?: string; bin?: string },
+  opts: { installRoot: string; skillsDir?: string; bin?: string; provider?: CodexProvider },
 ): Runner {
   const bin = opts.bin ?? "codex";
   const skillsDir = opts.skillsDir ?? "skills";
@@ -173,7 +228,7 @@ export function createCodexRunner(
       const mcpServers = await readMcpServers(req.mcpConfigPath);
       return runChild(
         { ...req, prompt: `${system}\n\n---\n\n${req.prompt}` },
-        { bin, args: buildCodexArgs(req, mcpServers), extractUsage: extractCodexUsage },
+        { bin, args: buildCodexArgs(req, mcpServers, opts.provider), extractUsage: extractCodexUsage },
       );
     },
   };

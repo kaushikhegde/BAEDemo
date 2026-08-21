@@ -46,6 +46,12 @@ describe("classifyFailure", () => {
     ["claude: command not found"],
     ["Error: ENOENT: no such file or directory"],
     ["invalid api key · fix external API key"],
+    // Codex's wording, captured verbatim from a real failing run. It matched
+    // none of the patterns above, so a misconfigured endpoint was retried on
+    // every advance — five duplicate runs, with the cause buried under them.
+    ["failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses"],
+    ["401 Unauthorized: Incorrect API key provided: 6E7Z****cim1"],
+    ["Request failed: 403 Forbidden"],
   ])("does NOT retry a configuration error: %s", (stderr) => {
     // Cheap to retry, but it fails identically — and a retry line that means
     // nothing teaches an operator to ignore the ones that do.

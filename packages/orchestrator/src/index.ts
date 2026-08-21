@@ -21,6 +21,7 @@ export {
 export { createEngine, type Engine, type ExecFn } from "./core/engine.js";
 export { createClaudeRunner, buildArgs, type Runner, type RunRequest, type RunResult } from "./core/runner.js";
 export { createCodexRunner, buildCodexArgs } from "./core/codex-runner.js";
+export type { CodexProvider } from "./core/codex-runner.js";
 export {
   createLoopRunner, MAX_TURNS,
   type ChatProvider, type CompleteRequest, type ProviderTurn, type ProviderToolCall, type LoopMessage,

@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, SchemaType, type Tool } from "@google/generative-ai";
+import * as store from "./store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WORKSPACE_PATH } from "./workspace.js";
@@ -710,9 +711,20 @@ export async function chat(
   messages: AnthropicMsg[],
   target?: { project: string | null; feature: string | null } | null,
   uiContext?: UiContext,
+  /**
+   * The caller's token. What the assistant can see is what THEY can see, so a
+   * question about another organisation's project returns nothing rather than
+   * naming it.
+   */
+  token?: string | null,
 ) {
-  const tree = await listAvailable();
-  const definitions = await listProjectDefinitions();
+  // From the database, over the API. Walking projects/ on disk is what let the
+  // assistant announce a project the database had never heard of — see
+  // server/store.ts.
+  const tree = await store.available(token ?? null);
+  const definitions = await store.definitions(token ?? null);
+  // Branding stays on disk: theme.json is written by scripts/extract-brand.mjs
+  // and read by the renderers, and is not a document row.
   const branding = await listProjectBranding();
   const systemPrompt = buildSystemPrompt(formatFeatures(tree), target, uiContext, definitions, branding);
 

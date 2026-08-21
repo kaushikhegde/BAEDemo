@@ -15,7 +15,8 @@
 // website, and routing an upload into the right `requirements/` subfolder.
 // Reimplementing any of that here would be a second thing to keep in step.
 
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
+import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { ApiError, resolveProject, type Client } from "./client.ts";
 import { load } from "./config.ts";
@@ -62,21 +63,31 @@ export const CATEGORY_DIR: Record<string, string> = {
   template: "requirements/templates",
 };
 
-async function postChat(path: string, body: unknown): Promise<SideResult> {
+/**
+ * The body comes back as well as the outcome.
+ *
+ * `POST /api/projects` does three things in one call — scaffolds the tree,
+ * writes description.md, and runs extract-brand inline — and reports what the
+ * branding found. Throwing that away meant the wizard had to re-extract to
+ * show a palette it had already fetched.
+ */
+async function postChat<T = unknown>(
+  path: string, body: unknown,
+): Promise<{ side: SideResult; body: T | null }> {
   try {
     const res = await fetch(chatUrl() + path, {
       method: "POST",
       headers: { "content-type": "application/json", ...chatAuth() },
       body: JSON.stringify(body),
     });
-    if (res.ok) return { state: "created" };
-    if (res.status === 409) return { state: "exists" };
-    const parsed = await res.json().catch(() => ({} as { error?: string }));
-    return { state: "failed", detail: parsed.error ?? res.statusText };
+    const parsed = await res.json().catch(() => null) as (T & { error?: string }) | null;
+    if (res.ok) return { side: { state: "created" }, body: parsed };
+    if (res.status === 409) return { side: { state: "exists" }, body: parsed };
+    return { side: { state: "failed", detail: parsed?.error ?? res.statusText }, body: parsed };
   } catch {
     // Not an error worth stopping for: the database side still succeeded, and
     // the tree can be created later. Say which half is missing.
-    return { state: "skipped", detail: `chatbot server not running at ${chatUrl()}` };
+    return { side: { state: "skipped", detail: `chatbot server not running at ${chatUrl()}` }, body: null };
   }
 }
 
@@ -86,9 +97,14 @@ export async function createProject(
   // The chatbot's route is what fetches the client's website and writes
   // design/style-guides/theme.json, so passing `website` here is what makes
   // branding happen at all.
-  const disk = await postChat("/api/projects", {
+  const created = await postChat<{
+    definitionWritten?: boolean;
+    brand?: BrandResult["theme"] & { logoSrc?: string };
+    brandError?: string | null;
+  }>("/api/projects", {
     project: input.name, description: input.description, website: input.website,
   });
+  const disk = created.side;
 
   let db: SideResult;
   try {
@@ -106,13 +122,24 @@ export async function createProject(
       ? { state: "exists", detail: (err as Error).message || undefined }
       : { state: "failed", detail: (err as Error).message };
   }
-  return { disk, db };
+  return {
+    disk, db,
+    extra: {
+      definitionWritten: created.body?.definitionWritten ?? false,
+      // Normalised to the same shape extractBrand() reports, so a caller can
+      // render one palette block whichever route produced it.
+      brand: created.body?.brand
+        ? { ...created.body.brand, logoSrc: undefined, hasLogo: Boolean(created.body.brand.logoSrc ?? created.body.brand.hasLogo) }
+        : null,
+      brandError: created.body?.brandError ?? null,
+    },
+  };
 }
 
 export async function createFeature(
   client: Client, input: { project: string; feature: string },
 ): Promise<DualResult> {
-  const disk = await postChat("/api/features", { project: input.project, feature: input.feature });
+  const disk = (await postChat("/api/features", { project: input.project, feature: input.feature })).side;
 
   let db: SideResult;
   try {
@@ -126,6 +153,87 @@ export async function createFeature(
       : { state: "failed", detail: (err as Error).message };
   }
   return { disk, db };
+}
+
+/**
+ * The project definition, on both sides.
+ *
+ * The database column is what `scyne project show` prints; the file at
+ * `projects/<p>/description.md` is what every SKILL reads before any discovery
+ * document. Writing only the first — which `scyne project describe` did, via
+ * an unauthenticated fetch whose 401 was swallowed by a bare `.catch` — leaves
+ * a definition that looks saved everywhere a person looks and reaches no agent.
+ */
+export async function saveProjectDefinition(
+  client: Client, input: { project: string; description: string },
+): Promise<DualResult> {
+  const text = input.description.trim();
+  if (text.length < 40) {
+    throw new ApiError(400, "a project definition needs at least a couple of sentences");
+  }
+
+  let db: SideResult;
+  try {
+    const proj = await resolveProject(client, input.project);
+    await client.patch(`/projects/${proj.id}`, { description: text });
+    db = { state: "created" };
+  } catch (err) {
+    db = { state: "failed", detail: (err as Error).message };
+  }
+
+  let disk: SideResult;
+  let extra: Record<string, unknown> = {};
+  try {
+    const res = await fetch(chatUrl() + "/api/project-description", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...chatAuth() },
+      body: JSON.stringify({ project: input.project, description: text }),
+    });
+    if (res.ok) {
+      const parsed = await res.json().catch(() => ({} as { path?: string; bytes?: number }));
+      extra = { path: parsed.path, bytes: parsed.bytes };
+      disk = { state: "created", detail: `${parsed.path} (${parsed.bytes ?? 0} bytes)` };
+    } else {
+      const parsed = await res.json().catch(() => ({} as { error?: string; message?: string }));
+      disk = { state: "failed", detail: parsed.message ?? parsed.error ?? res.statusText };
+    }
+  } catch {
+    disk = { state: "skipped", detail: `chatbot server not running at ${chatUrl()}` };
+  }
+
+  return { disk, db, extra };
+}
+
+/** What `/api/brand/extract` reports back, minus the inlined logo data URI. */
+export interface BrandResult {
+  url: string;
+  rerendered: boolean;
+  theme: {
+    brand?: string; brandDeep?: string; accent?: string;
+    logoText?: string; fontFamily?: string; hasLogo?: boolean;
+  } | null;
+}
+
+/**
+ * Pull a client's palette, wordmark and logo off their website.
+ *
+ * Not dual: branding is a file the renderer reads and the database holds no
+ * copy of it. Synchronous, unlike a stage trigger — it writes theme.json and
+ * re-renders, so the caller can report the colours and be corrected.
+ */
+export async function extractBrand(input: { project: string; url: string }): Promise<BrandResult> {
+  const res = await fetch(chatUrl() + "/api/brand/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...chatAuth() },
+    body: JSON.stringify({ project: input.project, url: input.url }),
+  }).catch(() => {
+    throw new ApiError(503, `chatbot server not running at ${chatUrl()}`);
+  });
+  if (!res.ok) {
+    const parsed = await res.json().catch(() => ({} as { error?: string; message?: string }));
+    throw new ApiError(res.status, parsed.message ?? parsed.error ?? res.statusText);
+  }
+  return res.json() as Promise<BrandResult>;
 }
 
 export interface UploadInput {
@@ -144,8 +252,26 @@ export interface UploadInput {
  * later. The reverse order would risk a file on disk that nothing knows about.
  */
 export async function uploadDocument(client: Client, input: UploadInput): Promise<DualResult> {
-  const bytes = await readFile(input.file);
-  const name = basename(input.file);
+  // `~` is expanded by a SHELL, and the session is not one — a path typed into
+  // `/upload` reaches here verbatim, so `~/Downloads/x.pdf` would be read as a
+  // directory literally named "~".
+  const local = input.file.startsWith("~/")
+    ? resolve(homedir(), input.file.slice(2))
+    : input.file;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(local);
+  } catch (err) {
+    // ENOENT's default text names the resolved path and nothing else, which
+    // reads like a server error inside a session that never mentions the
+    // filesystem. Say it is a local file that is not there.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new ApiError(400, `no such file on this machine: ${local}`);
+    if (code === "EISDIR") throw new ApiError(400, `that is a directory, not a file: ${local}`);
+    throw err;
+  }
+  const name = basename(local);
   const dir = input.as ? CATEGORY_DIR[input.as] : null;
   if (input.as && !dir) {
     throw new ApiError(400, `--as must be one of ${Object.keys(CATEGORY_DIR).join(", ")}`);

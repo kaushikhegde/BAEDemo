@@ -50,6 +50,17 @@ const PERMANENT = [
   /invalid api key/i,
   /authentication[_ ]error/i,
   /permission denied/i,
+  // Every vendor words a rejected credential differently, and matching only
+  // Anthropic's phrasing made a bad key look transient on every other adapter.
+  // Measured: a Codex run against a misconfigured endpoint fails in ~3s with
+  // `401 Unauthorized: Incorrect API key provided` — no `result` event and
+  // well inside the transient window, so it matched the "died cheaply, retry
+  // it" rule exactly and burned a duplicate run on every advance, with the
+  // real cause buried under the retry.
+  /incorrect api key/i,
+  /\b401\b[^\n]*unauthorized/i,
+  /unauthorized[^\n]*\b401\b/i,
+  /\b403\b[^\n]*forbidden/i,
 ] as const;
 
 export interface FailureVerdict {

@@ -37,7 +37,34 @@ interface ConfigResponse {
     label?: string;
     params?: string[];
     variantOf?: string | null;
+    stepList?: Array<{ type: string; phase?: string }>;
   }>;
+}
+
+/** Where an issue is, in terms a person can act on: `5/6 gate`. */
+export interface WorkflowSteps {
+  count: number;
+  /** One entry per step, in order: `exec`, `agent`, `attach`, `gate`, `flow`. */
+  types: string[];
+}
+
+/**
+ * How long each workflow is, and what each step does.
+ *
+ * `step_index` on its own is a number with no denominator — "step 4" tells a
+ * reader nothing about whether the run is nearly done or barely started, and
+ * nothing about whether it is parked on a gate or still generating. The engine
+ * already publishes both on `GET /config`, so the answer is fetched rather
+ * than guessed from the workflow name.
+ */
+export async function fetchWorkflowSteps(client: Client): Promise<Record<string, WorkflowSteps>> {
+  const cfg = await client.get<ConfigResponse>("/config");
+  const steps: Record<string, WorkflowSteps> = {};
+  for (const w of cfg.workflows ?? []) {
+    if (!w?.key || !Array.isArray(w.stepList)) continue;
+    steps[w.key] = { count: w.stepList.length, types: w.stepList.map(s => s?.type ?? "?") };
+  }
+  return steps;
 }
 
 export async function fetchStages(client: Client): Promise<Record<string, Stage>> {

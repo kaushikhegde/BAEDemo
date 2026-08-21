@@ -8,6 +8,7 @@ import path from "node:path";
 import http from "node:http";
 import { WebSocketServer, WebSocket as WSWebSocket } from "ws";
 import { chat } from "./llm.js";
+import * as store from "./store.js";
 // The local binding stays `paperclip` on purpose: 33 call sites below, none
 // of which needed to change when the backend did. Renaming it and swapping
 // the backend in one pass would be two bugs wearing one coat.
@@ -126,7 +127,7 @@ function extractLinks(bodies: string[]): { confluence: string[]; jira: string[] 
 app.post("/api/chat", async (req, res) => {
   try {
     const { messages, target, uiContext } = req.body;
-    const result = await chat(messages, target, uiContext);
+    const result = await chat(messages, target, uiContext, tokenFor(req));
     res.json(result);
   } catch (e: any) {
     console.error(e);
@@ -1275,41 +1276,13 @@ app.post("/api/project-description", async (req, res) => {
   }
 });
 
-app.get("/api/features", async (_req, res) => {
+app.get("/api/features", async (req, res) => {
+  // The DATABASE, over the orchestrator's API — not a walk of projects/ on
+  // disk. The two disagree the moment a reset clears one and leaves the other,
+  // and this endpoint feeds the target picker: a feature listed here that the
+  // orchestrator has never heard of is one every trigger would refuse.
   try {
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const ws = WORKSPACE_PATH;
-    const projectsDir = path.join(ws, "projects");
-    const result: Record<string, { name: string; counts: Record<string, number> }[]> = {};
-    try {
-      const projects = await fs.readdir(projectsDir, { withFileTypes: true });
-      for (const p of projects) {
-        if (!p.isDirectory()) continue;
-        const features = await fs.readdir(path.join(projectsDir, p.name), { withFileTypes: true });
-        result[p.name] = [];
-        for (const s of features) {
-          if (!s.isDirectory()) continue;
-          // A project directory holds features PLUS the project's own folders.
-          // Only the former are features — without this, `solutions/`,
-          // `documents/` and `design/` appear in the target picker as soon as a
-          // project generates anything.
-          if (PROJECT_OWN_DIRS.has(s.name.toLowerCase())) continue;
-          const subPath = path.join(projectsDir, p.name, s.name);
-          const subs = await fs.readdir(subPath, { withFileTypes: true });
-          const counts: Record<string, number> = {};
-          for (const sub of subs) {
-            if (!sub.isDirectory()) continue;
-            const files = await fs.readdir(path.join(subPath, sub.name));
-            counts[sub.name] = files.length;
-          }
-          result[p.name].push({ name: s.name, counts });
-        }
-      }
-    } catch (e) {
-      // No projects/ dir yet — return empty
-    }
-    res.json(result);
+    res.json(await store.available(tokenFor(req)));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

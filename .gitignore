@@ -8,6 +8,12 @@
 .env
 .env.local
 .env.*.local
+# Any copy of it. `.env` was ignored and `.env.bak` was not, so the usual
+# instinct before editing a secrets file produced an untracked file holding
+# every credential, one `git add -A` from the history. The negation keeps the
+# committed template visible.
+.env.*
+!.env.example
 *.pem
 *.key
 
