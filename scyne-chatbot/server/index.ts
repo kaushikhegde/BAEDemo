@@ -19,6 +19,8 @@ import { orchestrator as paperclip } from "./orchestrator.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
+import { slugProjectName, isNewProjectName } from "./names.js";
+import { listDocuments, deleteDocument, resolveDocument } from "./services/documents.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
 import { ensureAdoProject } from "./services/adoProject.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
@@ -345,7 +347,13 @@ function deriveProjectKey(project: string): string {
  */
 interface DocCount { md: number; convertible: number; other: number; readable: number }
 
-const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules"]);
+// `original-files` is the ARCHIVE — every file in it is a source the converter
+// already replaced with a markdown sibling that this walk counts separately.
+// Without it, `countFeatureDocs` counted each converted document twice and, far
+// worse, went on reporting documents for a feature whose `requirements/` had
+// been emptied. `countProjectDocs` skipped it explicitly and this did not, so
+// the two answered differently about the same tree.
+const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules", "original-files"]);
 /**
  * Directories under projects/<project>/ that belong to the PROJECT, not to a
  * feature. Kept in step with PROJECT_OWN_DIRS in scripts/pipeline.mjs — the CLI
@@ -1288,29 +1296,10 @@ app.get("/api/runs/:runId/transcript", async (req, res) => {
 
 const SAFE_PROJECT = /^[A-Za-z0-9._ &-]+$/;
 
-/**
- * What a NEW project may be called. Stricter than SAFE_PROJECT by one
- * character: no spaces.
- *
- * FEATURES keep their spaces — "Interim Benefit", "Appeals & Reviews" — and
- * always will; every command that interpolates one quotes it. A project name
- * is different because it is also the Azure DevOps project name, the wiki path
- * segment, the `--project` argument on every CLI verb, and the folder every
- * agent resolves paths against. `SA Demo` was all four, and it reached
- * `stage.mjs` as `SA` because one generated command forgot a pair of quotes.
- * Those quotes are all in place now, so this rule is not what makes spaces
- * work — it is what stops a name from depending on every future caller
- * remembering.
- *
- * Deliberately CREATION-only. SAFE_PROJECT still admits spaces everywhere a
- * project is read, because projects with spaces already exist and refusing to
- * open one would be a far worse bug than the one this prevents.
- */
-const SAFE_NEW_PROJECT = /^[A-Za-z0-9._&-]+$/;
-
-/** `SA Demo` → `SA-Demo`, to offer rather than to apply. */
-const suggestProjectName = (name: string): string =>
-  name.trim().replace(/\s+/g, "-").replace(/-+/g, "-");
+// What a NEW project may be called, and what a typed name becomes, live in
+// `./names.ts` — one rule the wizard, this route and the CLI all share. There
+// used to be a copy here that the wizard did not use, which is how the Next
+// button came to light up on a name this route was about to refuse.
 
 app.get("/api/project-description/:project", async (req, res) => {
   try {
@@ -1537,21 +1526,21 @@ const FEATURE_SCAFFOLD = [
 
 app.post("/api/projects", async (req, res) => {
   try {
-    const project = String(req.body?.project || "").trim();
+    const requested = String(req.body?.project || "").trim();
+    // Slugged rather than refused. The rule is unchanged — that name becomes
+    // the Azure DevOps project, the wiki path segment and the folder every
+    // agent resolves against — but a person types "SA Power Networks" and the
+    // wizard shows them what it will be created as before they commit. One
+    // name results, so there is no display-name-to-slug mapping to keep in step.
+    const project = slugProjectName(requested);
     const description = String(req.body?.description || "").trim();
     const website = String(req.body?.website || "").trim();
 
-    if (!project || !SAFE_PROJECT.test(project)) {
-      return res.status(400).json({ error: "bad_project", message: "Use letters, numbers, and . _ & - only." });
-    }
-    if (!SAFE_NEW_PROJECT.test(project)) {
-      // Named separately from `bad_project` so a caller can offer the
-      // suggestion instead of repeating a rule the person just broke.
+    if (!isNewProjectName(project)) {
       return res.status(400).json({
-        error: "project_name_has_spaces",
-        suggestion: suggestProjectName(project),
-        message: `A project name cannot contain spaces — try "${suggestProjectName(project)}". ` +
-          `Feature names still can.`,
+        error: "bad_project",
+        requestedName: requested,
+        message: "Use letters, numbers, spaces and . _ & - only (not starting or ending with a dot).",
       });
     }
     const root = path.join(WORKSPACE_PATH, "projects", project);
@@ -1567,7 +1556,24 @@ app.post("/api/projects", async (req, res) => {
         hasTarget = Boolean(p?.adoTarget?.project);
       } catch { /* no record — treat as missing */ }
       if (hasTarget) {
-        return res.status(409).json({ error: "exists", message: `A project called "${project}" already exists.` });
+        return res.status(409).json({
+          error: "exists", project, requestedName: requested,
+          message: requested === project
+            ? `A project called "${project}" already exists.`
+            : `"${requested}" becomes "${project}", and a project by that name already exists.`,
+        });
+      }
+      // Completing an incomplete project rewrites its Azure DevOps target and
+      // its branding, so it must be the project the caller actually named.
+      // `SA Demo` and `SA-Demo` are two different projects that already exist
+      // side by side here — slugging the first onto the second would hand one
+      // client's tree another client's target, in a route that reports success.
+      if (requested !== project) {
+        return res.status(409).json({
+          error: "slug_collision", project, requestedName: requested,
+          message: `"${requested}" becomes "${project}", which already exists but is incomplete. ` +
+            `If that is the project you meant, enter "${project}" exactly to finish setting it up.`,
+        });
       }
       console.log(`[projects] ${project} exists but has no Azure DevOps target — completing it`);
     }
@@ -1635,8 +1641,31 @@ app.post("/api/projects", async (req, res) => {
       }
     }
 
-    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ado=${Boolean(adoTarget)})`);
-    res.json({ ok: true, project, definitionWritten, brand, brandError, adoTarget, adoError });
+    // The DATABASE half. `scyne project create` has written both sides since
+    // cli/dual.ts was added; this route wrote only the tree, so a project made
+    // in the browser existed for every agent and for no API. Best-effort, like
+    // the Azure DevOps and branding steps above — a project with a tree and no
+    // row is incomplete, not broken, and re-posting this route completes it.
+    const db = await store.createProject(tokenFor(req), { name: project, description, website });
+    if (db.state === "failed") {
+      console.error(`[projects] ${project}: not recorded in the database — ${db.reason}`);
+    } else if (db.reason) {
+      console.log(`[projects] ${project}: database — ${db.state} (${db.reason})`);
+    }
+
+    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ado=${Boolean(adoTarget)}, db=${db.state})`);
+    res.json({
+      ok: true, project, requestedName: requested,
+      // Only when it differs — a caller should not have to compare two strings
+      // to decide whether there is anything to tell the person.
+      slugged: requested !== project ? { from: requested, to: project } : null,
+      definitionWritten, brand, brandError, adoTarget, adoError,
+      db,
+      // Named separately from `db` because it is the one state a person has to
+      // act on: everything downstream that resolves a project BY NAME will come
+      // back empty until the row exists.
+      dbError: db.state === "failed" ? db.reason ?? "not recorded in the database" : null,
+    });
   } catch (e: any) {
     console.error("[projects] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -1672,8 +1701,17 @@ app.post("/api/features", async (req, res) => {
     } catch { /* good — it is new */ }
 
     for (const d of FEATURE_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
-    console.log(`[features] created ${project}/${feature}`);
-    res.json({ ok: true, project, feature });
+
+    const db = await store.createFeature(tokenFor(req), { project, feature });
+    if (db.state === "failed") {
+      console.error(`[features] ${project}/${feature}: not recorded in the database — ${db.reason}`);
+    }
+
+    console.log(`[features] created ${project}/${feature} (db=${db.state})`);
+    res.json({
+      ok: true, project, feature, db,
+      dbError: db.state === "failed" ? db.reason ?? "not recorded in the database" : null,
+    });
   } catch (e: any) {
     console.error("[features] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -2023,6 +2061,158 @@ async function afterConversion(dir: string, savedName: string): Promise<string> 
   return savedName;
 }
 
+// 6b. Documents — what a person can see, replace and remove.
+//
+// DISK is authoritative here and the database row is reconciled alongside it,
+// in that order, because disk is what every stage reads: the 409 gates count
+// `.md` under `projects/<p>/`, `stage.mjs` copies from the folder tree, and
+// every skill reads its working folder. A delete that retired only the row
+// would report success and change nothing a single agent does.
+
+/** Both levels, plus what is now out of date because of them. */
+app.get("/api/documents", async (req, res) => {
+  try {
+    const project = String(req.query.project || "").trim();
+    const feature = String(req.query.feature || "").trim();
+    if (!project) return res.status(400).json({ error: "missing_target", message: "project is required" });
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
+
+    const docs = await listDocuments(WORKSPACE_PATH, project, feature || null);
+    // Returned from the SAME call, so the tab cannot render a document list and
+    // a staleness banner that disagree about what is on disk.
+    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
+
+    res.json({
+      project, feature: feature || null,
+      documents: docs,
+      counts: { project: docs.project.length, feature: docs.feature.length },
+      stale,
+    });
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Remove one document.
+ *
+ * Takes the archived original with it. `convert-to-md.mjs` MOVES a source into
+ * `original-files/` rather than deleting it, so removing only the markdown
+ * leaves the thing that produced it — and the next conversion pass puts the
+ * document straight back, long after the person who deleted it stopped looking.
+ */
+app.delete("/api/documents", async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    const docPath = String(req.body?.path || "").trim();
+    if (!project || !docPath) {
+      return res.status(400).json({ error: "missing_target", message: "project and path are required" });
+    }
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
+
+    let result;
+    try {
+      result = await deleteDocument(WORKSPACE_PATH, project, feature || null, docPath);
+    } catch (e: any) {
+      // A path outside `documents/` is somebody pointing a delete at a
+      // generated artefact, not a server fault.
+      return res.status(400).json({ error: "bad_path", message: e?.message ?? String(e) });
+    }
+    if (!result.found) {
+      return res.status(404).json({ error: "no_document", message: `No document at ${docPath}.` });
+    }
+
+    const db = await store.deleteDocumentRow(tokenFor(req), { project, feature: feature || null, path: docPath });
+    if (db.state === "failed") {
+      console.warn(`[documents] ${project}: row not retired for ${docPath} — ${db.reason}`);
+    }
+
+    // Recomputed AFTER the delete: removing an input is exactly as much a
+    // change as replacing one, and the caller decides what to re-run from this.
+    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
+    console.log(`[documents] deleted ${project}${feature ? "/" + feature : ""}/${docPath} (db=${db.state})`);
+    res.json({ ok: true, removed: result.removed, db, stale });
+  } catch (e: any) {
+    console.error("[documents] delete failed:", e);
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Replace one document with a new file.
+ *
+ * The old is removed FIRST — including its archived original — so the
+ * replacement keeps its own name instead of landing beside the thing it was
+ * meant to supersede as `handling (1).md`. Two documents where the client
+ * expected one is the worse failure: both get staged, and the pack quietly
+ * cites a superseded policy.
+ */
+app.put("/api/documents", upload.single("file"), async (req, res) => {
+  try {
+    const project = String(req.body?.project || "").trim();
+    const feature = String(req.body?.feature || "").trim();
+    const docPath = String(req.body?.path || "").trim();
+    if (!project || !docPath) {
+      return res.status(400).json({ error: "missing_target", message: "project and path are required" });
+    }
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
+    if (!req.file) return res.status(400).json({ error: "file is required (field name: 'file')" });
+
+    let target: string;
+    try {
+      target = resolveDocument(WORKSPACE_PATH, project, feature || null, docPath);
+    } catch (e: any) {
+      return res.status(400).json({ error: "bad_path", message: e?.message ?? String(e) });
+    }
+    const dir = path.dirname(target);
+    const existed = await fs.access(target).then(() => true, () => false);
+    if (!existed) {
+      // Replace means replace. Creating one here would make a mistyped path
+      // look like a successful edit of a document nobody can find afterwards.
+      return res.status(404).json({ error: "no_document", message: `No document at ${docPath} to replace.` });
+    }
+
+    await deleteDocument(WORKSPACE_PATH, project, feature || null, docPath);
+
+    await fs.mkdir(dir, { recursive: true });
+    const savedName = await uniqueName(dir, req.file.originalname);
+    await fs.writeFile(path.join(dir, savedName), req.file.buffer);
+
+    // Converted HERE, as both upload routes do and for the same reason: every
+    // stage's 409 gate counts `.md`, and staging runs after that gate.
+    const conversion = await runHelper("convert-to-md.mjs", feature ? [project, feature] : [project]);
+    if (!conversion.ok) {
+      console.warn(
+        `[documents] convert-to-md exited ${conversion.code} for ${project}${feature ? "/" + feature : ""}:`,
+        conversion.stderr.trim().slice(-400));
+    }
+    const readableName = await afterConversion(dir, savedName);
+    const levelRoot = feature
+      ? path.join(WORKSPACE_PATH, "projects", project, feature)
+      : path.join(WORKSPACE_PATH, "projects", project);
+    const newPath = path.relative(levelRoot, path.join(dir, readableName));
+
+    const db = await store.createDocumentRow(tokenFor(req), {
+      project, feature: feature || null, path: newPath,
+      content: await fs.readFile(path.join(dir, readableName)).catch(() => req.file!.buffer),
+    });
+    if (db.state === "failed") {
+      console.warn(`[documents] ${project}: row not written for ${newPath} — ${db.reason}`);
+    }
+
+    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
+    console.log(`[documents] replaced ${project}${feature ? "/" + feature : ""}/${docPath} with ${newPath} (db=${db.state})`);
+    res.json({
+      ok: true, replaced: docPath, path: newPath, filename: readableName,
+      converted: readableName !== savedName, db, stale,
+    });
+  } catch (e: any) {
+    console.error("[documents] replace failed:", e);
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.post("/api/upload/project", upload.single("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
@@ -2042,10 +2232,26 @@ app.post("/api/upload/project", upload.single("file"), async (req, res) => {
         conversion.stderr.trim().slice(-400));
     }
     const readableName = await afterConversion(dir, savedName);
+
+    // The DATABASE half, which this route never wrote. `/docs`, the document
+    // counts in the assistant's prompt and the versioned history behind a
+    // replacement all read rows — so a document uploaded here reached every
+    // agent and was invisible to every person. Best-effort: the file is on
+    // disk, which is what the stages read.
+    const db = await store.createDocumentRow(tokenFor(req), {
+      project, path: path.join("documents", readableName),
+      content: await fs.readFile(path.join(dir, readableName)).catch(() => req.file!.buffer),
+    });
+    if (db.state === "failed") {
+      console.warn(`[upload/project] ${project}: row not written for ${readableName} — ${db.reason}`);
+    }
+
     res.json({
       kind: "file",
       scope: "project",
       filename: readableName,
+      path: path.join("documents", readableName),
+      db,
       // Was THIS file converted — not "did the converter exit 0", which it also
       // does for a directory of markdown it had nothing to do.
       converted: readableName !== savedName,
@@ -2111,11 +2317,27 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         entries: transcribed.entries,
         originalFilename: req.file.originalname,
       });
+      // A transcribed recording is a DOCUMENT — it lands in Transcripts/ as
+      // markdown and the BA reads it as the primary source of stories. It was
+      // the one upload path with no row at all, so a meeting recorded in the
+      // browser never appeared in `/docs` or in the assistant's counts.
+      const transcriptRoot = path.join(WORKSPACE_PATH, "projects", project, feature);
+      const transcriptPath = path.relative(transcriptRoot, path.join(WORKSPACE_PATH, result.relativePath));
+      const transcriptDb = await store.createDocumentRow(tokenFor(req), {
+        project, feature, path: transcriptPath,
+        content: Buffer.from(await fs.readFile(path.join(WORKSPACE_PATH, result.relativePath), "utf8"), "utf8"),
+      });
+      if (transcriptDb.state === "failed") {
+        console.warn(`[upload] ${project}/${feature}: row not written for ${transcriptPath} — ${transcriptDb.reason}`);
+      }
+
       return res.json({
         kind: "transcript",
         subfolder: "transcripts",
         filename: result.filename,
         relativePath: result.relativePath,
+        path: transcriptPath,
+        db: transcriptDb,
         entryCount: transcribed.entries.length,
         modelUsed: transcribed.modelUsed,
       });
@@ -2152,10 +2374,23 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
     const readableName = await afterConversion(targetDir, savedName);
 
+    // Same missing half as the project route above.
+    const featureRoot = path.join(WORKSPACE_PATH, "projects", project, feature);
+    const relPath = path.relative(featureRoot, path.join(targetDir, readableName));
+    const db = await store.createDocumentRow(tokenFor(req), {
+      project, feature, path: relPath,
+      content: await fs.readFile(path.join(targetDir, readableName)).catch(() => req.file!.buffer),
+    });
+    if (db.state === "failed") {
+      console.warn(`[upload] ${project}/${feature}: row not written for ${relPath} — ${db.reason}`);
+    }
+
     return res.json({
       kind: "file",
       subfolder: route.subfolder,
       filename: readableName,
+      path: relPath,
+      db,
       converted: readableName !== savedName,
       relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, readableName)),
     });

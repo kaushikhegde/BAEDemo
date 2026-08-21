@@ -42,6 +42,43 @@ export const RENDER_CMD = "node scripts/render-companion-app.mjs <project>";
 
 const req = (scope, p, from, extra = {}) => ({ scope, path: p, from, ...extra });
 
+/**
+ * The four folders a client's own discovery material lands in, at feature level.
+ *
+ * Enumerated rather than expressed as "requirements/ minus some exclusions",
+ * because the other two things under `requirements/` must NOT count as inputs:
+ * `templates/` is house style rather than content, and `project/` is staged
+ * DOWN from the parent on every run — its mtimes are copy times, so treating it
+ * as source would report every feature artefact stale immediately after staging.
+ */
+export const DISCOVERY_SUBFOLDERS = ["SOP", "Transcripts", "Notes", "UI"];
+
+/**
+ * Discovery documents as graph inputs.
+ *
+ * `scope: "feature"` is one feature's own tree. `scope: "features"` is EVERY
+ * feature's — which is what a project stage reads: `stageAllDocuments` in
+ * stage.mjs walks each feature's discovery tree so a client's capability map
+ * covers all the work discovered so far, not only what happened to be uploaded
+ * at project level.
+ */
+const discovery = (scope, subs = DISCOVERY_SUBFOLDERS) =>
+  subs.map((sub) => req(scope, `requirements/${sub}`, "discovery"));
+
+/**
+ * Input origins that are not stages.
+ *
+ * `from` normally names another stage, and staleness reads STAGES[from] for a
+ * label. Raw client documents have no stage that produced them, so without this
+ * a refresh prompt said an artefact was superseded by "documents" — a key, not
+ * something to show the person deciding whether to spend twenty-five minutes
+ * regenerating.
+ */
+export const SOURCES = {
+  documents: { label: "Project documents" },
+  discovery: { label: "Discovery documents" },
+};
+
 export const STAGES = {
   // ---------------------------------------------------------------- project
   capabilities: {
@@ -60,7 +97,7 @@ export const STAGES = {
       "solutions/Capabilities/outputs/process-model.json",
     ],
     requires: [],
-    enriches: [req("project", "documents", "documents")],
+    enriches: [req("project", "documents", "documents"), ...discovery("features")],
     then: "node scripts/render-capability-map.mjs <project> --validate-only",
   },
 
@@ -83,7 +120,7 @@ export const STAGES = {
     // is the whole reason the wizard runs these two in sequence rather than
     // together. Encoding it here keeps the CLI honest about the same thing.
     requires: [req("project", "solutions/Capabilities/outputs/capability-map.json", "capabilities")],
-    enriches: [req("project", "documents", "documents")],
+    enriches: [req("project", "documents", "documents"), ...discovery("features")],
     then: "node scripts/validate-experience.mjs <project>",
   },
 
@@ -104,6 +141,8 @@ export const STAGES = {
       req("project", "documents", "documents"),
       req("project", "solutions/Experience/outputs/personas.json", "personas"),
       req("project", "solutions/Capabilities/outputs/capability-process.md", "capabilities"),
+      // The BA reads requirements/{SOP,Transcripts,Notes,UI}/ in place.
+      ...discovery("feature"),
     ],
   },
 
@@ -133,6 +172,9 @@ export const STAGES = {
       req("feature", "solutions/DataModel/outputs", "datamodel"),
       req("feature", "solutions/Architecture/outputs", "architecture"),
       req("feature", "solutions/QA/outputs/test-cases.md", "qa"),
+      // Client-supplied designs under requirements/UI/ are AUTHORITATIVE, and
+      // the rest of the discovery tree is staged into solutions/UI/documents/.
+      ...discovery("feature"),
     ],
     then: "node scripts/render-mockups.mjs <project> <feature>",
   },
@@ -168,6 +210,9 @@ export const STAGES = {
       req("project", "documents", "documents"),
       req("project", "solutions/Capabilities/outputs/capability-process.md", "capabilities"),
       req("feature", "solutions/DataModel/outputs", "datamodel"),
+      // Current-state and integration documents live in Notes when they exist
+      // at all — stageArchitecture copies them in as `landscape/`.
+      ...discovery("feature", ["Notes"]),
     ],
   },
 
@@ -308,6 +353,21 @@ export function resolveInput(workspace, input, project, feature) {
   return path.join(root, input.path);
 }
 
+/**
+ * Every absolute path one requires/enriches entry covers.
+ *
+ * All scopes but `features` resolve to exactly one path, so this is
+ * `resolveInput` in an array for them. `features` is the exception a project
+ * stage needs: it spans every feature under the project, because that is what
+ * `stageAllDocuments` reads. It is async for that reason alone — the feature
+ * list comes off disk.
+ */
+export async function resolveInputPaths(workspace, input, project, feature) {
+  if (input.scope !== "features") return [resolveInput(workspace, input, project, feature)];
+  const features = await listFeatures(workspace, project);
+  return features.map((f) => path.join(featureDir(workspace, project, f), input.path));
+}
+
 export const exists = async (p) => {
   try { await fs.access(p); return true; } catch { return false; }
 };
@@ -413,16 +473,39 @@ export async function producedAt(workspace, key, project, feature) {
   return newest;
 }
 
-/** The newest mtime under a path, following one level into a directory. */
-async function newestMtime(p) {
+/**
+ * The newest mtime anywhere under a path.
+ *
+ * It followed exactly ONE level in, which was true enough for
+ * `projects/<p>/documents/` — flat in practice — and wrong for every feature
+ * discovery folder, where the files sit under `requirements/<Sub>/`. A walk
+ * that stops at the first directory reports null, and null means "no input
+ * changed", so the deeper the document the more certainly it was ignored.
+ */
+async function newestMtime(p, depth = 0) {
   const st = await fs.stat(p).catch(() => null);
   if (!st) return null;
   if (st.isFile()) return st.mtimeMs;
+  // Discovery trees are two or three deep. The bound is a cycle guard for a
+  // symlinked directory, not a real limit on how a client files their documents.
+  if (depth > 8) return null;
   let newest = null;
   for (const entry of await fs.readdir(p, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isFile()) continue;
-    const s = await fs.stat(path.join(p, entry.name)).catch(() => null);
-    if (s && (newest === null || s.mtimeMs > newest)) newest = s.mtimeMs;
+    if (entry.name.startsWith(".")) continue;
+    const at = entry.isDirectory()
+      ? await newestMtime(path.join(p, entry.name), depth + 1)
+      : (await fs.stat(path.join(p, entry.name)).catch(() => null))?.mtimeMs ?? null;
+    if (at !== null && (newest === null || at > newest)) newest = at;
+  }
+  return newest;
+}
+
+/** The newest mtime across every path one input covers. */
+async function newestInput(workspace, input, project, feature) {
+  let newest = null;
+  for (const p of await resolveInputPaths(workspace, input, project, feature)) {
+    const at = await newestMtime(p);
+    if (at !== null && (newest === null || at > newest)) newest = at;
   }
   return newest;
 }
@@ -434,7 +517,10 @@ export async function unmetRequirements(workspace, key, project, feature, flags 
   const missing = [];
   for (const input of def.requires ?? []) {
     if (input.escape && flags.has(input.escape)) continue;
-    if (await exists(resolveInput(workspace, input, project, feature))) continue;
+    const paths = await resolveInputPaths(workspace, input, project, feature);
+    let found = false;
+    for (const p of paths) if (await exists(p)) { found = true; break; }
+    if (found) continue;
     missing.push(input);
   }
   return missing;
@@ -461,9 +547,9 @@ export async function staleness(workspace, project, feature) {
 
     const superseded = [];
     for (const input of [...(def.requires ?? []), ...(def.enriches ?? [])]) {
-      const at = await newestMtime(resolveInput(workspace, input, project, feature));
+      const at = await newestInput(workspace, input, project, feature);
       if (at === null || at <= own) continue;
-      const fromDef = STAGES[input.from];
+      const fromDef = STAGES[input.from] ?? SOURCES[input.from];
       // Only report a superseding artefact once, even when several of its files
       // are read by the stale stage.
       if (superseded.some((s) => s.key === input.from)) continue;

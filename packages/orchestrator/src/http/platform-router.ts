@@ -56,6 +56,7 @@ export const PLATFORM_ROUTES = [
   { method: "GET",    path: "/projects/{id}/documents" },
   { method: "POST",   path: "/projects/{id}/documents" },
   { method: "GET",    path: "/projects/{id}/documents/{docId}" },
+  { method: "DELETE", path: "/projects/{id}/documents" },
   { method: "GET",    path: "/projects/{id}/actions" },
   { method: "GET",    path: "/actions" },
   { method: "GET",    path: "/admin/overview" },
@@ -518,6 +519,43 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const content = await docs.read(String(req.params.docId));
     if (!content) return missing(res, "document");
     ok(res, { id: req.params.docId, encoding: "base64", content: content.toString("base64") });
+  }));
+
+  /**
+   * Retire the current version at a path.
+   *
+   * By PATH rather than by document id, matching `put()` and `get()` — a path
+   * is what a caller knows and what the level predicate is built around, and
+   * the id of a version is an implementation detail of the history.
+   *
+   * The BYTES survive: content is addressed by its own hash and shared by every
+   * path holding the same file, so removing the blob would silently corrupt the
+   * others. `remove()` clears `is_current`, which is also what lets the same
+   * path be uploaded again afterwards as a new version rather than colliding
+   * with the partial unique index.
+   */
+  r.delete("/projects/:id/documents", requireAuth(), wrap(async (req, res) => {
+    const row = await project(req, res, "editor"); if (!row) return;
+    const docPath = req.query.path ? String(req.query.path) : "";
+    // Without this, a caller that forgot the parameter would be asking to
+    // delete the document at the empty path — which reads far too much like
+    // asking to delete all of them.
+    if (!docPath) return bad(res, "path is required");
+
+    const featureName = req.query.feature ? String(req.query.feature) : null;
+    const feature = featureName ? await platform.getFeatureByName(row.id, featureName) : null;
+    // An unknown feature must NOT fall through to project level: that is how a
+    // delete aimed at one feature takes a client-wide policy document instead.
+    if (featureName && !feature) return missing(res, "feature");
+
+    const removed = await docs.remove(row.id, feature?.id ?? null, docPath);
+    if (!removed) return missing(res, "document");
+
+    await audit(req, "doc.delete", {
+      projectId: row.id, featureId: feature?.id ?? null, targetType: "document",
+      detail: { path: docPath, feature: featureName },
+    });
+    ok(res, { ok: true, path: docPath, feature: featureName });
   }));
 
   // ----------------------------------------------------------------- audit

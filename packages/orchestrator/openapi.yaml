@@ -1399,6 +1399,19 @@ paths:
           description: OK
         "401": { description: Authentication required }
         "404": { description: Not found, or not visible to the caller }
+    delete:
+      operationId: deleteDocument
+      summary: Retire the current version at a path. Bytes are kept — other paths may share them. Needs editor.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+        - { name: feature, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "400": { description: path is required }
+        "401": { description: Authentication required }
+        "404": { description: Not found, or not visible to the caller }
   /projects/{id}/documents/{docId}:
     get:
       operationId: readDocument

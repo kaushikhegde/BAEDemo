@@ -164,6 +164,106 @@ export const triggerPersonas = (project: string) =>
 export const triggerUiMockups = (project: string, feature: string) =>
   postStageTrigger("/api/ui-mockups/trigger", "UI mockups trigger", project, feature);
 
+/**
+ * Re-run one stage, by its pipeline key.
+ *
+ * The Documents tab knows which artefacts are stale as STAGE KEYS — that is
+ * what `/api/staleness` reports — and every other caller in this file knows a
+ * named endpoint. One table rather than a switch at the call site, so a stage
+ * added to the pipeline fails to compile here instead of silently offering a
+ * re-run button that does nothing.
+ */
+const STAGE_TRIGGERS: Record<string, (project: string, feature: string) => Promise<any>> = {
+  capabilities: (project) => triggerCapabilityMap(project),
+  personas: (project) => triggerPersonas(project),
+  // The requirements flow takes its Azure DevOps parameters from the server's
+  // own defaults, so a re-run needs only the target.
+  requirements: (project, feature) => postTrigger({ project, feature }),
+  ui: triggerUiMockups,
+  datamodel: triggerDataModel,
+  architecture: triggerSolutionArchitecture,
+  qa: triggerTestCases,
+  design: triggerSolutionDesign,
+};
+
+export const canRerun = (stageKey: string): boolean => stageKey in STAGE_TRIGGERS;
+
+export function rerunStage(stageKey: string, project: string, feature: string | null) {
+  const fire = STAGE_TRIGGERS[stageKey];
+  if (!fire) throw new Error(`no trigger for stage "${stageKey}"`);
+  return fire(project, feature ?? "");
+}
+
+// --- documents --------------------------------------------------------------
+
+export type DocumentKind = "markdown" | "image" | "audio" | "unconverted" | "other";
+
+export interface DocumentEntry {
+  name: string;
+  /** Relative to the document's own LEVEL root. */
+  path: string;
+  subfolder: string;
+  level: "project" | "feature";
+  feature: string | null;
+  bytes: number;
+  modifiedAt: string;
+  kind: DocumentKind;
+  /** The archived source this markdown was converted from, if there is one. */
+  original: string | null;
+}
+
+export interface DocumentsResult {
+  project: string;
+  feature: string | null;
+  documents: { project: DocumentEntry[]; feature: DocumentEntry[] };
+  counts: { project: number; feature: number };
+  /** Returned by the SAME call, so the list and the banner cannot disagree. */
+  stale: StaleArtefact[];
+}
+
+export async function listDocuments(project: string, feature?: string | null): Promise<DocumentsResult> {
+  const qs = new URLSearchParams({ project });
+  if (feature) qs.set("feature", feature);
+  const r = await apiFetch(`/api/documents?${qs}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new OpsError(r.status, body?.error ?? "error", body?.message ?? `Could not read documents (${r.status})`);
+  }
+  return r.json();
+}
+
+export async function deleteDocument(project: string, feature: string | null, docPath: string) {
+  const r = await apiFetch("/api/documents", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project, feature: feature ?? undefined, path: docPath }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || body?.error || `Delete failed (${r.status})`);
+  }
+  return r.json() as Promise<{ ok: true; removed: string[]; stale: StaleArtefact[] }>;
+}
+
+export async function replaceDocument(
+  project: string, feature: string | null, docPath: string, file: File,
+) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("project", project);
+  if (feature) form.append("feature", feature);
+  form.append("path", docPath);
+  const r = await apiFetch("/api/documents", { method: "PUT", body: form });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || body?.error || `Replace failed (${r.status})`);
+  }
+  return r.json() as Promise<{
+    ok: true; replaced: string; path: string; filename: string;
+    converted: boolean; stale: StaleArtefact[];
+  }>;
+}
+
 export type BrandTheme = {
   brand?: string;
   brandDeep?: string;
@@ -378,10 +478,16 @@ async function postJson(path: string, label: string, body: unknown) {
 
 export type CreateProjectResult = {
   ok: boolean;
+  /** The name it was CREATED under — slugged, and not necessarily what was typed. */
   project: string;
+  requestedName?: string;
+  /** Set only when the typed name and the created name differ. */
+  slugged: { from: string; to: string } | null;
   definitionWritten: boolean;
   brand: BrandTheme | null;
   brandError: string | null;
+  /** The database half. A project with a tree and no row is incomplete, not broken. */
+  dbError?: string | null;
 };
 
 export const createProject = (project: string, description?: string, website?: string) =>

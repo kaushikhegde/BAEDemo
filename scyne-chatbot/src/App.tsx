@@ -18,6 +18,7 @@ import { SuggestionChips } from "./components/SuggestionChips";
 import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
 import { Rail, type View } from "./components/Rail";
 import { IssuesView } from "./components/IssuesView";
+import { DocumentsView } from "./components/DocumentsView";
 import { SpendView } from "./components/SpendView";
 import { ActionsView } from "./components/ActionsView";
 import { Button } from "./components/ui/button";
@@ -27,7 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -198,7 +199,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [view, setViewRaw] = useState<View>(() => {
     if (typeof window === "undefined") return "workspace";
     const saved = window.localStorage.getItem("scyne_view");
-    return (saved === "issues" || saved === "spend" || saved === "actions" || saved === "history")
+    return (saved === "issues" || saved === "documents" || saved === "spend"
+            || saved === "actions" || saved === "history")
       ? saved : "workspace";
   });
   const setView = (v: View | ((prev: View) => View)) => {
@@ -730,6 +732,62 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             : `Couldn't raise that change: ${e?.message ?? e}`;
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: msg }]);
         }
+      } else if (toolUse?.name === "list_documents") {
+        // Read-only and answered inline, like extract_brand rather than a
+        // trigger: there is no issue to watch, and "what have we got" wants an
+        // answer in the conversation it was asked in.
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        if (proj) setTargetProject(proj);
+        try {
+          const r = await listDocuments(proj, feat || null);
+          const lines = [
+            ...r.documents.project.map((d) => `- \`${d.path}\` — ${d.subfolder}, ${Math.max(1, Math.round(d.bytes / 1024))} KB`),
+            ...r.documents.feature.map((d) => `- \`${d.path}\` — ${d.subfolder}, ${Math.max(1, Math.round(d.bytes / 1024))} KB`),
+          ];
+          setMessages((m) => [...m, {
+            id: crypto.randomUUID(), role: "assistant",
+            text: lines.length
+              ? `**${proj}${feat ? ` / ${feat}` : ""}** holds ${lines.length} document${lines.length === 1 ? "" : "s"}:\n\n${lines.join("\n")}\n\nYou can replace or remove any of them on the **Docs** tab.`
+              : `**${proj}${feat ? ` / ${feat}` : ""}** has no documents yet. Attach one with the paperclip, or drop it on the Docs tab.`,
+          }]);
+        } catch (e: any) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't read the documents: ${e?.message ?? e}` }]);
+        }
+      } else if (toolUse?.name === "delete_document") {
+        // The model PROPOSES; the person commits. Deleting a client's discovery
+        // document changes what every later stage reads, and a loose sentence is
+        // not consent — this is the same confirmation the Docs tab uses, for the
+        // same reason the pipeline puts a gate in front of everything that
+        // publishes.
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        const docPath = String(args?.path || "").trim();
+        if (proj) setTargetProject(proj);
+        if (!docPath) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: "I need the document's path — ask me to list the documents first." }]);
+        } else if (!window.confirm(
+          `Delete ${docPath} from ${proj}${feat ? ` / ${feat}` : ""}?\n\n` +
+          `The archived original goes with it, and every stage that reads it will be flagged out of date.`)) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Left \`${docPath}\` alone.` }]);
+        } else {
+          try {
+            const r = await deleteDocument(proj, feat || null, docPath);
+            setChipsKey((k) => k + 1);
+            const stale = r.stale?.map((x) => x.label ?? x.key) ?? [];
+            setMessages((m) => [...m, {
+              id: crypto.randomUUID(), role: "assistant",
+              text: `Deleted \`${docPath}\`${r.removed.length > 1 ? " and its archived original" : ""}.`
+                + (stale.length
+                  ? `\n\n${stale.length} artefact${stale.length === 1 ? "" : "s"} now predate their inputs: ${stale.join(", ")}. Want me to refresh them?`
+                  : ""),
+            }]);
+          } catch (e: any) {
+            setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't delete it: ${e?.message ?? e}` }]);
+          }
+        }
       } else if (toolUse?.name === "save_project_definition") {
         // Synchronous like extract_brand: it writes a file every skill reads, so
         // the user gets confirmation of the path rather than a queued issue.
@@ -1077,7 +1135,18 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         />
         <div className="flex-1 min-w-0">
 
-      {view === "issues" ? (
+      {view === "documents" ? (
+        <main className="px-6 lg:px-8 pt-6 pb-10">
+          {/* Scoped to the PINNED target, unlike Issues — a document belongs to
+              one project and one feature, and a list spanning clients is not a
+              thing anyone wants to delete from. */}
+          <DocumentsView
+            project={targetProject}
+            feature={targetFeature}
+            onRunStarted={(id) => { setParentIssueId(id); setView("workspace"); }}
+          />
+        </main>
+      ) : view === "issues" ? (
         <main className="px-6 lg:px-8 pt-6 pb-10">
           {/* No project/feature passed: the list is UNFILTERED by default and
               the filters are chosen there. Seeding them from the pinned target

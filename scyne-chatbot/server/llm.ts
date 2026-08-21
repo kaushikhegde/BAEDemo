@@ -140,6 +140,7 @@ function buildCompactPrompt(
     "- data model -> trigger_data_model | architecture -> trigger_solution_architecture",
     "- test cases -> trigger_test_cases | wireframes/mockups -> trigger_ui_mockups",
     "- change something already generated -> revise_artefact",
+    "- what documents are there -> list_documents | remove one -> delete_document",
     "- just picking a project/feature -> set_target",
     "",
     "PROJECT-level tools (capability map, personas, bootstrap, ui build) take a project and NO feature.",
@@ -411,6 +412,29 @@ Rules:
 4. **Never claim you changed something yourself.** You raise the request; the specialist does the work and the human approves it.
 5. **"Solution design" and "solution architecture" collide.** If the user says only "the architecture" and both exist, ask which.
 
+### The documents themselves
+
+\`list_documents\` answers "what has this project got?", "which transcripts are
+under Appeals?", "did my upload land?". It reads DISK, which is what every stage
+actually reads — so it is also the honest answer when a stage complains it has no
+documents.
+
+\`delete_document\` removes one, with the archived source it was converted from.
+Three rules, and the first is the one that matters:
+
+1. **Name the exact path and say what goes.** Take the path from
+   \`list_documents\` — never invent one. The person is shown a confirmation
+   before anything is deleted, so your job is to make that confirmation
+   accurate, not to be careful on their behalf by asking twice.
+2. **Deleting changes what every later stage reads.** Say which artefacts the
+   application reports as now out of date, and offer to refresh them. Do not
+   refresh anything unasked.
+3. **A replacement is not a delete.** To swap a document for a newer version,
+   point them at the Documents tab's replace button, or \`/replace <path> <file>\`
+   in the terminal — both need a file from their machine, which you cannot
+   reach. Do NOT delete a document and tell them to re-upload: that loses its
+   version history.
+
 ### Keeping the pack consistent
 
 When an upstream artefact changes, the ones generated from it are now out of date. The application tracks this and tells you which. When it does, say so in one line and offer to refresh them — then wait. Never refresh anything without being asked: the user may have deliberately approved the downstream document as it stands.
@@ -631,6 +655,31 @@ const triggerTool: Tool = {
           instruction: { type: SchemaType.STRING, description: "The change, in the USER'S OWN WORDS, verbatim. Do not summarise, tidy or reinterpret - the specialist needs what the user actually said. Required." },
         },
         required: ["project", "artefact", "instruction"],
+      },
+    },
+    {
+      name: "list_documents",
+      description: "Lists the documents a project and feature actually hold ON DISK — the client's own material under documents/, and a feature's discovery documents under requirements/{SOP,Transcripts,Notes,UI}/. Call this for 'what documents do we have', 'which transcripts are under Appeals', 'did my upload work', 'what is this project reading', and BEFORE delete_document so you name a path that exists. Disk is what every stage reads, so this is also the honest answer when a stage refuses with 'no documents'. Read-only.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Omit to list only the project's own client-wide documents." },
+        },
+        required: ["project"],
+      },
+    },
+    {
+      name: "delete_document",
+      description: "Removes ONE document, together with the archived original it was converted from, on disk and in the database. Call it when the user wants a document gone — 'delete the old SOP', 'that transcript went to the wrong feature', 'remove the superseded policy'. The path must be one list_documents returned, exactly as it printed it — never invent or guess one, and call list_documents first if you do not have it. The user is shown a confirmation before anything is removed, so do not ask for confirmation yourself as well. Do NOT call this to replace a document with a newer version: replacement keeps the version history and needs a file from their machine, so point them at the Documents tab's replace button or `/replace <path> <file>` instead.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Omit ONLY for a project-level document under documents/." },
+          path: { type: SchemaType.STRING, description: "The document's path relative to its own level, exactly as list_documents printed it — e.g. `documents/policy.md` or `requirements/SOP/handling.md`. Required." },
+        },
+        required: ["project", "path"],
       },
     },
     {

@@ -41,7 +41,11 @@ scyne-chatbot/
 │   ├── llm.ts              (Gemini client, system prompt builder, tool schema)
 │   ├── paperclip.ts        (Paperclip API client; no-auth, normalised methods)
 │   ├── types.ts
+│   ├── names.ts            (THE rule for what a new project is called, and what a typed
+│   │                        name becomes — imported by the wizard, not copied)
 │   └── services/
+│       ├── documents.ts        (what a document IS on disk: list, resolve-with-guard, delete
+│       │                        including the archived original in original-files/)
 │       ├── fileRouter.ts       (decides which projects/<p>/<f>/requirements/X folder an upload belongs in)
 │       ├── geminiFiles.ts      (uploads audio/video to Gemini Files API for transcription)
 │       ├── geminiLive.ts       (Gemini Live WebSocket — real-time transcription)
@@ -71,7 +75,9 @@ scyne-chatbot/
         ├── AttachmentButton.tsx(upload .docx / .pdf / .png to a chosen scope)
         ├── RecordMeetingPanel.tsx (browser audio capture → Gemini Live transcription)
         ├── PreviewPane.tsx     (iframes the generated app from /api/preview/:project; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes. The iframe src is made RELATIVE — see Gotchas)
-        ├── Rail.tsx            (left rail: Chat · Issues · Spend · Actions; hides the admin two by role, badges Issues with what is waiting)
+        ├── Rail.tsx            (left rail: Chat · Docs · Issues · Spend · Actions; hides the admin two by role, badges Issues with what is waiting)
+        ├── DocumentsView.tsx   (every document at both levels, with replace + delete per row, and
+        │                        the staleness banner as a checkbox list with one Re-run button)
         ├── IssuesView.tsx      (every issue in the company; selecting one sets the active issue and returns to Chat)
         ├── SpendView.tsx       (GROUP BY chips + Period/Project/Feature/User filters; reported and estimated in SEPARATE columns, unpriced runs called out)
         ├── ActionsView.tsx     (the organisation's audit feed — who did what)
@@ -139,7 +145,7 @@ The only stateful React component is `src/App.tsx`. All other components are pre
 | `targetProject`/`targetFeature` | `string \| null`        | What the user has selected in `TargetPicker`. Sent with the trigger.     |
 | `featuresRefreshKey`   | `number`                        | Bumped after an upload to force `TargetPicker` to re-fetch `/api/features`. |
 | `rightTab`             | `"activity" \| "ui"`            | Toggle on the right pane: workflow status vs UI preview.                 |
-| `view`                 | `View`                          | What the left rail selects: `workspace` (chat + workflow) · `issues` · `spend` · `actions` · `history`. Persisted to `localStorage.scyne_view` — being returned to Chat after every refresh is the wrong default for somebody watching a run. |
+| `view`                 | `View`                          | What the left rail selects: `workspace` (chat + workflow) · `documents` · `issues` · `spend` · `actions` · `history`. Persisted to `localStorage.scyne_view` — being returned to Chat after every refresh is the wrong default for somebody watching a run. |
 | `needsAttention`       | `number`                        | Issues sitting `in_review`/`blocked`/`paused`. Drives the rail badge; polled every 30s regardless of the open view, because its job is to interrupt. |
 | `previewAvailable`     | `boolean`                       | True once `/api/preview/:project/:feature` returns a URL.                |
 | `pendingUiPrompt`      | `{project, feature} \| null`    | When the bot suggests a UI build, this stages a one-click trigger.       |
@@ -183,6 +189,8 @@ The prompt instructs a discovery flow:
 | `trigger_test_cases` | feature | Test pack / UAT / traceability matrix. |
 | `trigger_solution_design` | feature | The optional SDD. `409 no_data_model`. Offered only when asked for by name. |
 | `revise_artefact` | either | **Any change to something already generated.** The instruction goes through verbatim. |
+| `list_documents` | either | "What documents have we got", "did my upload land". Reads DISK, which is what the stages read — so it is also the honest answer to a `no_documents` refusal. |
+| `delete_document` | either | Removes one document and its archived original. The model PROPOSES; **both surfaces confirm with the person before anything goes** — a loose sentence is not consent to change what every later stage reads. No replace tool: that needs a file from the user's machine, so the prompt points at the Docs tab or `/replace`. |
 | `trigger_ui_build` | project | The companion app page. |
 | `set_target` | — | Keeps the target picker in sync when the user names a project/feature. |
 | `save_project_definition` | project | When the user supplies "about the client" text for an existing project. |
@@ -377,6 +385,38 @@ Click "New session" in the right-pane header. This clears `localStorage`, drops 
   spent" — a confident wrong answer where "you are not allowed to see this" is
   the true one. `sendOps` preserves the status; `OpsState` renders the three
   cases apart.
+- **Creation writes BOTH stores.** The folder tree the agents read and the
+  database row `scyne`/the console/every platform route read. `/api/projects`
+  and `/api/features` wrote only the tree for the whole of this repo's history,
+  which is why a project created in the wizard would not take a definition,
+  showed no project in Spend, and could not be addressed by
+  `/projects/:id/documents`. `store.createProject` / `createFeature` /
+  `createDocumentRow` / `deleteDocumentRow` are the missing half. Best-effort
+  and never fatal — the disk write is the one the pipeline needs — but reported
+  as `dbError` rather than logged.
+- **This server is the ONLY writer of a document row**, because it is the only
+  thing that knows the post-conversion name. All three upload paths write one
+  (project, feature, and the audio transcript, which had none at all), and each
+  returns `path` + `db` so `cli/dual.ts` can report the outcome instead of
+  writing a second row of its own. It used to write one, from the raw bytes at
+  the pre-conversion path — two rows per CLI upload, one of them naming a file
+  the converter had already moved into `original-files/`.
+- **A delete takes the archived original.** `convert-to-md.mjs` MOVES a source
+  into `original-files/` rather than deleting it, so removing only the markdown
+  leaves the thing that produced it and the next conversion pass rebuilds the
+  document. `services/documents.ts` matches the archive on STEM, longest first,
+  so `handling.md` never claims `handling-appendix.docx` and `report.docx.md`
+  (the converter's disambiguated form) still finds `report.docx`.
+- **`original-files` is in `SKIP_DIRS`.** It was not, so `countFeatureDocs`
+  counted every archived source as a live document — each converted document
+  twice, and a feature whose `requirements/` had been emptied still reported
+  documents. `countProjectDocs` skipped it explicitly; the two answered
+  differently about the same tree.
+- **A project name is slugged, not refused.** `names.ts` holds the one rule and
+  the wizard IMPORTS it. It used to validate with the READ regex (spaces
+  allowed) while the server refused with the WRITE one, so Next lit up on a
+  name the server was about to reject — and the hyphenated suggestion it sent
+  back was never shown.
 - **`server/` is typechecked now** (`npm run typecheck`, `tsconfig.server.json`),
   and `pipeline.mjs` is typed by the ambient `server/pipeline.d.ts`. That
   declaration must stay COMPLETE — a partial one silences the implicit-any and

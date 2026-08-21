@@ -18,6 +18,7 @@ import { load, patch, DEFAULT_API_URL } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
 import {
   createProject, createFeature, uploadDocument, saveProjectDefinition, extractBrand,
+  deleteDocument, replaceDocument,
   chatAuth, CATEGORY_DIR, PROJECT_NAME, suggestProjectName, type DualResult,
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
@@ -152,6 +153,24 @@ async function postChat(chatUrl: string, body: unknown): Promise<{ content: Bloc
   return res.json() as Promise<{ content: Block[] }>;
 }
 
+/** The documents on DISK, which is what every stage actually reads. */
+async function listDocumentsFor(chatUrl: string, project: string, feature: string): Promise<{
+  documents: {
+    project: Array<{ path: string; subfolder: string; bytes: number }>;
+    feature: Array<{ path: string; subfolder: string; bytes: number }>;
+  };
+}> {
+  const q = new URLSearchParams({ project });
+  if (feature) q.set("feature", feature);
+  const res = await fetch(`${chatUrl}/api/documents?${q}`, {
+    headers: { accept: "application/json", ...chatAuth() },
+  });
+  const text = await res.text();
+  const parsed = text ? JSON.parse(text) : {};
+  if (!res.ok) throw new Error(parsed?.message ?? parsed?.error ?? res.statusText);
+  return parsed;
+}
+
 async function postTrigger(chatUrl: string, path: string, body: unknown):
   Promise<{ id: string; identifier?: string }> {
   const res = await fetch(chatUrl + path, {
@@ -262,6 +281,8 @@ const HELP = `
       ${c.grey("uncategorised (feature pinned), or in the project's documents/")}
       ${c.grey("(no feature) — which is right for policy and legislation.")}
     ${c.cyan("/docs")}                             documents for the current target
+    ${c.cyan("/replace")} <path> <file>            swap one document for another
+    ${c.cyan("/rm")} <path...>                     remove it, and its archived original
 
   ${c.bold("Running")}
     ${c.cyan("/run")} <stage>                      ${c.grey("no stage lists them")}
@@ -686,6 +707,54 @@ export async function repl(): Promise<void> {
           out();
           if (!docs.length) out(`  ${c.grey("(no documents)")}`);
           for (const d of docs) out(`  ${c.grey(String(d.category ?? "—").padEnd(12))} ${d.path} ${c.grey("v" + d.version)}`);
+          return false;
+        }
+
+        // The other half of /upload. A document that went to the wrong feature,
+        // or a policy the client has superseded, was correctable only by
+        // leaving the session for a filesystem — and doing it there left the
+        // database row behind.
+        case "rm": case "delete": {
+          const parts = tokenize(line.slice(1).trim(), { commas: true }).slice(1).filter(Boolean);
+          const paths = parts.filter(p => !p.startsWith("--"));
+          if (!paths.length) {
+            out(`  ${cross} usage: /rm <path...>`);
+            out(`    ${c.grey("<path> is what /docs prints, e.g. requirements/SOP/handling.md")}`);
+            return false;
+          }
+          if (!project) { out(`  ${cross} pin a project first: /use <project> [feature]`); return false; }
+
+          for (const docPath of paths) {
+            try {
+              const r = await deleteDocument(client, { project, feature, path: docPath });
+              reportDual(docPath, r);
+              const removed = (r.extra?.removed as string[] | undefined) ?? [];
+              // Said out loud: the archived source goes too, because leaving it
+              // means the next conversion pass rebuilds the document.
+              if (removed.length > 1) out(`    ${c.grey("also removed " + removed.slice(1).join(", "))}`);
+            } catch (err) {
+              out(`  ${cross} ${docPath}: ${(err as Error).message.split("\n")[0]}`);
+            }
+          }
+          return false;
+        }
+
+        case "replace": {
+          const parts = tokenize(line.slice(1).trim(), { commas: true }).slice(1).filter(Boolean);
+          const [docPath, file] = parts.filter(p => !p.startsWith("--"));
+          if (!docPath || !file) {
+            out(`  ${cross} usage: /replace <path> <file>`);
+            out(`    ${c.grey("<path> is the document to replace (as /docs prints it),")}`);
+            out(`    ${c.grey("<file> the new one on this machine.")}`);
+            return false;
+          }
+          if (!project) { out(`  ${cross} pin a project first: /use <project> [feature]`); return false; }
+          try {
+            const r = await replaceDocument(client, { project, feature, path: docPath, file });
+            reportDual(String(r.extra?.path ?? docPath), r);
+          } catch (err) {
+            out(`  ${cross} ${docPath}: ${(err as Error).message.split("\n")[0]}`);
+          }
           return false;
         }
 
@@ -1242,6 +1311,54 @@ export async function repl(): Promise<void> {
       } catch (err) {
         spin.stop();
         reportBrand(name, null, `couldn't read ${url}: ${(err as Error).message.split("\n")[0]}`);
+      }
+      return;
+    }
+
+    // Documents, answered in the session rather than as a queued issue. Both
+    // exist here as well as in the web app because the two surfaces must be
+    // able to do the same things — an assistant that can list a project's
+    // documents in a browser and not in a terminal is two products.
+    if (tool.name === "list_documents") {
+      const proj = String(args.project || project || "");
+      const feat = String(args.feature || feature || "");
+      if (!proj) { out(`  ${cross} pin a project first: /use <project>`); return; }
+      try {
+        const r = await listDocumentsFor(chatUrl, proj, feat);
+        const docs = [...r.documents.project, ...r.documents.feature];
+        out();
+        if (!docs.length) out(`  ${c.grey("(no documents)")}`);
+        for (const d of docs) {
+          out(`  ${c.grey(d.subfolder.padEnd(12))} ${d.path} ${c.grey(Math.max(1, Math.round(d.bytes / 1024)) + " KB")}`);
+        }
+      } catch (err) {
+        out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+      }
+      return;
+    }
+
+    if (tool.name === "delete_document") {
+      const proj = String(args.project || project || "");
+      const feat = String(args.feature || feature || "");
+      const docPath = String(args.path || "");
+      if (!proj || !docPath) {
+        out(`  ${cross} ${c.grey("I need a project and a document path — try /docs first.")}`);
+        return;
+      }
+      // The model PROPOSES; the person commits. Deleting a client's discovery
+      // document changes what every later stage reads, and a sentence typed at
+      // a prompt is not consent. Same gate the web app puts in front of it.
+      const answer = await askLine(
+        `  Delete ${c.bold(docPath)} from ${proj}${feat ? " / " + feat : ""}? ` +
+        `${c.grey("(its archived original goes too)")} [y/N]: `);
+      if (!/^y(es)?$/i.test(answer.trim())) { out(`  ${c.grey("left alone")}`); return; }
+      try {
+        const r = await deleteDocument(client, { project: proj, feature: feat || null, path: docPath });
+        reportDual(docPath, r);
+        const removed = (r.extra?.removed as string[] | undefined) ?? [];
+        if (removed.length > 1) out(`    ${c.grey("also removed " + removed.slice(1).join(", "))}`);
+      } catch (err) {
+        out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
       }
       return;
     }

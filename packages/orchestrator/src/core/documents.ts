@@ -153,8 +153,22 @@ export function createDocumentStore(db: Db): DocumentStore {
         await db.query(`update documents set is_current = false where id = $1`, [current.rows[0].id]);
       }
 
+      // Counted from the PATH's history, not from the current row. After a
+      // `remove()` there is no current row, so counting from it restarted at 1
+      // — leaving two version-1 rows on one path and making `history()`, which
+      // orders by version, ambiguous about which came first. Unreachable until
+      // remove() was given an HTTP route; a delete-then-reupload is the most
+      // ordinary thing a person does with a document they got wrong.
+      const maxParams: unknown[] = [input.projectId];
+      const maxPred = levelPredicate(featureId, maxParams);
+      maxParams.push(input.path);
+      const highest = await db.query<{ v: string | number }>(
+        `select coalesce(max(version), 0) as v from documents
+          where project_id = $1 and ${maxPred} and path = $${maxParams.length}`,
+        maxParams);
+
       const id = newId();
-      const version = current.rows[0] ? Number(current.rows[0].version) + 1 : 1;
+      const version = Number(highest.rows[0]?.v ?? 0) + 1;
       await db.query(
         `insert into documents
            (id, project_id, feature_id, path, category, stage, sha256, version, is_current, uploaded_by)

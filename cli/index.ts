@@ -17,6 +17,7 @@ import { createClient, resolveProject, targetProject, ApiError, type Client } fr
 import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
 import {
   createProject, createFeature, uploadDocument, saveProjectDefinition,
+  deleteDocument, replaceDocument,
   CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
 import { fetchStages, fetchWorkflowSteps, callerParams, type Stage } from "./stages.ts";
@@ -401,8 +402,42 @@ async function cmdDoc(client: Client, args: string[]): Promise<void> {
       return;
     }
 
+    // A document that went to the wrong feature, or a policy the client has
+    // superseded, used to be correctable only from the filesystem — and doing
+    // it there left the database row behind. Both verbs go through the chatbot,
+    // which owns the disk half and retires the row in the same request.
+    case "delete": case "rm": {
+      const paths = rest.filter(f => !f.startsWith("--"));
+      if (!paths.length) {
+        throw new ApiError(400,
+          `usage: scyne doc delete <path...> [--feature <f>]\n` +
+          `  <path> is what \`scyne doc list\` prints, e.g. requirements/SOP/handling.md`);
+      }
+      for (const docPath of paths) {
+        const r = await deleteDocument(client, { project: project.name, feature, path: docPath });
+        reportDual(docPath, r);
+        // Said explicitly: the archived source goes too, because leaving it
+        // means the next conversion pass rebuilds the document.
+        const removed = (r.extra?.removed as string[] | undefined) ?? [];
+        if (removed.length > 1) out(`  also removed ${removed.slice(1).join(", ")}`);
+      }
+      return;
+    }
+
+    case "replace": {
+      const [docPath, file] = rest.filter(f => !f.startsWith("--"));
+      if (!docPath || !file) {
+        throw new ApiError(400,
+          `usage: scyne doc replace <path> <file> [--feature <f>]\n` +
+          `  <path> is the document to replace, <file> the new one on this machine`);
+      }
+      const r = await replaceDocument(client, { project: project.name, feature, path: docPath, file });
+      reportDual(String(r.extra?.path ?? docPath), r);
+      return;
+    }
+
     default:
-      throw new ApiError(400, `unknown: scyne doc ${verb}. Try list, upload.`);
+      throw new ApiError(400, `unknown: scyne doc ${verb}. Try list, upload, replace, delete.`);
   }
 }
 
@@ -1215,6 +1250,8 @@ scyne — the Scyne pipeline, from the command line
     doc list [--all] [--category C]
     doc upload <file...> --as sop|transcripts|notes|ui|template   (needs --feature)
     doc upload <file...> --project P                              client-wide documents
+    doc replace <path> <file>                                     swap one document for another
+    doc delete <path...>                                          remove it, and its archived original
 
   Running the pipeline
     run <stage>                      start a stage (run with no stage to list them)

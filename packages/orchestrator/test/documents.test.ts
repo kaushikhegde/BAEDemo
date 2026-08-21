@@ -146,5 +146,22 @@ describe("document store", () => {
     const revived = await store.put({ ...p, content: "v2" });
     expect(revived.changed).toBe(true);
     expect((await store.get(project, featureA, "outputs/x.md"))!.content.toString()).toBe("v2");
+
+    // CONTINUING, not restarting. A version is a fact about the path's history,
+    // not about whichever row happens to be current — and after a remove there
+    // is no current row to count from. Restarting at 1 puts two version-1 rows
+    // in the history and makes `history()`, which orders by version, ambiguous.
+    expect(revived.doc.version).toBe(2);
+    expect((await store.history(project, featureA, "outputs/x.md")).map(d => d.version)).toEqual([2, 1]);
+  });
+
+  it("keeps counting across several delete-and-rewrite cycles", async () => {
+    const p = { projectId: project, featureId: featureA, path: "outputs/y.md" };
+    for (const body of ["v1", "v2", "v3"]) {
+      await store.put({ ...p, content: body });
+      await store.remove(project, featureA, "outputs/y.md");
+    }
+    const back = await store.put({ ...p, content: "v4" });
+    expect(back.doc.version).toBe(4);
   });
 });

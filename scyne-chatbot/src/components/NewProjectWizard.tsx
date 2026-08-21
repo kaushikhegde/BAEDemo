@@ -1,5 +1,10 @@
 import { useState } from "react";
 import { createProject, bootstrapProject, uploadProjectFile } from "@/api";
+// The SAME rule the create route applies, imported rather than copied. A second
+// copy here is exactly how the Next button came to light up on a name the
+// server was about to refuse. `names.ts` is dependency-free, and tsconfig.app
+// already includes `server`, so this bundles cleanly.
+import { slugProjectName, isNewProjectName } from "../../server/names.js";
 
 /**
  * Create a new project.
@@ -36,9 +41,17 @@ export function NewProjectWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [brandNote, setBrandNote] = useState<string | null>(null);
+  // The database half of creation. Not fatal — the tree, definition and
+  // branding are real — but everything that resolves a project BY NAME stays
+  // empty until the row exists, so it is said out loud rather than logged.
+  const [dbNote, setDbNote] = useState<string | null>(null);
   const [created, setCreated] = useState(false);
 
-  const nameOk = /^[A-Za-z0-9._ &-]+$/.test(name.trim()) && name.trim().length > 0;
+  // Typed name in, created name out. Shown before anything is created, so the
+  // person sees what they are getting rather than being refused for a space.
+  const slug = slugProjectName(name);
+  const nameOk = isNewProjectName(slug);
+  const willRename = nameOk && slug !== name.trim();
   const canLeaveDetails = nameOk;
 
   // Step 1 → 2 is where the project is actually created, because the upload
@@ -50,6 +63,11 @@ export function NewProjectWizard({
     try {
       const r = await createProject(name.trim(), description.trim(), website.trim());
       setCreated(true);
+      // Adopt the name it was CREATED under. Every later step — the uploads and
+      // the deploy — sends `name`, and sending the typed one would file this
+      // client's documents under a project that does not exist.
+      if (r.project && r.project !== name.trim()) setName(r.project);
+      if (r.dbError) setDbNote(r.dbError);
       if (r.brand?.brand) {
         setBrandNote(`Palette ${r.brand.brand}${r.brand.accent ? ` · accent ${r.brand.accent}` : ""}${r.brand.hasLogo ? " · logo found" : ""}`);
       } else if (r.brandError) {
@@ -143,7 +161,19 @@ export function NewProjectWizard({
               {name && !nameOk && (
                 <span className="text-xs text-red-600">Letters, numbers, spaces and . _ &amp; - only.</span>
               )}
-              {created && <span className="text-xs text-slate-500">Created — the name is fixed now.</span>}
+              {!created && willRename && (
+                <span className="text-xs text-slate-500">
+                  Will be created as <strong className="font-semibold text-scyne-ink">{slug}</strong>{" "}
+                  — it becomes the Azure DevOps project and the folder name. Feature names keep their spaces.
+                </span>
+              )}
+              {created && <span className="text-xs text-slate-500">Created as {name} — the name is fixed now.</span>}
+              {dbNote && (
+                <span className="text-xs text-amber-700">
+                  Created on disk, but not recorded in the database ({dbNote}). Runs will not be attributed to it
+                  until that succeeds.
+                </span>
+              )}
             </label>
 
             <label className="flex flex-col gap-1">

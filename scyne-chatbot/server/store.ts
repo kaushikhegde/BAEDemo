@@ -96,6 +96,199 @@ export async function saveDescription(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Creation — the half the web UI never had
+//
+// `cli/dual.ts` has always written both sides, because "anything that CREATES
+// something has to write to both, or the tool contradicts itself". The wizard
+// wrote only the folder tree, so a project created in the browser had no row —
+// and every symptom of that appeared somewhere else entirely: the definition
+// silently failed to save, spend-by-project filed the run under an anonymous
+// row because `issues.project_id` had no name to resolve against, and the
+// document store could not be addressed at all because there was no id.
+//
+// Best-effort, deliberately, and for the same reason `adoError` is: the folder
+// tree, the definition and the branding are real and worth keeping. The caller
+// reports which half is missing rather than 500ing on work that mostly landed.
+// ---------------------------------------------------------------------------
+
+/** What happened on the database side. `exists` is a normal outcome. */
+export interface WriteResult {
+  state: "created" | "exists" | "failed" | "skipped";
+  reason?: string;
+}
+
+async function send(
+  token: string, method: "POST" | "PATCH", path: string, body: unknown,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: {
+      "content-type": "application/json", accept: "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, json };
+}
+
+const failureText = (status: number, json: unknown): string =>
+  (json as { message?: string; error?: string })?.message ??
+  (json as { error?: string })?.error ??
+  `orchestrator said ${status}`;
+
+/**
+ * The project row, having written the folder tree.
+ *
+ * A 409 means one of two very different things — the project is already in YOUR
+ * organisation, or the name is held by ANOTHER one, since the folder tree is
+ * flat and project names are unique across the install. Reporting both as
+ * "already there" sends someone looking in a listing that will never show it.
+ */
+export async function createProject(
+  token: string | null,
+  input: { name: string; description?: string; website?: string },
+): Promise<WriteResult> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    const r = await send(token, "POST", "/projects", {
+      name: input.name,
+      description: input.description?.trim() || null,
+      website: input.website?.trim() || null,
+    });
+    if (r.ok) return { state: "created" };
+    if (r.status !== 409) return { state: "failed", reason: failureText(r.status, r.json) };
+
+    const row = (await listProjects(token)).find(p => p.name === input.name);
+    if (!row) {
+      return { state: "exists", reason: "that name is held by another organisation" };
+    }
+    // Without this the description the wizard just collected is DISCARDED, and
+    // the assistant goes on asking for a definition the project has.
+    if (input.description?.trim()) {
+      const patch = await send(token, "PATCH", `/projects/${row.id}`, {
+        description: input.description.trim(),
+      });
+      return patch.ok
+        ? { state: "exists", reason: "already in the database — definition updated on it" }
+        : { state: "exists", reason: `already in the database; definition not updated (${failureText(patch.status, patch.json)})` };
+    }
+    return { state: "exists", reason: "already in the database" };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/** The feature row, under its project's id. */
+export async function createFeature(
+  token: string | null, input: { project: string; feature: string },
+): Promise<WriteResult> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    const row = (await listProjects(token)).find(p => p.name === input.project);
+    // Named apart from any other failure because the fix is a different one:
+    // create the project row, not the feature.
+    if (!row) return { state: "failed", reason: `project "${input.project}" is not in the database yet` };
+
+    const r = await send(token, "POST", `/projects/${row.id}/features`, { name: input.feature });
+    if (r.ok) return { state: "created" };
+    if (r.status === 409) return { state: "exists", reason: "already in the database" };
+    return { state: "failed", reason: failureText(r.status, r.json) };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/**
+ * The category a document is counted under.
+ *
+ * The same vocabulary `--as` writes (`sop`, `transcripts`, `notes`, `ui`,
+ * `template`), because `available()` below counts by this field and the
+ * assistant's whole sense of what a feature holds comes from those counts. A
+ * folder that mapped to nothing would show a feature as having no transcripts
+ * with three sitting on disk.
+ *
+ * Null rather than a guess for anything uncategorised: telling the BA that an
+ * SOP is a transcript is worse than telling it nothing, because transcripts are
+ * the primary source of stories and SOPs explicitly are not.
+ */
+export function categoryFor(docPath: string): string | null {
+  const parts = String(docPath ?? "").split("/");
+  if (parts[0] !== "requirements" || parts.length < 3) return null;
+  const sub = parts[1].toLowerCase();
+  const map: Record<string, string> = {
+    sop: "sop", transcripts: "transcripts", notes: "notes", ui: "ui", templates: "template",
+  };
+  return map[sub] ?? null;
+}
+
+/**
+ * Store a document version, having written the file.
+ *
+ * Best-effort and never fatal to the upload: the file is on disk, which is what
+ * every stage reads. What the row buys is the half a PERSON sees — `/docs`, the
+ * document counts in the assistant's prompt, and the versioned history behind
+ * a replacement.
+ */
+export async function createDocumentRow(
+  token: string | null,
+  input: { project: string; feature?: string | null; path: string; content: Buffer },
+): Promise<WriteResult> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    const row = (await listProjects(token)).find(p => p.name === input.project);
+    if (!row) return { state: "skipped", reason: "no such project in the database" };
+
+    const r = await send(token, "POST", `/projects/${row.id}/documents`, {
+      ...(input.feature ? { feature: input.feature } : {}),
+      path: input.path,
+      category: categoryFor(input.path),
+      // Not an optimisation — a .docx or a screenshot cannot survive a JSON
+      // string, and silently corrupting one is discovered much later, by a
+      // model reading gibberish.
+      encoding: "base64",
+      content: input.content.toString("base64"),
+    });
+    return r.ok ? { state: "created" } : { state: "failed", reason: failureText(r.status, r.json) };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/**
+ * Retire the document row, having removed the file.
+ *
+ * Absence is SUCCESS here, not failure. The two stores drift apart by design —
+ * the chatbot's upload routes wrote only disk for the whole of this repo's
+ * history, so most existing documents have no row at all — and disk is the half
+ * that decides what every stage reads. Reporting "could not delete" for a file
+ * that is demonstrably gone would send someone looking for a problem that has
+ * already been solved.
+ */
+export async function deleteDocumentRow(
+  token: string | null, input: { project: string; feature?: string | null; path: string },
+): Promise<WriteResult> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    const row = (await listProjects(token)).find(p => p.name === input.project);
+    if (!row) return { state: "skipped", reason: "no such project in the database" };
+
+    const qs = new URLSearchParams({ path: input.path });
+    if (input.feature) qs.set("feature", input.feature);
+    const res = await fetch(`${BASE}/projects/${row.id}/documents?${qs}`, {
+      method: "DELETE",
+      headers: { accept: "application/json", authorization: `Bearer ${token}` },
+    });
+    if (res.ok) return { state: "created" };
+    if (res.status === 404) return { state: "exists", reason: "no row for that document" };
+    const json = await res.json().catch(() => ({}));
+    return { state: "failed", reason: failureText(res.status, json) };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
 export const listFeatures = (token: string | null, projectId: string): Promise<Feature[]> =>
   get<Feature[]>(token, `/projects/${projectId}/features`, []);
 

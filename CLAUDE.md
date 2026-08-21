@@ -752,7 +752,7 @@ Any `--key value` after the workflow name becomes a workflow param, so
 `/issues/{id}` (PATCH) · **`POST /issues/{id}/advance`** · **`/issues/{id}/pause`** · **`/issues/{id}/cancel`** · **`/issues/{id}/resume`** · `/issues/{id}/comments`
 (POST) · `/issues/{id}/work-products` · `/issues/{id}/gates` ·
 `POST /gates/{id}/approve|reject` · `/issues/{id}/runs` · `/runs/{id}` ·
-`/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · **`/models`** · **`/models/{provider}/{model}`** (PUT) · **`/models/refresh`** (GET/POST/DELETE) · **`/models/refresh/apply`** · **`/orgs`** · **`/orgs/{id}`** · `/config` · `/orch` ·
+`/runs/{id}/log` · `/runs/{id}/transcript` · `/usage` · **`DELETE /projects/{id}/documents`** · **`/models`** · **`/models/{provider}/{model}`** (PUT) · **`/models/refresh`** (GET/POST/DELETE) · **`/models/refresh/apply`** · **`/orgs`** · **`/orgs/{id}`** · `/config` · `/orch` ·
 `/openapi.json` · `/docs`.
 
 `GET /config` reports, per workflow, a **`params`** list and a **`stepList`**.
@@ -996,8 +996,8 @@ open http://127.0.0.1:5173
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/api/chat` | Proxies the conversation to Gemini, returns Anthropic-shaped blocks |
-| **POST** | **`/api/projects`** | **Create a project**: folder tree, `description.md`, and branding pulled from the client's website inline. `409 exists` if the name is taken |
-| **POST** | **`/api/features`** | **Create a feature** under a project. `400 reserved_name` for a name that would clash with a project folder or CLI stage keyword |
+| **POST** | **`/api/projects`** | **Create a project**: folder tree, `description.md`, branding pulled from the client's website inline, **and the database row**. `409 exists` if the name is taken; `409 slug_collision` if the slugged name lands on a different, incomplete project |
+| **POST** | **`/api/features`** | **Create a feature** under a project, on both sides. `400 reserved_name` for a name that would clash with a project folder or CLI stage keyword |
 | **POST** | **`/api/upload/project`** | The wizard's untyped dropzone → `projects/<p>/documents/`, converted to markdown on arrival, original archived |
 | **POST** | **`/api/project/bootstrap`** | `Set up project — <project>`: capability map, then personas, sequentially. `409 no_documents` |
 | POST | `/api/capability-map/trigger` | `Generate capability map — <project>`. **PROJECT level, no feature.** `409 no_documents` only. Publishes to the ADO wiki |
@@ -1010,6 +1010,9 @@ open http://127.0.0.1:5173
 | POST | `/api/solution-design/trigger` | `Generate solution design — …` (optional side stage). `409 no_data_model` |
 | POST | `/api/ui-agent/trigger` | `Build UI — <project>`. **PROJECT level.** `409 no_artefacts` — the page is progressive, so any single artefact is enough |
 | **POST** | **`/api/revise`** | **Revise an existing artefact.** `{project, feature?, artefact, instruction}` → routes to the owner with the instruction verbatim. `409 not_generated`, `400 unknown_artefact` |
+| **GET** | **`/api/documents?project=&feature=`** | **Every document at both levels**, with size, mtime, kind and the archived source each was converted from — plus the same staleness list, from one call |
+| **PUT** | **`/api/documents`** | **Replace one document** (multipart). Removes the old and its archived original FIRST, so the replacement keeps its own name instead of landing beside it as `handling (1).md` |
+| **DELETE** | **`/api/documents`** | **Remove one document** and its archived original, on disk and in the database. `404 no_document`, `400 bad_path` for anything outside `documents/` |
 | **GET** | **`/api/staleness/:project[/:feature]`** | Artefacts generated before one of their inputs last changed, by mtime against the shared pipeline graph |
 | **GET** | **`/api/suggestions?project=&feature=`** | The composer's chips: 3–4 `{label, message}` computed from the graph and disk, so a chip can never 409 |
 | POST | `/api/brand/extract` | Fetches a URL server-side, writes the **project's** `theme.json` + `brand-source.json`, re-renders the app if one exists |
@@ -1034,6 +1037,51 @@ open http://127.0.0.1:5173
 | POST | `/api/upload` | Feature-level upload, routed into `requirements/<sub>/` via `fileRouter` |
 | POST | `/api/ui-agent/comment` | Follow-up comment on the UI build issue |
 
+> **Creation writes BOTH stores, and the web UI did not.** There are two
+> records of what exists — the folder tree the agents read, and the database
+> `scyne`, the console and every platform route read — and `cli/dual.ts` has
+> written both since it was added, for the reason its own header gives:
+> *"anything that CREATES something has to write to both, or the tool
+> contradicts itself"*. The React wizard called only `/api/projects`, which
+> wrote only the tree. So a project created in the browser existed for every
+> agent and for no API, and every symptom surfaced somewhere else entirely:
+>
+> - the definition **silently failed to save** — `saveDescription` looks the
+>   project up by name, does not find it, and returns
+>   `{ok: false, reason: "no such project in the database"}` into a console
+>   warning nobody reads, so the assistant goes on asking for a definition the
+>   project visibly has;
+> - **`/spend?by=project` filed every run under the anonymous row**, because
+>   `repo.createIssue` resolves `params.project` into `issues.project_id` BY
+>   NAME and there was no row to resolve to. The fix described above works; it
+>   had nothing to find;
+> - **`/projects/{id}/documents` was unreachable** — there is no id;
+> - no membership or access control could attach to the project.
+>
+> `store.createProject` / `createFeature` / `createDocumentRow` /
+> `deleteDocumentRow` are the chatbot's half, and all three upload paths — the
+> project route, the feature route and the audio transcript — write a document
+> row now as well. All of it is **best-effort and never fatal**, for the same
+> reason `adoError` is: the tree, the definition and the branding are real and
+> worth keeping. A failure is reported as `dbError` rather than logged, because
+> everything that resolves a project by name stays empty until the row exists.
+>
+> **The SERVER writes the document row, and it is the only thing that may.**
+> `cli/dual.ts` used to write its own, from the bytes read off the caller's
+> machine, under a path computed before the upload — and both were wrong by the
+> time it landed. The server converts on arrival and MOVES the source into
+> `original-files/`, so the row held raw `.docx` bytes at a path naming a file
+> that no longer existed: precisely the "`/docs` lists documents that are not on
+> disk" state in the table below. With no `--as` it was wronger still — the CLI
+> guessed `requirements/`, while the server's `routeFile()` infers `SOP/`,
+> `Transcripts/`, `Notes/` or `UI/`.
+>
+> Only the server knows the converted name, so only the server can write the
+> row; `uploadDocument` reports what the response says it did. Leaving both in
+> place would have produced **two rows per CLI upload** — one correct, one
+> naming a file the converter had already renamed. `cli/dual.test.ts` asserts
+> exactly one write per upload and no `/documents` POST from the CLI.
+
 ### Conversation flow (Gemini, not Anthropic)
 
 `server/llm.ts` uses **`@google/generative-ai` v0.21 with `gemini-2.5-flash`** (matches the compliance-app pattern). The system prompt is built fresh on each call — it scans `./projects/` for available projects + features and injects that list into the prompt, so the LLM always sees the current state of disk.
@@ -1057,6 +1105,14 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
 - `trigger_test_cases` — fires the test-case flow (`Generate test cases — …`). Gated on the product summary only; the data model and architecture enrich the pack when present.
 - `trigger_personas` — fires the persona + journey flow (`Generate personas — …`). No prerequisite: it reads the same SOP/Transcripts/Notes as the BA. Its `personas.json` / `journey-map.json` feed the companion app.
 - `trigger_ui_mockups` — fires the UI mockup flow (`Generate UI mockups — …`). No hard prerequisite: it needs the product summary *or* the discovery documents. **Distinct from `trigger_ui_build`** — mockups are wireframes of the client's future screens (UX Designer); the UI build renders the companion app page (Developer). If the user just says "do the UI", the bot asks which one.
+- `list_documents` / `delete_document` — what a project holds, and removing one.
+  Present in the chatbot AND in the `scyne` session, which dispatches the same
+  `tool_use` blocks: an assistant that can list a project's documents in a
+  browser and not in a terminal is two products. **Both surfaces confirm before
+  deleting** — the model proposes, the person commits, because a sentence typed
+  at a prompt is not consent to change what every later stage reads. There is
+  deliberately no replace tool: a replacement needs a file from the user's own
+  machine, so the prompt points at the Docs tab or `/replace <path> <file>`.
 - `save_project_definition` — writes `projects/<project>/description.md` from the user's own words. The system prompt lists which projects have one and which do not, and tells the bot to ask once — never to block a run on it.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
 
@@ -1069,7 +1125,7 @@ The system prompt teaches the dependency chain (requirements → data model → 
 - **Login gate**: the app shows a `Login.tsx` screen first, which authenticates against the **orchestrator's own user table** — the same accounts the CLI and console use. There are no demo credentials. The first account is created by `scyne init`, which claims the installation as its **superadmin**; everyone else is created with `scyne user create` or from the console. The session is an **httpOnly cookie** on the chatbot origin, never `localStorage` — a credential JavaScript cannot read is one an injected script cannot steal — and the chatbot forwards *that user's* token to the orchestrator, so a run started from chat records `issues.created_by`.
 - **Session persistence**: `parentIssueId` is saved to `localStorage.scyne_parent_issue_id`. Refresh resumes the workflow.
 - **Right-pane tabs**: `Activity` (live workflow status) and `UI` (iframes the generated app from `/api/preview/:project/:feature`). The UI tab unlocks the moment a generated app is registered.
-- **Left rail**: `Chat` · `Issues` · `Spend` · `Actions` — the chatbot is a full
+- **Left rail**: `Chat` · `Docs` · `Issues` · `Spend` · `Actions` — the chatbot is a full
   client now, not only a launcher, so `/orch` is for installation admin (agents,
   skills, budgets, orgs) rather than for daily work. Selecting an issue in
   **Issues** sets the active issue and returns to Chat, where the Activity panel
@@ -1079,6 +1135,20 @@ The system prompt teaches the dependency chain (requirements → data model → 
   `/spend` and `/actions` for them regardless, and that refusal is the boundary.
   A count badge on Issues tracks `in_review`/`blocked`/`paused` and polls every
   30s from whichever view is open, because its whole job is to interrupt.
+- **Docs** is the document lifecycle: every document at both levels, with
+  **replace** and **delete** per row, and — from the same fetch — the artefacts
+  that now predate their inputs, as a checkbox list with one *Re-run selected*
+  button. Nothing regenerates until it is clicked; a document change can
+  invalidate five artefacts and an hour of agent time. Scoped to the pinned
+  target, unlike Issues: a document belongs to one project and one feature, and
+  a list spanning clients is not one anybody should be deleting from.
+
+  **Disk is authoritative there and the row is reconciled alongside it**, in
+  that order, because disk is what every stage reads. A delete takes the
+  archived original in `original-files/` too — `convert-to-md.mjs` MOVES a
+  source rather than deleting it, so removing only the markdown leaves the
+  thing that produced it, and the next conversion pass puts the document
+  straight back.
 - **The preview iframe is same-origin.** `registry.json` stores an ABSOLUTE
   `devUrl` (`http://127.0.0.1:4000/…`) for the UX auditor's real browser, but
   every `/api/*` route needs the session cookie and **cookies are keyed by host
@@ -1608,13 +1678,34 @@ the next chat turn.
 > refused with `no such project: projects/SA`, while listing `SA Demo` as
 > available two lines below.
 >
-> A NEW project name is refused if it has a space (`400 project_name_has_spaces`,
-> with a hyphenated `suggestion`), because that name is also the Azure DevOps
-> project, the wiki path segment and the `--project` argument on every verb —
-> it should not have to survive every future caller remembering. The rule is
-> **creation-time only**: `SAFE_PROJECT` still admits spaces everywhere a
-> project is READ, since projects with spaces already exist and refusing to
-> open one would be worse than the bug it prevents.
+> A NEW project name is **slugged rather than refused**: `SA Power Networks` is
+> created as `SA-Power-Networks`, and the wizard says so live under the field
+> before anything exists. The rule is unchanged — that name is also the Azure
+> DevOps project, the wiki path segment and the `--project` argument on every
+> verb, and it should not have to survive every future caller remembering — but
+> nobody is asked to obey it.
+>
+> It used to be a refusal (`400 project_name_has_spaces`, carrying a
+> hyphenated `suggestion` that the wizard threw away), and the wizard validated
+> with the READ rule, which allows spaces. So the Next button lit up on a name
+> the server was about to reject, one step later, with a fix it never applied.
+>
+> **`slugProjectName` / `isNewProjectName` in `scyne-chatbot/server/names.ts`
+> are the authority.** The wizard imports them rather than carrying a fourth
+> copy; `cli/dual.ts` keeps its own (it is dependency-free by design) and now
+> APPLIES the slug too, because `scyne project create "SA Power Networks"` was
+> refused outright while the web wizard created it happily.
+>
+> **A slug that lands on an existing INCOMPLETE project is refused**
+> (`409 slug_collision`), naming both. `SA Demo` and `SA-Demo` are two
+> different projects that already exist side by side in this repo, and
+> "completing" a project rewrites its Azure DevOps target and its branding —
+> so adopting one because a typed name happened to slug onto it would hand one
+> client's tree another client's target, in a route that reports success.
+>
+> Reads are untouched: `SAFE_PROJECT` still admits spaces everywhere a project
+> is READ, since projects with spaces already exist and refusing to open one
+> would be worse than the bug this prevents.
 
 **Reserved feature names:** `capabilities`, `personas`, `app`, `all`, `baseline`, plus the
 project's own folder names (`solutions`, `documents`, `design`, `original-files`,
@@ -1659,6 +1750,23 @@ cp dist/cli/scyne.mjs ~/bin/scyne                       # no npm at all
 
 Then `scyne login --api-url https://…` and they are working. Nothing else is
 installed — no engine, no PGlite, no workspace, no skills.
+
+**Documents are managed from the CLI as well as the web UI**, through the same
+routes, so neither can do something the other cannot:
+
+```bash
+scyne doc list [--all] [--category C]          # the rows, which now hold the CONVERTED markdown
+scyne doc upload <file...> --as sop            # converts, archives the source, writes the row
+scyne doc replace <path> <file>                # old and its archived original removed first
+scyne doc delete <path...>                     # file, archived original, and row
+```
+
+and in the interactive session, `/docs`, `/upload`, `/replace` and `/rm`.
+
+> **`doc delete` on a row whose file is not there retires the row anyway**, and
+> says so. That is the exact state the old `doc upload` left behind — a
+> pre-conversion path the converter had already renamed — so refusing would
+> leave those rows undeletable by the only tool that lists them.
 
 **It detaches cleanly because it was never coupled.** Every command goes over
 HTTP to the same API the browser uses, and nothing in `cli/` has an npm
@@ -1730,9 +1838,29 @@ npm run orch -- log <runId> --raw   # the raw JSONL, byte for byte
   artefact aliases the revision flow routes on. Imported by `stage.mjs`,
   `render-companion-app.mjs`, `migrate-to-project-level.mjs` and the chatbot
   server. Four consumers must agree on "what does this stage require"; writing it
-  once is what stops them diverging. Paths carry an explicit `scope`
-  (`project`/`feature`), because a feature stage routinely depends on a project
-  artefact.
+  once is what stops them diverging. Paths carry an explicit `scope` —
+  `project`, `feature`, or **`features`**, which spans every feature under the
+  project because that is what `stageAllDocuments` reads.
+  > **Documents are inputs, and were not.** Every entry came `from` another
+  > STAGE, so the staleness walk could only ever answer "this artefact predates
+  > another artefact" — a client replacing an SOP, the most common reason a pack
+  > goes out of date, changed nothing it could see. The four
+  > `requirements/{SOP,Transcripts,Notes,UI}` folders are now inputs
+  > (`from: "discovery"`) to `requirements`, `ui` and `architecture`, and
+  > feature-spanning inputs to `capabilities` and `personas`. Enumerated rather
+  > than "requirements/ minus exclusions", because `templates/` is house style
+  > and `project/` is staged DOWN on every run — treating that one as source
+  > would report every feature artefact stale immediately after staging.
+  >
+  > `newestMtime` also followed exactly ONE level in, which was true enough for
+  > the flat `projects/<p>/documents/` and useless for `requirements/<Sub>/`.
+  > A walk that stops at the first directory returns null, and null means
+  > "nothing changed" — so the deeper a document, the more certainly it was
+  > ignored. It recurses now.
+  >
+  > `SOURCES` gives a non-stage origin a readable label: a refresh prompt used
+  > to say an artefact was superseded by "documents", which is a key, not
+  > something to show the person deciding whether to spend twenty-five minutes.
 - `scripts/stage.mjs <project> [<feature>] <stage>` — the local, agent-free
   path, and the one the agents now call in Phase 1. Converts source documents to
   markdown first, stages the project's material down (or every feature's up, for a
@@ -1914,6 +2042,9 @@ with the registry, the registry wins.
 | An upload's database half fails `Payload Too Large` while the folder tree succeeds | `express.json()` defaults to **100 KB** and a document travels base64-encoded in a JSON body, which adds about a third. A 275 KB PDF was over it. | `orch serve` sets `limit: "100mb"`, matching the chatbot's multer cap so both halves accept the same file, and returns a JSON 413 naming both sizes — Express's default is an HTML page the CLI refuses to print, which is why it only ever said `Payload Too Large`. Restart the orchestrator: it runs on plain `tsx`, not `tsx watch`. |
 | A stage is refused `no documents` when the project holds `.docx`/`.pdf` | Fixed: the gates count `readable` = markdown **plus** every source `convert-to-md.mjs` can convert, because `stage.mjs` converts as its first step. If it still refuses, the files are images or audio (`other`), which are not discovery material. | `READABLE_AFTER_CONVERSION` in `scripts/convert-to-md.mjs` is the list, imported by the server rather than restated. |
 | Documents upload fine but no stage can read them | The conversion failed. `stage.mjs` now prints `⚠ N document(s) could not be converted` and carries on with whatever else it staged. | Usually `markitdown-ts is not installed` — `cd scyne-chatbot && npm install`. It is a declared dependency, but only of `scyne-chatbot`, and it lives only in that `node_modules`. |
+| A project created in the web UI is in no listing, its definition will not save, and its runs show no project in Spend | It was never written to the DATABASE. The wizard wrote the folder tree only; `cli/dual.ts` has always written both. | Fixed — `/api/projects` and `/api/features` now write the row too, and report `dbError` when they cannot. For a project created BEFORE the fix, re-post `/api/projects` with the same name: it completes rather than refusing. |
+| A deleted document comes back | The archived source in `original-files/` was left behind, and the next conversion pass rebuilt the markdown from it. | Fixed — `deleteDocument` takes both. If one predates this, delete the file under `original-files/` by hand. |
+| A stage still reports documents after its `requirements/` was emptied | `countFeatureDocs` walked `original-files/`, so every archived source counted as a live document — and each converted document counted twice. `countProjectDocs` skipped it explicitly and this did not. | Fixed — `original-files` is in `SKIP_DIRS`. |
 | A stage is refused `no documents` while `/docs` lists documents | Those rows are in the DATABASE and the files are not on DISK, and every gate counts `.md` on disk. Either the upload was refused (`ambiguous_kind` — a `.docx`/`.pdf` whose name matches neither the SOP nor the transcript pattern needs `--as`) and a pre-`51dec6e` CLI recorded the row anyway, or the file landed but never converted. | `find projects/<p> -name '*.md'` is what the gate sees. Re-upload with `--as sop\|transcripts\|notes`, or with no feature pinned for client-wide material. `node scripts/convert-to-md.mjs <p> [<f>]` converts what is already there. |
 | Every conversion fails with `markitdown-ts is not installed` | It resolves from `scyne-chatbot/node_modules` and was missing from that package's dependencies. | `cd scyne-chatbot && npm install`. Nothing under `requirements/` or `documents/` becomes readable until this works. |
 | A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |

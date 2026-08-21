@@ -1,4 +1,4 @@
-import { MessageSquare, ListTodo, Receipt, ScrollText } from "lucide-react";
+import { MessageSquare, ListTodo, Receipt, ScrollText, FolderOpen } from "lucide-react";
 
 /**
  * The left rail — this app's top-level navigation.
@@ -10,11 +10,15 @@ import { MessageSquare, ListTodo, Receipt, ScrollText } from "lucide-react";
  * unchanged — the conversation is still what this app is for.
  */
 
-export type View = "workspace" | "issues" | "spend" | "actions" | "history";
+export type View = "workspace" | "documents" | "issues" | "spend" | "actions" | "history";
 
 /** Which views exist, in rail order. `admin` gates the commercially sensitive two. */
 const ITEMS: Array<{ view: View; label: string; Icon: typeof MessageSquare; admin?: boolean }> = [
   { view: "workspace", label: "Chat", Icon: MessageSquare },
+  // Beside Chat rather than further down: what a project holds is the first
+  // thing anyone checks when a stage says it has no documents, and the first
+  // thing they need to change when it read the wrong ones.
+  { view: "documents", label: "Docs", Icon: FolderOpen },
   { view: "issues", label: "Issues", Icon: ListTodo },
   { view: "spend", label: "Spend", Icon: Receipt, admin: true },
   { view: "actions", label: "Actions", Icon: ScrollText, admin: true },

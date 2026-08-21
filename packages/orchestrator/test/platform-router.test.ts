@@ -731,3 +731,128 @@ describe("the audit trail records organisation management where it can be seen",
     expect(actions.body.some((a: { verb: string }) => a.verb === "org.archive")).toBe(true);
   });
 });
+
+describe("documents", () => {
+  const upload = (token: string, projectId: string, body: Record<string, unknown>) =>
+    call("POST", `/projects/${projectId}/documents`, { token, body });
+
+  const list = (token: string, projectId: string, qs = "") =>
+    call("GET", `/projects/${projectId}/documents${qs}`, { token });
+
+  const remove = (token: string, projectId: string, qs: string) =>
+    call("DELETE", `/projects/${projectId}/documents${qs}`, { token });
+
+  const paths = (r: Res) => (r.body as any[]).map(d => d.path).sort();
+
+  it("retires the current version, so a listing no longer offers it", async () => {
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    await upload(admin, proj.id, { path: "documents/policy.md", content: "# policy" });
+    await upload(admin, proj.id, { path: "documents/standards.md", content: "# standards" });
+
+    const gone = await remove(admin, proj.id, "?path=documents/policy.md");
+    expect(gone.status).toBe(200);
+    expect(paths(await list(admin, proj.id))).toEqual(["documents/standards.md"]);
+  });
+
+  it("keeps the BYTES, because other paths and versions may share them", async () => {
+    // Content is addressed by its own hash and shared across every path that
+    // holds it. A delete that removed the blob would silently corrupt the
+    // others — the same .docx uploaded to three features is one copy.
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    const up = await upload(admin, proj.id, { path: "documents/policy.md", content: "# policy" });
+
+    await remove(admin, proj.id, "?path=documents/policy.md");
+
+    const read = await call("GET", `/projects/${proj.id}/documents/${up.body.id}`, { token: admin });
+    expect(read.status).toBe(200);
+    expect(Buffer.from(read.body.content, "base64").toString()).toBe("# policy");
+  });
+
+  it("lets the same path be uploaded again afterwards, as a new version", async () => {
+    // `put()` compares against the CURRENT row. After a delete there is none,
+    // so re-uploading identical bytes must report changed rather than the
+    // no-op it reports for an unchanged file — a document that came back and
+    // said "nothing changed" would look like the delete had failed.
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    await upload(admin, proj.id, { path: "documents/policy.md", content: "# policy" });
+    await remove(admin, proj.id, "?path=documents/policy.md");
+
+    const again = await upload(admin, proj.id, { path: "documents/policy.md", content: "# policy" });
+    expect(again.body.changed).toBe(true);
+    expect(again.body.version).toBe(2);
+    expect(paths(await list(admin, proj.id))).toEqual(["documents/policy.md"]);
+  });
+
+  it("deletes at the level it was asked for, not the other one", async () => {
+    // A project's own document and a feature's can share a path. Deleting one
+    // must not take the other — `feature_id is null` is a third question, not
+    // the absence of a second.
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    await call("POST", `/projects/${proj.id}/features`, { token: admin, body: { name: "Appeals" } });
+    await upload(admin, proj.id, { path: "notes.md", content: "project" });
+    await upload(admin, proj.id, { path: "notes.md", content: "feature", feature: "Appeals" });
+
+    await remove(admin, proj.id, "?path=notes.md");
+
+    expect(paths(await list(admin, proj.id))).toEqual([]);
+    expect(paths(await list(admin, proj.id, "?feature=Appeals"))).toEqual(["notes.md"]);
+  });
+
+  it("404s a path that is not there, rather than reporting a delete", async () => {
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    expect((await remove(admin, proj.id, "?path=documents/ghost.md")).status).toBe(404);
+  });
+
+  it("400s with no path, which would otherwise read as delete-everything", async () => {
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    expect((await remove(admin, proj.id, "")).status).toBe(400);
+  });
+
+  it("404s an unknown feature instead of falling back to project level", async () => {
+    // Silently treating a mistyped feature as "the project's own documents" is
+    // how a delete aimed at one feature takes a client-wide policy document.
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    await upload(admin, proj.id, { path: "notes.md", content: "project" });
+
+    expect((await remove(admin, proj.id, "?feature=Ghost&path=notes.md")).status).toBe(404);
+    expect(paths(await list(admin, proj.id))).toEqual(["notes.md"]);
+  });
+
+  it("needs editor — a viewer may read the document and not remove it", async () => {
+    const admin = await bootstrap();
+    const owner = await makeUser(admin, "owner@x.co");
+    const guest = await makeUser(admin, "guest@x.co");
+    const proj = (await call("POST", "/projects", { token: owner.token, body: { name: "Alpha" } })).body;
+    await upload(owner.token, proj.id, { path: "notes.md", content: "x" });
+    await call("PUT", `/projects/${proj.id}/members/${guest.id}`, { token: owner.token, body: { role: "viewer" } });
+
+    expect((await list(guest.token, proj.id)).status).toBe(200);
+    expect((await remove(guest.token, proj.id, "?path=notes.md")).status).toBe(403);
+    expect(paths(await list(owner.token, proj.id))).toEqual(["notes.md"]);
+  });
+
+  it("401s without a credential", async () => {
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    expect((await call("DELETE", `/projects/${proj.id}/documents?path=x.md`)).status).toBe(401);
+  });
+
+  it("records the deletion in the audit feed", async () => {
+    // Removing a client's discovery document is exactly the kind of act the
+    // feed exists for — it changes what every later stage reads.
+    const admin = await bootstrap();
+    const proj = (await call("POST", "/projects", { token: admin, body: { name: "RTWSA" } })).body;
+    await upload(admin, proj.id, { path: "documents/policy.md", content: "x" });
+    await remove(admin, proj.id, "?path=documents/policy.md");
+
+    const feed = await call("GET", `/projects/${proj.id}/actions`, { token: admin });
+    expect((feed.body as any[]).some(a => a.verb === "doc.delete")).toBe(true);
+  });
+});

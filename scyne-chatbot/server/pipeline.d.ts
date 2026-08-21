@@ -25,7 +25,8 @@ declare module "*/scripts/pipeline.mjs" {
   export interface StageInput {
     from: string;
     to: string;
-    scope?: "project" | "feature";
+    /** `features` spans every feature under the project — a project stage reads them all. */
+    scope?: "project" | "feature" | "features";
     /** A flag that excuses this requirement, e.g. `--from-requirements`. */
     escape?: string;
     [key: string]: unknown;
@@ -66,6 +67,20 @@ declare module "*/scripts/pipeline.mjs" {
   export function resolveInput(
     workspace: string, input: StageInput, project: string, feature?: string | null,
   ): string;
+
+  /**
+   * Every path an input covers. One path for every scope but `features`, which
+   * spans each feature under the project.
+   */
+  export function resolveInputPaths(
+    workspace: string, input: StageInput, project: string, feature?: string | null,
+  ): Promise<string[]>;
+
+  /** The four folders a client's discovery material lands in, at feature level. */
+  export const DISCOVERY_SUBFOLDERS: readonly string[];
+
+  /** Input origins that are not stages, keyed by the `from` they appear under. */
+  export const SOURCES: Record<string, { label: string }>;
 
   export function exists(p: string): Promise<boolean>;
   export function listProjects(workspace: string): Promise<string[]>;
