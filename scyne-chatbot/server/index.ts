@@ -40,6 +40,9 @@ import { MeetingSession } from "./services/geminiLive.js";
 // Typed by server/pipeline.d.ts — ambient, because pipeline.mjs stays plain
 // JavaScript on purpose (four consumers, one definition of the stage graph).
 import * as pipeline from "../../scripts/pipeline.mjs";
+// The converter's own list, imported rather than restated: what counts as a
+// document here has to be exactly what step 0 of every stage can convert.
+import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
 import {
   carryAuth, requireSession, login, logout, whoami,
   tokenFor, setSessionCookie, clearSessionCookie,
@@ -324,6 +327,24 @@ function deriveProjectKey(project: string): string {
 // Agents read markdown, so `md` is what actually counts — but `other` lets the
 // refusal distinguish "this feature is empty" from "the sources are still
 // .docx/.pdf and were never converted", which are different user actions.
+/**
+ * What a stage will find, split by what has to happen to it first.
+ *
+ * `readable` — `md` plus `convertible` — is what every gate asks about, and
+ * for a while none of them did: they tested `md === 0` and refused a project
+ * holding nothing but `.docx`. But `stage.mjs` runs the converter as its FIRST
+ * step, so a `.docx` IS a document to every stage — and refusing the run is
+ * exactly what stopped it reaching the converter that would have made it
+ * readable. Two `.docx` uploaded to a new project produced
+ * "There are 2 file(s) but none are markdown" on every retry, with no retry
+ * that could ever have changed it.
+ *
+ * `other` stays separate because a `.png` is genuinely not a document the BA
+ * can read, and telling somebody their screens count as discovery material
+ * would be a different wrong answer.
+ */
+interface DocCount { md: number; convertible: number; other: number; readable: number }
+
 const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules"]);
 /**
  * Directories under projects/<project>/ that belong to the PROJECT, not to a
@@ -332,9 +353,10 @@ const SKIP_DIRS = new Set(["outputs", "solutions", "design", "node_modules"]);
  */
 const PROJECT_OWN_DIRS = new Set(["solutions", "documents", "design", "original-files", "outputs"]);
 
-async function countFeatureDocs(project: string, feature: string): Promise<{ md: number; other: number }> {
+async function countFeatureDocs(project: string, feature: string): Promise<DocCount> {
   const root = path.join(WORKSPACE_PATH, "projects", project, feature);
   let md = 0;
+  let convertible = 0;
   let other = 0;
   async function walk(dir: string, depth: number) {
     if (depth > 6) return;
@@ -348,13 +370,15 @@ async function countFeatureDocs(project: string, feature: string): Promise<{ md:
         if (SKIP_DIRS.has(e.name)) continue;
         await walk(path.join(dir, e.name), depth + 1);
       } else if (e.isFile()) {
-        if (e.name.toLowerCase().endsWith(".md")) md++;
+        const ext = path.extname(e.name).toLowerCase();
+        if (ext === ".md" || ext === ".markdown") md++;
+        else if (READABLE_AFTER_CONVERSION.has(ext)) convertible++;
         else other++;
       }
     }
   }
   await walk(root, 0);
-  return { md, other };
+  return { md, convertible, other, readable: md + convertible };
 }
 
 /**
@@ -363,10 +387,13 @@ async function countFeatureDocs(project: string, feature: string): Promise<{ md:
  * the gate has to see all of it too — a project whose documents all live under
  * features must not be told it has none.
  */
-async function countProjectDocs(project: string): Promise<{ md: number; other: number }> {
+async function countProjectDocs(project: string): Promise<DocCount> {
   const root = path.join(WORKSPACE_PATH, "projects", project);
-  let total = { md: 0, other: 0 };
-  const add = (d: { md: number; other: number }) => { total.md += d.md; total.other += d.other; };
+  const total: DocCount = { md: 0, convertible: 0, other: 0, readable: 0 };
+  const add = (d: DocCount) => {
+    total.md += d.md; total.convertible += d.convertible;
+    total.other += d.other; total.readable += d.readable;
+  };
 
   let entries: any[] = [];
   try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return total; }
@@ -471,7 +498,11 @@ function stageTrigger(stage: {
         }
       } else {
         const docs = isProject ? await countProjectDocs(project) : await countFeatureDocs(project, feature);
-        if (docs.md === 0) {
+        // `readable`, not `md`: the workflow's FIRST step converts, so a
+        // `.docx` is a document. Testing `md` refused the run and therefore
+        // refused the conversion, which is the only thing that could have
+        // changed the answer.
+        if (docs.readable === 0) {
           return res.status(409).json({ error: stage.gateErrorCode, ...docs, message: stage.gateMessage(project, feature, docs) });
         }
       }
@@ -641,7 +672,7 @@ app.post("/api/capability-map/trigger", stageTrigger({
   gateErrorCode: "no_documents",
   gateMessage: (p, _f, docs) =>
     docs && docs.other > 0
-      ? `No readable documents for ${p}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
+      ? `No documents for ${p}. There are ${docs.other} file(s), but none is a document the agents can read — images and audio do not count as discovery material. Upload an SOP, transcript or note (.md, .docx, .pdf, .txt all work — they are converted on the way in).`
       : `No documents found for ${p}. Upload at least one SOP, transcript or note (or a reference document tree) before generating the capability map.`,
   inputs: (p) => [
     `Working folder: projects/${p}/solutions/Capabilities/ — stage the documents there, then run the skill.`,
@@ -672,7 +703,7 @@ app.post("/api/ui-mockups/trigger", stageTrigger({
   gateErrorCode: "no_documents",
   gateMessage: (p, f, docs) =>
     docs && docs.other > 0
-      ? `No readable documents for ${p}/${f}. There are ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload the SOPs/transcripts through the chat (uploads are converted to markdown automatically), then try again.`
+      ? `No documents for ${p}/${f}. There are ${docs.other} file(s), but none is a document the agents can read — the screens in requirements/UI/ are designs, not discovery material. Upload an SOP, transcript or note (.md, .docx, .pdf, .txt all work — they are converted on the way in).`
       : `No documents found for ${p}/${f}. Upload at least one SOP, transcript or note — or generate the requirements first — before designing the screens.`,
   publishes: false,
   inputs: (p, f) => [
@@ -1671,12 +1702,12 @@ app.post("/api/project/bootstrap", async (req, res) => {
     const project = String(req.body?.project || "").trim();
     if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
     const docs = await countProjectDocs(project);
-    if (docs.md === 0) {
+    if (docs.readable === 0) {
       return res.status(409).json({
         error: "no_documents",
         ...docs,
         message: docs.other > 0
-          ? `${project} has ${docs.other} file(s) but none are markdown — the agents read .md. Re-upload through the chat so they are converted.`
+          ? `${project} has ${docs.other} file(s), but none is a document the agents can read — images and audio do not count as discovery material. Upload a policy, SOP or transcript (.md, .docx, .pdf, .txt all work).`
           : `No documents for ${project} yet. Upload at least one policy, SOP or transcript first.`,
       });
     }
@@ -2161,7 +2192,7 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
         try { await fs.access(path.join(WORKSPACE_PATH, "projects", project, c)); return true; } catch { /* next */ }
       }
       const docs = await countProjectDocs(project);
-      if (docs.md === 0) return false;
+      if (docs.readable === 0) return false;
       // Documents alone are not an artefact — look for at least one feature output.
       let entries: any[] = [];
       try { entries = await fs.readdir(path.join(WORKSPACE_PATH, "projects", project), { withFileTypes: true }); } catch { return false; }

@@ -61,10 +61,21 @@ async function loadMarkItDown() {
  *     rendering of a screenshot loses the whole point.
  *   - .mp3/.wav — audio has a better path (Gemini transcription).
  */
-const CONVERTIBLE = new Set([".docx", ".doc", ".pdf", ".xlsx", ".html", ".htm", ".xml", ".ipynb"]);
+export const CONVERTIBLE = new Set([".docx", ".doc", ".pdf", ".xlsx", ".html", ".htm", ".xml", ".ipynb"]);
 /** Already text, but not `.md` — copied across verbatim under a `.md` name. */
-const PLAIN_TEXT = new Set([".txt"]);
-const ALREADY_MD = new Set([".md", ".markdown"]);
+export const PLAIN_TEXT = new Set([".txt"]);
+export const ALREADY_MD = new Set([".md", ".markdown"]);
+
+/**
+ * Everything a stage will be able to read once step 0 has run — the markdown
+ * that is already there, plus every source the converter turns INTO markdown.
+ *
+ * Exported because the chatbot's 409 gates ask "does this have documents?" and
+ * were answering it by counting `.md` alone. `stage.mjs` converts as its FIRST
+ * step, so a `.docx` is a document; refusing the run is what stopped it ever
+ * reaching the converter that would have made it readable.
+ */
+export const READABLE_AFTER_CONVERSION = new Set([...ALREADY_MD, ...CONVERTIBLE, ...PLAIN_TEXT]);
 
 const MARKER = "<!-- Converted from";
 

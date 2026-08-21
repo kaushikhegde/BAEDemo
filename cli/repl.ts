@@ -104,6 +104,44 @@ export function refusalText(err: unknown): string {
   return GATE_REASONS[code] || e.message?.trim() || code || "the server refused it";
 }
 
+/**
+ * Draw one step's label, and let readline own it.
+ *
+ * In terminal mode readline redraws the WHOLE line from ITS prompt on every
+ * edit — one backspace emits `\x1b[1G\x1b[0J` and reprints whatever
+ * `setPrompt` last received. So a label written straight to stdout survives
+ * exactly until the first correction: press backspace at `/new`'s
+ * «Project name:» and it is replaced, mid-answer, by the session's own
+ * `no project ›`.
+ *
+ * That is not cosmetic. The step now looks like the ordinary prompt, so the
+ * next thing typed is typed as a COMMAND — `/new` at a vanished "Project
+ * name:" is consumed as the project name and refused for containing a slash,
+ * which reads as the wizard rejecting a perfectly good name.
+ *
+ * The main loop already worked this out for its own prompt; `ask` kept writing
+ * its labels out of band. Nothing is restored afterwards: the loop sets the
+ * session prompt at the top of every iteration, so it is the single owner and
+ * a second writer here is what caused this in the first place.
+ *
+ * On a pipe there is no line editing and readline echoes no prompt, so the
+ * label is written directly — which is what keeps
+ * `printf '…' | scyne` readable.
+ */
+export function drawLabel(
+  rl: Pick<Interface, "setPrompt" | "prompt">,
+  label: string,
+  isTTY: boolean,
+  stdout: { write(s: string): unknown } = process.stdout,
+): void {
+  if (isTTY) {
+    rl.setPrompt(label);
+    rl.prompt();
+  } else {
+    stdout.write(label);
+  }
+}
+
 async function postChat(chatUrl: string, body: unknown): Promise<{ content: Block[] }> {
   const res = await fetch(chatUrl + "/api/chat", {
     method: "POST",
@@ -373,7 +411,7 @@ export async function repl(): Promise<void> {
         term.resume();
       }
     }
-    process.stdout.write(label);
+    drawLabel(rl, label, process.stdin.isTTY === true);
     const line = ((await nextLine()) ?? "").trim();
     // A pipe echoes nothing, so without this the next label lands on the same
     // line and reads as "Email:   Password:".

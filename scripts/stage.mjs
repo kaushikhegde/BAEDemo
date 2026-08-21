@@ -532,7 +532,7 @@ async function printFeatureStatus(project, feature) {
 
 // The skills only read .md. Convert .pdf/.docx/.xlsx/.txt in every source tree
 // first, so a hand-placed PDF is not silently invisible to the model.
-async function convertUnder(root, archiveBase, { force, keepOriginals }) {
+async function convertUnder(root, archiveBase, { force, keepOriginals }, failed) {
   let any = false;
   for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory()) continue;
@@ -546,26 +546,49 @@ async function convertUnder(root, archiveBase, { force, keepOriginals }) {
       onProgress: (f) => console.log(`  converting ${f} …`),
     });
     if (results.length) { reportConversion(results, (s) => console.log(s)); any = true; }
+    failed.push(...results.filter((r) => r.status === "failed"));
   }
   return any;
 }
 
 async function convertSources(ctx, opts) {
   let any = false;
+  const failed = [];
   const proot = projectDir(WORKSPACE, ctx.project);
   // Project stages read every feature too, so convert the whole project tree.
   // ctx.level is authoritative for "baseline", which is not in STAGES.
   if (ctx.level === LEVEL.PROJECT || isProjectStage(ctx.stageKey)) {
-    any = (await convertUnder(proot, path.join(proot, "original-files"), opts)) || any;
+    any = (await convertUnder(proot, path.join(proot, "original-files"), opts, failed)) || any;
     for (const feature of await listFeatures(WORKSPACE, ctx.project)) {
       const fdir = featureDir(WORKSPACE, ctx.project, feature);
-      any = (await convertUnder(fdir, path.join(fdir, "original-files"), opts)) || any;
+      any = (await convertUnder(fdir, path.join(fdir, "original-files"), opts, failed)) || any;
     }
   } else {
-    any = (await convertUnder(proot, path.join(proot, "original-files"), opts)) || any;
-    any = (await convertUnder(ctx.featureDir, path.join(ctx.featureDir, "original-files"), opts)) || any;
+    any = (await convertUnder(proot, path.join(proot, "original-files"), opts, failed)) || any;
+    any = (await convertUnder(ctx.featureDir, path.join(ctx.featureDir, "original-files"), opts, failed)) || any;
   }
   if (any) console.log("");
+
+  // Conversion is a BEST EFFORT, and a failure here is not a reason to stop.
+  //
+  // Every source that converted is staged; the ones that did not are simply
+  // not there, exactly as before. What changed is that it is now SAID. It used
+  // to scroll past inside the conversion report, so a `.docx` that never
+  // became markdown surfaced two screens later as "nothing to read" — the
+  // person was told their documents were missing when the converter was
+  // broken, and `markitdown-ts is not installed` reads nothing like an empty
+  // project.
+  //
+  // The stage still refuses further down if that left it with no sources at
+  // all, which is the right place for it: that check knows whether anything
+  // else was readable. This block only makes sure the REASON is on screen
+  // directly above it.
+  if (failed.length) {
+    console.log(`⚠  ${failed.length} document(s) could not be converted to markdown, so no stage can read them:`);
+    for (const r of failed) console.log(`     ${r.file} — ${r.detail}`);
+    console.log(`   Everything else was staged. If that says markitdown-ts is not installed:`);
+    console.log(`     cd scyne-chatbot && npm install\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------
