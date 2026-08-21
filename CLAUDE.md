@@ -936,13 +936,35 @@ Local app: **React + Vite frontend on port 5173**, **Express backend on port 400
 ### Setup
 
 ```
+cp .env.example .env          # AT THE ROOT — there is no scyne-chatbot/.env
+# edit .env: set GEMINI_API_KEY (Gemini 2.5 Flash, free key from aistudio.google.com/apikey)
 cd scyne-chatbot
 npm install
-cp .env.example .env          # if not already present
-# edit .env: set GEMINI_API_KEY (Gemini 2.5 Flash, free key from aistudio.google.com/apikey)
 npm run dev                   # starts both vite + the api in one process via concurrently
 open http://127.0.0.1:5173
 ```
+
+> **One `.env`, at the workspace root.** Every process reads that file and no
+> other — the orchestrator via `orchestrator.config.ts`, the chatbot via
+> `scyne-chatbot/server/env.ts`, the scripts, and `.mcp.json`'s
+> `${MCP_TOKEN_FOR_AZURE}`. The chatbot used to carry its own, because
+> `import "dotenv/config"` resolves against `cwd` and `npm run chatbot` does
+> `cd scyne-chatbot`: two copies of `ADO_ORG`, `GEMINI_API_KEY` and
+> `WORKSPACE_PATH` that drifted, and one bug they hid — the PAT only ever
+> lived in the ROOT file, so `adoVerify.ts` reported **`token present: false`
+> on every approval** while the same token published fine from the agents.
+> `env.ts` finds the root by walking up for `agent-instructions/` + `skills/`,
+> so it is cwd-independent, and it is imported on line 1 of `index.ts` because
+> ESM evaluates imports in order and `llm.ts` reads `process.env` at load time.
+>
+> **The chatbot's port is `CHATBOT_PORT`, not `PORT`.** One shared file feeds
+> every process in the stack and `PORT` is a name half the Node world reads,
+> so a value meant for the chatbot would be picked up by anything else started
+> from it. `PORT` still works as a fallback — Docker and most PaaS hosts
+> inject it, and neither is ours to change.
+>
+> Uncommented in `.env.example` = what an install actually needs (13 keys).
+> Everything else is commented out with its code default named beside it.
 
 ### Backend endpoints
 
@@ -1041,20 +1063,50 @@ The system prompt teaches the dependency chain (requirements → data model → 
   goes through the Vite proxy on whatever host is actually being viewed.
 - **Comments render as markdown**: `MiniMarkdown` component handles headings, bullets, bold, inline code, fenced code blocks, and links (both `[label](url)` and bare URLs).
 
-### Defaults baked into `.env`
+### Chatbot workflow defaults — there are none left
 
 ```
-DEFAULT_FEATURE_NAME=Review & Verify Evidence
-DEFAULT_PROCESS_L3=2.4 Review & Verify evidence
-DEFAULT_PROCESS_L4=2.4.1 Review evidence
-DEFAULT_STARTING_STORY_NUMBER=2.4.1.1
-DEFAULT_PARENT_EPIC_KEY=SADA-1
-DEFAULT_JIRA_PROJECT_KEY=SADA
-DEFAULT_CONFLUENCE_SPACE_KEY=SADA
-DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
+# DEFAULT_PROCESS_L3 / _L4 / _STARTING_STORY_NUMBER — parsed and then dropped
 ```
 
-These mean a user can simply say "process SADA / interim-benefit" without specifying any parameters.
+The block is empty, and both halves of that are deliberate.
+
+**`DEFAULT_FEATURE_NAME` is deleted, not commented.** It was read by exactly
+one route — `/api/trigger`, the requirements stage — and by nothing else, so
+the feature display name in an issue title came from a global while every
+other stage derived it from the feature FOLDER, at
+`index.ts:468`, under a comment claiming *"same derivation as /api/trigger"*
+that was not true. Set to the SADA-era label it shipped with, triggering
+requirements for RTWSA/Appeals without an explicit name produced
+`Generate requirements — Review & Verify Evidence (RTWSA/Appeals)` — a title
+naming a **different client's feature**, on the one stage that publishes a
+wiki page and creates the backlog. The LLM's tool schema described the field
+as *"Override the default feature name"*, so omitting it was the normal case.
+Both routes now derive it the same way, and the schema says what omitting it
+does.
+
+**The other three reach `issues.params` and stop.** They travel `.env` →
+the issue description → `processL3` / `processL4` / `startingStoryNumber`, and
+nothing reads them from there: no workflow step interpolates any of the three,
+and the BA's generated prompt says only *"your inputs are staged, invoke the
+skill"*. `requirement-generator/SKILL.md` does ask for them under `## Required
+parameters`, but routes them via an `inputs/metadata.yaml` that nothing writes
+— and then says the opposite anyway: *"The process model carries the real
+L1/L2/L3 numbering; prefer it over inventing a process hierarchy."* Since the
+capability map became a PROJECT stage, `process-model.json` is where story
+numbering actually comes from.
+
+They are commented out rather than deleted, and the two sites that rendered
+them now handle absence: `llm.ts` lists only the defaults that are SET (an
+unset one used to reach the model as the literal word `undefined`), and
+`index.ts` writes `(not set)`, which `parseParams` already drops on shape — so
+an unset default becomes an absent param, not the string `"undefined"` stored
+in `issues.params`. Setting one still carries it through, unchanged.
+
+The `DEFAULT_JIRA_*` / `DEFAULT_CONFLUENCE_*` / `DEFAULT_PARENT_EPIC_KEY` keys
+that used to sit beside them were **Atlassian-era and read by nothing**; they
+are gone, along with `CODEX_CLI` and the `PAPERCLIP_*` / `BETTER_AUTH_SECRET` /
+`GEN_APP_PORT_*` block, which only `docker-compose.yml` still referenced.
 
 **One Azure DevOps target for the whole install.** Unlike the Atlassian
 arrangement this replaced — where a Confluence space key was derived from each
@@ -1759,6 +1811,8 @@ with the registry, the registry wins.
 | An ADO call 401s only on Codex runs, and works on Claude | `.mcp.json` holds `${MCP_TOKEN_FOR_AZURE}` and something is not expanding it, so the server receives the literal string. | `readMcpServers` in `core/codex-runner.ts` does the expansion. Check the variable is set in the ROOT `.env` — an unset one now throws by name rather than substituting an empty string. |
 | A published wiki page has the placeholder `{{PRODUCT_SUMMARY_URL}}` in its stories | `ado-workitems.mjs` was run without `--summary-url`. | It refuses this now. If you see it on an older item, re-run with `--summary-url`; the script updates in place. |
 | A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |
+| An env var is set but the chatbot doesn't see it | It was put in a `scyne-chatbot/.env`. That file is gone — `server/env.ts` loads the **workspace-root** `.env` only, by walking up for `agent-instructions/` + `skills/`. | Move the key to the root `.env` and restart; `tsx` does not watch it. The boot line `[workspace] root = …` names the directory it resolved. |
+| Two servers fight over port 4000 | Something else read `PORT` out of the shared root `.env`. | The chatbot's key is `CHATBOT_PORT`; `PORT` is only a fallback for Docker/PaaS. Don't set a bare `PORT` in `.env`. |
 | Chatbot shows "undefined" for a parameter | Frontend reading an old field name. | Search for the renamed field across `src/`. |
 | `/api/features` returns `{}` | `projects/` missing, or `WORKSPACE_PATH` pointing elsewhere. | `mkdir projects/<project>/<feature>/...`, restart the dev server. |
 | Refresh loses the workflow | `localStorage.scyne_parent_issue_id` cleared. | The workflow status panel's "New session" button starts over; otherwise it restores automatically. |

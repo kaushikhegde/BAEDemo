@@ -192,6 +192,31 @@ If the user names a feature that is NOT listed under a project that IS listed, t
   const uiBlock = uiContext?.active
     ? `\n## A live UI preview is ACTIVE for ${uiScope}\n\nThe right pane is showing a running, editable UI build. For EACH user message decide the intent:\n- **A question or request for information** ("what does this screen do?", "why is it laid out this way?", "is it responsive?", "what's left to do?") → just answer in text. Do NOT touch the build.\n- **A change to the UI** ("make the header navy", "add a back button", "move the table up", "use bigger fonts") → call \`comment_on_ui_build\` with kind="modify" and a clear \`instruction\`.\n- **Approval** ("looks good", "ship it", "approve", "that's perfect") → call \`comment_on_ui_build\` with kind="approve".\n- **Push to GitHub** ("push to github <url>", "publish it to <repo>") → call \`comment_on_ui_build\` with kind="push" and \`repo_url\`.\n- **A request to run another workflow stage** ("generate the data model", "run the solution design", "regenerate the requirements") → this is NOT a UI change. Call the matching trigger tool (\`trigger_data_model\` / \`trigger_solution_design\` / \`trigger_requirement_generation\`) as normal — the UI preview stays alive and the user can come back to it afterwards.\n\nWhen unsure whether it's a question or a change, prefer answering in text and ask a one-line clarifying question. Never silently turn a question into a modify instruction.\n`
     : "";
+  // Only the defaults that are actually SET. An unset variable interpolated
+  // into a template literal renders as the word "undefined" — which is what
+  // this block used to tell the model, in the same breath as "these are your
+  // defaults", once the variables behind it were switched off.
+  //
+  // All three are commented out in .env, because nothing downstream reads
+  // them: they reach `issues.params` as processL3 / processL4 /
+  // startingStoryNumber and stop, the BA's prompt never mentions them, and
+  // SKILL.md takes its L1/L2/L3 numbering from the project's
+  // process-model.json instead. Listed here so that setting one is still
+  // honoured rather than silently ignored.
+  //
+  // There is no feature-name default any more. DEFAULT_FEATURE_NAME was read
+  // by exactly one route, which now derives the display name from the feature
+  // FOLDER — the same thing every other stage already did.
+  const defaults: [string, string | undefined][] = [
+    ["Process L3", process.env.DEFAULT_PROCESS_L3],
+    ["Process L4", process.env.DEFAULT_PROCESS_L4],
+    ["Starting story number", process.env.DEFAULT_STARTING_STORY_NUMBER],
+  ];
+  const defaultsBlock = defaults
+    .filter(([, v]) => (v ?? "").trim())
+    .map(([label, v]) => `- ${label}: ${v}`)
+    .join("\n");
+
   const targetBlock = target?.project && target?.feature
     ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
     : "";
@@ -220,11 +245,7 @@ ${targetBlock}${uiBlock}
 
 ## Defaults used unless the user overrides
 
-- Feature: ${process.env.DEFAULT_FEATURE_NAME}
-- Process L3: ${process.env.DEFAULT_PROCESS_L3}
-- Process L4: ${process.env.DEFAULT_PROCESS_L4}
-- Starting story number: ${process.env.DEFAULT_STARTING_STORY_NUMBER}
-- Jira project key + Confluence space key: **default to the project name** (e.g. project "RTWSA" → Jira/Confluence key "RTWSA"). They are NOT fixed to SADA. Only override if the user explicitly names a different Jira project or Confluence space. The BA verifies the project/space exists before pushing and stops if it doesn't (it cannot create them).
+${defaultsBlock ? defaultsBlock + "\n" : ""}- Jira project key + Confluence space key: **default to the project name** (e.g. project "RTWSA" → Jira/Confluence key "RTWSA"). They are NOT fixed to SADA. Only override if the user explicitly names a different Jira project or Confluence space. The BA verifies the project/space exists before pushing and stops if it doesn't (it cannot create them).
 
 ## Starting a feature — the three steps before any stage runs
 
@@ -404,7 +425,7 @@ const triggerTool: Tool = {
         properties: {
           project: { type: SchemaType.STRING, description: "Project folder name, e.g. 'SADA'. Required." },
           feature: { type: SchemaType.STRING, description: "Feature folder name inside the project, e.g. 'interim-benefit'. Required." },
-          feature_name: { type: SchemaType.STRING, description: "Override the default feature name." },
+          feature_name: { type: SchemaType.STRING, description: "A human-readable label for the feature, used in the issue title. Omit it and the feature folder name is used, which is usually right — only pass this when the user gives a display name that differs from the folder." },
           process_l3: { type: SchemaType.STRING, description: "Override the default L3 process." },
           process_l4: { type: SchemaType.STRING, description: "Override the default L4 process." },
           starting_story_number: { type: SchemaType.STRING, description: "Override the default starting story number." },

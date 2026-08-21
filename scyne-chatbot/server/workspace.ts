@@ -1,6 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+// FIRST, and for its side effect: this loads the workspace-root .env before
+// anything below reads process.env.WORKSPACE_PATH. It also owns finding that
+// root, so the env file and the workspace can never resolve to two different
+// directories.
+import { INSTALL_ROOT } from "./env.js";
 
 // Single source of truth for the workspace root (the requirement-generator repo
 // that holds projects/, outputs/, generated-apps/, .orchestrator/).
@@ -12,25 +16,7 @@ import { fileURLToPath } from "node:url";
 //
 // Resolution order:
 //   1. WORKSPACE_PATH env var (Docker sets /workspace; may also be relative).
-//   2. Derived from this module's own location by walking up for the repo root.
-//   3. The repo root two levels up (scyne-chatbot/server → scyne-chatbot → repo).
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-
-// Markers that identify the workspace root — both are checked into the repo.
-const MARKERS = ["agent-instructions", "skills"];
-
-function findRepoRoot(from: string): string {
-  let dir = from;
-  for (let i = 0; i < 6; i++) {
-    if (MARKERS.every((m) => fs.existsSync(path.join(dir, m)))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // server/ lives at <workspace>/scyne-chatbot/server
-  return path.resolve(from, "..", "..");
-}
+//   2. INSTALL_ROOT — derived from this module's own location by env.ts.
 
 function isUsable(dir: string): boolean {
   try {
@@ -42,7 +28,7 @@ function isUsable(dir: string): boolean {
   }
 }
 
-const derived = findRepoRoot(here);
+const derived = INSTALL_ROOT;
 const configured = (process.env.WORKSPACE_PATH || "").trim();
 const configuredAbs = configured ? path.resolve(derived, configured) : "";
 
@@ -58,7 +44,7 @@ if (configuredAbs) {
   } else {
     console.warn(
       `[workspace] WORKSPACE_PATH=${configuredAbs} is missing or not writable on this machine — ` +
-        `ignoring it and using ${derived}. Fix or remove WORKSPACE_PATH in scyne-chatbot/.env.`,
+        `ignoring it and using ${derived}. Fix or remove WORKSPACE_PATH in the workspace root .env.`,
     );
   }
 }

@@ -25,7 +25,8 @@ Both are launched together with `npm run dev` (concurrently).
 
 ```
 scyne-chatbot/
-├── .env / .env.example     (config — see below)
+│                           (NO .env here — config is the workspace-root
+│                            ../.env, loaded by server/env.ts. See below.)
 ├── package.json            (scripts: dev | dev:vite | dev:api | build | preview | typecheck | test)
 ├── vite.config.ts          (proxy /api → :4000)
 ├── tailwind.config.js      (Scyne palette under `theme.extend.colors.scyne`)
@@ -212,36 +213,77 @@ Optional path. When the user opens the recorder modal:
 
 If you remove this feature: delete `RecordMeetingPanel.tsx`, `services/geminiLive.ts`, `services/transcriptWriter.ts`, `public/pcm-worklet.js`, and the `wss.on("connection", ...)` block at the bottom of `server/index.ts`. Drop `ws` and `@types/ws` from `package.json`.
 
-## Defaults baked into `.env`
+## Configuration — the workspace-root `.env`
+
+**There is no `scyne-chatbot/.env`.** `server/env.ts` is imported on line 1 of
+`server/index.ts` and loads `<workspace>/.env` then `<workspace>/.env.local`,
+finding the root by walking up for the `agent-instructions/` + `skills/`
+markers. Adding a `.env` back in this directory will not be read.
+
+It replaced `import "dotenv/config"`, which resolves against `cwd` — and
+`npm run chatbot` does `cd scyne-chatbot`, so the server read this directory's
+file and NEVER the root one. Two copies of `ADO_ORG`, `GEMINI_API_KEY` and
+`WORKSPACE_PATH` drifted apart, and the split hid a real bug: the ADO PAT only
+ever lived in the ROOT file (it is what `.mcp.json` expands), so
+`services/adoVerify.ts` — whose own error text said *"set it in the workspace
+root .env"* — reported **`token present: false` on every approval**, while the
+same token published fine from the agents.
+
+`env.ts` also exports `INSTALL_ROOT`, and `workspace.ts` imports it rather than
+walking up a second time: the env file and the workspace root are the same
+directory by definition, and two independent searches for it can only disagree.
+
+Import order matters. ESM evaluates imports top-down and `llm.ts` reads
+`process.env` at load time, so `import "./env.js"` must stay first in
+`index.ts`.
+
+What this server reads (all of it optional except the Gemini key — see
+`../.env.example` for the full annotated list):
 
 ```
-GEMINI_API_KEY=AIza...
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_TRANSCRIBE_MODEL=gemini-2.5-flash       # optional
-GEMINI_LIVE_MODEL=models/gemini-2.5-flash-native-audio-latest  # optional
+GEMINI_API_KEY=AIza...                         # required
+# GEMINI_MODEL=gemini-2.5-flash                # default in llm.ts
+# GEMINI_TRANSCRIBE_MODEL=gemini-2.5-flash
+# GEMINI_LIVE_MODEL=models/gemini-2.5-flash-native-audio-latest
+# ORCHESTRATOR_API_URL=http://127.0.0.1:3100   # default in orchestrator.ts
+# CHATBOT_PORT=4000                            # NOT `PORT` — see below
+# WORKSPACE_PATH=                              # derived from install location
 
-ORCHESTRATOR_API_URL=http://127.0.0.1:3100
-# Company + agent IDs are NOT in .env — the server reads them from
-# <workspace>/.bootstrap/ids.json, written by `npm run bootstrap`.
-
-# WORKSPACE_PATH=  # leave unset locally — derived from the install location
-
-DEFAULT_FEATURE_NAME=Review & Verify Evidence
-DEFAULT_PROCESS_L3=2.4 Review & Verify evidence
-DEFAULT_PROCESS_L4=2.4.1 Review evidence
-DEFAULT_STARTING_STORY_NUMBER=2.4.1.1
-DEFAULT_PARENT_EPIC_KEY=SADA-1
-DEFAULT_JIRA_PROJECT_KEY=SADA
-DEFAULT_CONFLUENCE_SPACE_KEY=SADA
-DEFAULT_CONFLUENCE_PAGE_TITLE=Review & Verify Evidence
-
-PORT=4000
+# DEFAULT_PROCESS_L3=…        parsed into issues.params, read by nothing
+# DEFAULT_PROCESS_L4=…
+# DEFAULT_STARTING_STORY_NUMBER=…
 ```
+
+**There is no `DEFAULT_FEATURE_NAME`** — deleted, not commented. It was read
+by one route (`/api/trigger`) and no other, so the issue-title display name
+came from a global while every other stage derived it from the feature FOLDER
+at `index.ts:468`. Set to its SADA-era default, an RTWSA run with no explicit
+name was titled `Generate requirements — Review & Verify Evidence
+(RTWSA/Appeals)`. Both routes now use `overrides.feature_name || feature`.
+
+The three that remain travel `.env` → the issue description → `issues.params`
+as `processL3` / `processL4` / `startingStoryNumber` and stop there: no
+workflow step interpolates them, and the BA's prompt never mentions them
+(`SKILL.md` takes its L1/L2/L3 numbering from the project's
+`process-model.json`).
+
+Both sites that render them handle absence, because an unset variable in a
+template literal reaches the model as the literal word `undefined`:
+`llm.ts` lists only the defaults that are SET, and `index.ts` writes
+`(not set)` — the `(...)` shape `parseParams` already drops — so an unset
+default becomes an absent param rather than the string `"undefined"` in
+`issues.params`. Setting one still carries it through unchanged.
+
+**`CHATBOT_PORT`, not `PORT`.** One file now feeds every process in the stack
+and `PORT` is a name half the Node world reads, so a value meant for this
+server would be picked up by anything else started from it. `PORT` is still
+honoured as a fallback, because Docker and most PaaS hosts inject it and
+neither is ours to change.
 
 **Workspace root resolution** (`server/workspace.ts`) — the one place that decides where `projects/`, `outputs/`, `generated-apps/` and `.bootstrap/ids.json` live. Never hardcode an absolute path anywhere else; every other module imports `WORKSPACE_PATH` from there. It resolves in this order:
 
 1. `WORKSPACE_PATH` env var, **if that directory exists and is writable on this machine** (Docker sets `/workspace`). A stale value copied from someone else's `.env` is logged and ignored rather than failing every write with `EACCES`.
-2. Otherwise the repo root found by walking up from `server/` for the `agent-instructions/` + `skills/` markers — so a fresh clone on any machine just works with no config.
+2. Otherwise `INSTALL_ROOT` from `server/env.ts` — the repo root found by walking up from `server/` for the `agent-instructions/` + `skills/` markers, which is the same answer the `.env` was loaded from. A fresh clone on any machine just works with no config.
 
 The resolved root is printed at boot: `[workspace] root = … (from WORKSPACE_PATH | derived from install location)`.
 
@@ -267,7 +309,7 @@ Logo: served from Scyne's CDN at `https://cdn.prod.website-files.com/650aedb6397
 ### Hot-reload behaviour
 - **Frontend changes** (anything under `src/`) — Vite HMR. No restart needed.
 - **Backend changes** (anything under `server/`) — `tsx watch` reloads automatically. The browser will refetch on the next request.
-- **`.env` changes** — restart `npm run dev`; tsx doesn't watch `.env`.
+- **`.env` changes** (the workspace-root one) — restart `npm run dev`; tsx doesn't watch `.env`.
 
 ### Test an endpoint without the UI
 ```bash

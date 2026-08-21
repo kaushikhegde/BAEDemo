@@ -7,15 +7,26 @@ A Scyne-branded chat UI that takes a conversational requirement-generation reque
 - Backend: Node + Express + Anthropic SDK + Paperclip API client, served on `http://127.0.0.1:4000`
 
 ## Setup
-1. Install deps:
+
+> **There is no `.env` in this directory.** Configuration lives in ONE file at
+> the **workspace root** — `../.env`, copied from `../.env.example` — which
+> `server/env.ts` loads by walking up for the repo root, so it does not matter
+> what `cwd` the server was started from. Adding a `scyne-chatbot/.env` back
+> will not be read.
+
+1. Configure, at the workspace root:
+   ```
+   cp ../.env.example ../.env
+   ```
+   - `GEMINI_API_KEY` — free key from <https://aistudio.google.com/apikey>
+   - `MCP_TOKEN_FOR_AZURE` — the Azure DevOps PAT (`vso.wiki_write` + `vso.work_write`)
+   - `ADO_ORG` / `ADO_PROJECT` — the publishing target
+   - `CHATBOT_PORT` — optional, defaults to 4000 (**not** `PORT`, which is
+     honoured as a fallback but is too common a name for a shared env file)
+2. Install deps:
    ```
    npm install
    ```
-2. Set environment variables in `.env` (copied from `.env.example`):
-   - `ANTHROPIC_API_KEY` — your Claude API key
-   - `PAPERCLIP_API_URL` — default `http://127.0.0.1:3100/api`
-   - `PAPERCLIP_COMPANY_ID` — the Scyne company ID
-   - `PAPERCLIP_DELIVERY_LEAD_AGENT_ID` — the Delivery Lead agent ID
 3. Run:
    ```
    npm run dev
@@ -51,7 +62,7 @@ Use an API token when the MCP login lacks permission to create projects or space
 4. Label it (e.g. `scyne-provisioning`), pick an expiry, click **Create**.
 5. **Copy the token now** — it's only shown once.
 
-#### Add to `.env` and restart
+#### Add to the workspace-root `.env` and restart
 
 ```env
 ATLASSIAN_SITE_URL=https://your-team.atlassian.net

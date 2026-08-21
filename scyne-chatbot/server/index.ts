@@ -1,4 +1,7 @@
-import "dotenv/config";
+// FIRST: loads the ONE .env, at the workspace root, before any module
+// below reads process.env at load time. See env.ts for why it is not
+// `dotenv/config` (that resolved against cwd, which is scyne-chatbot/).
+import "./env.js";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -144,9 +147,19 @@ app.post("/api/trigger", async (req, res) => {
       project?: string;
       feature?: string;
     };
-    const feature_name = overrides.feature_name || process.env.DEFAULT_FEATURE_NAME || "Untitled Feature";
     const project = overrides.project || "SADA";
     const feature = overrides.feature || "interim-benefit";
+    // The display name in the issue TITLE, and the same derivation the generic
+    // stage route uses — the feature FOLDER name when the caller does not name
+    // one. It used to fall back to a DEFAULT_FEATURE_NAME env var instead,
+    // which no other route read: with it set to a SADA-era label, triggering
+    // requirements for RTWSA/Appeals without an explicit name produced
+    // `Generate requirements — Review & Verify Evidence (RTWSA/Appeals)` — a
+    // title naming a different client's feature, on the one stage that
+    // publishes a wiki page and creates the backlog. The LLM tool schema calls
+    // the field "Override the default feature name", so omitting it is the
+    // normal case, not an edge one.
+    const feature_name = overrides.feature_name || feature;
     // The Azure DevOps target is ONE organisation and ONE project for the whole
     // install, unlike the Atlassian arrangement this replaced, where the space
     // key was derived per Scyne project. A wiki page path carries the project
@@ -216,9 +229,15 @@ app.post("/api/trigger", async (req, res) => {
       `- Feature: ${feature}`,
       ``,
       `## Parameters`,
-      `- Process L3: ${params.process_l3}`,
-      `- Process L4: ${params.process_l4}`,
-      `- Starting story number: ${params.starting_story_number}`,
+      // The `(...)` form is this file's convention for "not set", and
+      // parseParams drops any value shaped that way — so an unset default
+      // becomes an absent param rather than the literal string "undefined"
+      // stored in issues.params. These three are commented out in .env
+      // because nothing downstream reads them; they are still carried when
+      // someone sets one.
+      `- Process L3: ${params.process_l3 || "(not set)"}`,
+      `- Process L4: ${params.process_l4 || "(not set)"}`,
+      `- Starting story number: ${params.starting_story_number || "(not set)"}`,
       `- ADO parent epic id: ${params.ado_parent_epic_id || "(none — create work items without a parent)"}`,
       `- ADO org: ${params.ado_org}`,
       `- ADO project: ${params.ado_project}`,
@@ -1795,7 +1814,8 @@ app.post("/api/revise", async (req, res) => {
  * There used to be two, and they disagreed. `SAFE_PROJECT` (line 1102, and
  * `pipeline.SAFE_NAME`) allows spaces and `&`; this one did not. So
  * `POST /api/features` would happily create "Review & Verify Evidence" — the
- * DEFAULT_FEATURE_NAME in .env, no less — and then all sixteen routes guarded
+ * value DEFAULT_FEATURE_NAME then carried in .env, no less — and then all
+ * sixteen routes guarded
  * by the assertions below refused every request touching it, uploads and the
  * web attach button included, with "Invalid project or feature name".
  *
@@ -2004,7 +2024,7 @@ app.post("/api/projects", async (req, res) => {
         error: "workspace_not_writable",
         message:
           `Can't create folders under ${WORKSPACE_PATH} (${e.code}). ` +
-          `The server's workspace root is not writable — unset WORKSPACE_PATH in scyne-chatbot/.env ` +
+          `The server's workspace root is not writable — unset WORKSPACE_PATH in the workspace-root .env ` +
           `to use this checkout, or point it at a directory you own.`,
       });
     }
@@ -2363,7 +2383,12 @@ if (fssync.existsSync(STATIC_DIR)) {
   console.log(`[chatbot] serving static UI from ${STATIC_DIR}`);
 }
 
-const PORT = Number(process.env.PORT) || 4000;
+// CHATBOT_PORT, not PORT: one shared root .env now feeds every process in
+// the stack, and `PORT` is a name half the Node world reads. A value meant
+// for this server would otherwise be picked up by anything else started
+// from that file. `PORT` is still honoured as a fallback, because Docker
+// and most PaaS hosts inject it and neither is ours to change.
+const PORT = Number(process.env.CHATBOT_PORT || process.env.PORT) || 4000;
 const server = http.createServer(app);
 
 // 8. WebSocket — live meeting recording.
