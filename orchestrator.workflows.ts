@@ -88,11 +88,19 @@ function approvalSummary(s: Stage): string {
  * The wiki path a stage's document lives at.
  *
  * Identity is the PATH, not a title lookup plus a remembered id — which is
- * what makes republishing a revision idempotent. Project and feature are both
- * in it so two features cannot collide on a stage name.
+ * what makes republishing a revision idempotent. The Scyne project is NOT in
+ * the path: each one has its own Azure DevOps project now, so the wiki already
+ * belongs to exactly one client and a `/Scyne/{project}/` prefix would only
+ * repeat the container's name inside it. The feature IS, so two features
+ * cannot collide on a stage name.
+ *
+ * This is a FIRST-publish path only. An artefact already recorded in
+ * `.published.json` keeps the path it was published at — see `resolvePagePath`
+ * in `scripts/lib/ado.mjs`, which is what stops a change here from moving a
+ * page a client already has a link to.
  */
 const wikiPathTpl = (s: Stage): string =>
-  isProject(s) ? `/Scyne/{project}/${s.label}` : `/Scyne/{project}/{feature}/${s.label}`;
+  isProject(s) ? `/${s.label}` : `/{feature}/${s.label}`;
 
 /**
  * The container pages above an artefact, outermost first.
@@ -120,7 +128,12 @@ function publishPrompt(key: string, s: Stage): string {
     ``,
     `- **Organisation**: the \`adoOrg\` parameter below if one is listed, otherwise`,
     `  \`ADO_ORG\` from the environment.`,
-    `- **Project**: the \`adoProject\` parameter, otherwise \`ADO_PROJECT\`.`,
+    `- **Project**: the \`adoProject\` parameter if one is listed, otherwise the`,
+    `  \`adoTarget.project\` recorded in \`projects/{project}/.published.json\`.`,
+    `  There is no environment fallback: ONE Azure DevOps project for the whole`,
+    `  installation is exactly what per-project targets replaced, and guessing`,
+    `  one would publish a client's document into another client's project. If`,
+    `  neither is present, STOP and say the project has no Azure DevOps target.`,
     `- **Wiki**: the \`adoWiki\` parameter. If none is listed, use the project's`,
     `  only wiki; if it has more than one, STOP and say so rather than guessing`,
     `  which of a client's wikis to write into.`,

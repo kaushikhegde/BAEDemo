@@ -175,21 +175,29 @@ for (const t of ["wiki_upsert_page", "wit_work_item_write", "wit_work_item_link_
 }
 // The one thing it CANNOT do, which is why the type is a workflow parameter.
 tools.some(t => /work.?item.?type/i.test(t))
-  ? meh("a work item TYPE listing tool exists", "then ADO_WORK_ITEM_TYPE could be discovered instead")
-  : ok("no tool lists work item types — hence ADO_WORK_ITEM_TYPE is a parameter");
+  ? meh("a work item TYPE listing tool exists", "then the type could be discovered instead of recorded")
+  : ok("no tool lists work item types — hence the type is recorded per project");
 
 // -------------------------------------------------------------- 3. it works
 
 head("3. What the publish step actually does");
 
 const ORG = process.env.ADO_ORG;
-const PROJECT = process.env.ADO_PROJECT;
-const TYPE = process.env.ADO_WORK_ITEM_TYPE || "Issue";
+// There is no installation-wide ADO project any more — each Scyne project has
+// its own, recorded in its .published.json. This is a hand-run diagnostic, so
+// it takes the one to probe explicitly rather than guessing at a client's.
+const argOf = (name) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i !== -1 ? process.argv[i + 1] : undefined;
+};
+const PROJECT = argOf("project");
+const TYPE = argOf("type") || "Issue";
 const text = (r) => (r.result?.content ?? []).map(c => c.text ?? "").join("\n");
 const failed = (r) => r.error || r.result?.isError;
 
 if (!ORG || !PROJECT) {
-  meh("ADO_ORG / ADO_PROJECT are set", "set them in .env to run the live checks");
+  meh("a live target is configured",
+      'set ADO_ORG in .env and pass --project "<ADO project>" to run the live checks');
 } else {
   // Read: proves auth end to end through the MCP, not just over REST.
   try {
@@ -231,7 +239,7 @@ if (!ORG || !PROJECT) {
       });
       if (failed(r)) {
         bad(`creating a '${TYPE}' work item`, text(r).slice(0, 280) +
-          `\n\nIf it says the type does not exist, ADO_WORK_ITEM_TYPE is wrong for this project.` +
+          `\n\nIf it says the type does not exist, adoTarget.workItemType is wrong for this project.` +
           `\nRun 'npm run ado:verify' — it prints the types the project actually has.`);
       } else {
         const m = /\b(\d{1,7})\b/.exec(text(r));

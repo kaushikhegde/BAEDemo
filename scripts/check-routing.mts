@@ -52,8 +52,9 @@ console.log(parseParams(cases[0][1]));
 console.log("\n--- revision instruction, verbatim ---");
 console.log(JSON.stringify(parseParams(cases[11][1]).instruction));
 
-// The ADO target must survive the round trip, or a publish step is handed no
-// organisation and falls back to whatever the environment happens to hold.
+// The ADO target must survive the round trip. There is no environment fallback
+// any more: a publish step handed no project STOPS rather than guessing, so a
+// parameter lost here is a blocked run rather than a misfiled page.
 {
   const p = parseParams(
     "- Project: SADA\n- Feature: interim-benefit\n- ADO org: Scyne-AI-Lab\n" +

@@ -20,6 +20,7 @@ import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
+import { ensureAdoProject } from "./services/adoProject.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
 // rather than kept as a second local copy. This chatbot previously carried a
 // stale, Claude-vocabulary-only fork (services/runTranscript.ts) that had
@@ -171,12 +172,14 @@ app.post("/api/trigger", async (req, res) => {
       starting_story_number: overrides.starting_story_number || process.env.DEFAULT_STARTING_STORY_NUMBER,
       ado_parent_epic_id: overrides.ado_parent_epic_id || process.env.ADO_PARENT_EPIC_ID || "",
       ado_org: overrides.ado_org || process.env.ADO_ORG,
-      ado_project: overrides.ado_project || process.env.ADO_PROJECT,
+      ado_project: overrides.ado_project || "",
       ado_wiki: overrides.ado_wiki || process.env.ADO_WIKI || "",
-      // `Issue` is the Basic template's unit of deliverable work, which is
-      // what the current target runs. `npm run ado:verify` prints the types a
-      // project actually has.
-      ado_work_item_type: overrides.ado_work_item_type || process.env.ADO_WORK_ITEM_TYPE || "Issue",
+      // Both come from the project's own `adoTarget` in .published.json when
+      // they are not passed. There is no installation-wide default any more:
+      // an Agile project has `User Story`, the pre-existing shared project
+      // runs Basic and has `Issue`, and guessing between them fails every
+      // story at once — after the gate was approved.
+      ado_work_item_type: overrides.ado_work_item_type || "",
     };
     const ws = WORKSPACE_PATH;
 
@@ -477,7 +480,7 @@ function stageTrigger(stage: {
       // for runs whose requirements used custom values.
       const feature_name = String(req.body?.feature_name || "").trim() || feature;
       const ado_org = String(req.body?.ado_org || "").trim() || process.env.ADO_ORG || "";
-      const ado_project = String(req.body?.ado_project || "").trim() || process.env.ADO_PROJECT || "";
+      const ado_project = String(req.body?.ado_project || "").trim();
       const ado_wiki = String(req.body?.ado_wiki || "").trim() || process.env.ADO_WIKI || "";
       // Only stages that publish carry Atlassian keys — /api/approve keys its
       // auto-provisioning off the "Confluence space key" line, so a local-only
@@ -922,7 +925,7 @@ app.post("/api/approve/:approvalId", async (req, res) => {
         const grab = (label: string) =>
           (desc.match(new RegExp(`-\\s*${label}:\\s*(.+)`)) || [])[1]?.trim() || "";
         const org = grab("ADO org") || process.env.ADO_ORG || "";
-        const project = grab("ADO project") || process.env.ADO_PROJECT || "";
+        const project = grab("ADO project") || "";
         const wikiRaw = grab("ADO wiki");
         const wiki = wikiRaw.startsWith("(") ? "" : wikiRaw;
         if (org && project) {
@@ -1487,10 +1490,22 @@ app.post("/api/projects", async (req, res) => {
       return res.status(400).json({ error: "bad_project", message: "Use letters, numbers, spaces, and . _ & - only." });
     }
     const root = path.join(WORKSPACE_PATH, "projects", project);
-    try {
-      await fs.access(root);
-      return res.status(409).json({ error: "exists", message: `A project called "${project}" already exists.` });
-    } catch { /* good — it is new */ }
+    let exists = false;
+    try { await fs.access(root); exists = true; } catch { /* good — it is new */ }
+    if (exists) {
+      // A project whose Azure DevOps setup failed is INCOMPLETE, not taken.
+      // Refusing it with 409 would strand it: this route is the only way to
+      // create the target, and it is the thing being refused.
+      let hasTarget = false;
+      try {
+        const p = JSON.parse(await fs.readFile(path.join(root, ".published.json"), "utf8"));
+        hasTarget = Boolean(p?.adoTarget?.project);
+      } catch { /* no record — treat as missing */ }
+      if (hasTarget) {
+        return res.status(409).json({ error: "exists", message: `A project called "${project}" already exists.` });
+      }
+      console.log(`[projects] ${project} exists but has no Azure DevOps target — completing it`);
+    }
 
     for (const d of PROJECT_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
 
@@ -1503,6 +1518,34 @@ app.post("/api/projects", async (req, res) => {
         : `# ${project} — Project Definition\n\n${description}\n`;
       await fs.writeFile(path.join(root, "description.md"), content, "utf8");
       definitionWritten = true;
+    }
+
+    // The Azure DevOps target, resolved once and recorded. Everything
+    // downstream reads it from .published.json rather than an environment
+    // variable, because ONE target for the whole installation is exactly what
+    // per-project targets replaced.
+    //
+    // A failure here is NOT fatal to the wizard: the folder tree, the
+    // definition and the branding are real and worth keeping. It returns with
+    // `adoError` set and no `adoTarget`, leaving the project INCOMPLETE rather
+    // than broken — re-posting this route completes it.
+    let adoTarget: any = null;
+    let adoError: string | null = null;
+    if (process.env.ADO_ORG) {
+      const ensured = await ensureAdoProject({ org: process.env.ADO_ORG, project });
+      if (ensured.ok) {
+        const publishedFile = path.join(root, ".published.json");
+        let current: any = {};
+        try { current = JSON.parse(await fs.readFile(publishedFile, "utf8")); } catch { /* first write */ }
+        current.adoTarget = ensured.target;
+        await fs.writeFile(publishedFile, JSON.stringify(current, null, 2) + "\n", "utf8");
+        adoTarget = ensured.target;
+      } else {
+        adoError = ensured.error;
+        console.error(`[projects] ${project}: Azure DevOps setup failed — ${ensured.error}`);
+      }
+    } else {
+      adoError = "ADO_ORG is not set, so no Azure DevOps project was created.";
     }
 
     // Branding is a fetch, not an agent, so it runs inline. A failure is
@@ -1527,8 +1570,8 @@ app.post("/api/projects", async (req, res) => {
       }
     }
 
-    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)})`);
-    res.json({ ok: true, project, definitionWritten, brand, brandError });
+    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ado=${Boolean(adoTarget)})`);
+    res.json({ ok: true, project, definitionWritten, brand, brandError, adoTarget, adoError });
   } catch (e: any) {
     console.error("[projects] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -1888,6 +1931,33 @@ function assertSafeProject(project: string) {
  * they have no documents. The original is MOVED to original-files/documents/,
  * never deleted.
  */
+/**
+ * What the agents will actually read, after `convert-to-md.mjs` has run.
+ *
+ * The converter REPLACES the source with its markdown and archives the
+ * original, so the name that was written is usually gone by the time we reply:
+ * `foo.docx` → `foo.md`, or `foo.docx.md` when a foreign `foo.md` was already
+ * there (resolveTarget in convert-to-md.mjs).
+ *
+ * The trigger is that the SOURCE has disappeared, not that the converter exited
+ * 0 — it exits 0 for a `.png` too, which it skips by design. Going by the exit
+ * code, a screen uploaded beside an unrelated `foo.md` would be reported as
+ * having been converted into someone else's document. Checking the
+ * disambiguated form first is the same guard, one level down.
+ */
+async function afterConversion(dir: string, savedName: string): Promise<string> {
+  const stillThere = await fs.access(path.join(dir, savedName)).then(() => true, () => false);
+  if (stillThere) return savedName;
+  const stem = savedName.slice(0, savedName.length - path.extname(savedName).length);
+  for (const candidate of [`${savedName}.md`, `${stem}.md`]) {
+    try {
+      await fs.access(path.join(dir, candidate));
+      return candidate;
+    } catch { /* not that one */ }
+  }
+  return savedName;
+}
+
 app.post("/api/upload/project", upload.single("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
@@ -1900,13 +1970,21 @@ app.post("/api/upload/project", upload.single("file"), async (req, res) => {
     const savedName = await uniqueName(dir, req.file.originalname);
     await fs.writeFile(path.join(dir, savedName), req.file.buffer);
 
-    const converted = await runHelper("convert-to-md.mjs", [project]);
+    const conversion = await runHelper("convert-to-md.mjs", [project]);
+    if (!conversion.ok) {
+      console.warn(
+        `[upload/project] convert-to-md exited ${conversion.code} for ${project}:`,
+        conversion.stderr.trim().slice(-400));
+    }
+    const readableName = await afterConversion(dir, savedName);
     res.json({
       kind: "file",
       scope: "project",
-      filename: savedName,
-      converted: converted.ok,
-      relativePath: path.relative(WORKSPACE_PATH, path.join(dir, savedName)),
+      filename: readableName,
+      // Was THIS file converted — not "did the converter exit 0", which it also
+      // does for a directory of markdown it had nothing to do.
+      converted: readableName !== savedName,
+      relativePath: path.relative(WORKSPACE_PATH, path.join(dir, readableName)),
     });
   } catch (e: any) {
     console.error("[upload/project] failed:", e);
@@ -1982,11 +2060,39 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     await fs.mkdir(targetDir, { recursive: true });
     const savedName = await uniqueName(targetDir, route.savedName);
     await fs.writeFile(path.join(targetDir, savedName), req.file.buffer);
+
+    // Convert to markdown HERE, not at staging time — exactly as
+    // /api/upload/project does, and for the same reason.
+    //
+    // Every stage's 409 gate counts `.md` under projects/<p>/ (countFeatureDocs
+    // and countProjectDocs, which reads it per feature). `stage.mjs` runs the
+    // converter as its step 0, which is AFTER that gate — so a feature-level
+    // `.docx` was refused with `no_documents` on every retry and never reached
+    // the converter that would have made it readable. Uploading three .docx and
+    // being told the project has no documents is exactly this, and no number of
+    // retries could have cleared it.
+    //
+    // Images (requirements/UI) and audio are skipped by the converter itself,
+    // and the source is MOVED to original-files/requirements/, never deleted.
+    const conversion = await runHelper("convert-to-md.mjs", [project, feature]);
+    if (!conversion.ok) {
+      // Not fatal: the file is on disk, and `stage.mjs` runs the same converter
+      // again at staging time. But a stage gate counts `.md`, so a conversion
+      // that keeps failing is precisely why an upload that reported success is
+      // then refused with `no_documents` — log it where someone can see it.
+      console.warn(
+        `[upload] convert-to-md exited ${conversion.code} for ${project}/${feature}:`,
+        conversion.stderr.trim().slice(-400));
+    }
+
+    const readableName = await afterConversion(targetDir, savedName);
+
     return res.json({
       kind: "file",
       subfolder: route.subfolder,
-      filename: savedName,
-      relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, savedName)),
+      filename: readableName,
+      converted: readableName !== savedName,
+      relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, readableName)),
     });
   } catch (e: any) {
     console.error("[upload] failed:", e);
@@ -1994,56 +2100,6 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   }
 });
 
-// 6b. Create a new project/feature — scaffolds the empty input folder structure
-//     in the shared workspace volume. Files are uploaded afterwards via /api/upload.
-app.post("/api/projects", async (req, res) => {
-  try {
-    const project = String(req.body?.project || "").trim();
-    const feature = String(req.body?.feature || "").trim();
-    if (!project || !feature) return res.status(400).json({ error: "project and feature are required" });
-    assertSafeProjectFeature(project, feature);
-
-    const base = path.join(WORKSPACE_PATH, "projects", project, feature);
-    const dirs = [
-      path.join(base, "requirements", "SOP"),
-      path.join(base, "requirements", "Transcripts"),
-      path.join(base, "requirements", "Notes"),
-      path.join(base, "requirements", "UI"),
-      path.join(base, "requirements", "templates"),
-      path.join(base, "design", "style-guides"),
-      path.join(base, "design", "example-screens"),
-      path.join(base, "outputs"),
-      // Downstream pipeline working folders (Data Modeler / Architecture Lead).
-      // The agents also create these on demand, so older features work too.
-      path.join(base, "solutions", "DataModel", "productsummary"),
-      path.join(base, "solutions", "DataModel", "datamodel-reference"),
-      path.join(base, "solutions", "DataModel", "outputs"),
-      path.join(base, "solutions", "Design", "productsummary"),
-      path.join(base, "solutions", "Design", "DataModel"),
-      path.join(base, "solutions", "Design", "outputs"),
-      // Capabilities Process Architect working folder.
-      path.join(base, "solutions", "Capabilities", "documents"),
-      path.join(base, "solutions", "Capabilities", "outputs"),
-    ];
-    for (const d of dirs) await fs.mkdir(d, { recursive: true });
-
-    res.json({ ok: true, project, feature, relativePath: path.relative(WORKSPACE_PATH, base) });
-  } catch (e: any) {
-    console.error("[projects] create failed:", e);
-    // A permission error here nearly always means the workspace root is wrong
-    // (pointing outside this checkout) — say so instead of leaking a raw EACCES.
-    if (["EACCES", "EPERM", "EROFS"].includes(e?.code)) {
-      return res.status(500).json({
-        error: "workspace_not_writable",
-        message:
-          `Can't create folders under ${WORKSPACE_PATH} (${e.code}). ` +
-          `The server's workspace root is not writable — unset WORKSPACE_PATH in the workspace-root .env ` +
-          `to use this checkout, or point it at a directory you own.`,
-      });
-    }
-    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
-  }
-});
 
 // 7a. Trigger a UI build — creates a Delivery-Lead-assigned issue with the "Build UI — ..." title.
 //     The Delivery Lead detects this intent, validates outputs/product-summary.md exists, then

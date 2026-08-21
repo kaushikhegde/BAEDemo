@@ -59,6 +59,37 @@ for (const w of buildWorkflows()) {
 
 if (!publishSteps) fail("no publish steps found at all — has `publishes` been dropped from the pipeline?");
 
+// The wiki path scheme. One Azure DevOps project per Scyne project means the
+// project name is no longer needed IN the path — the project IS the container.
+// A regression here does not throw: it publishes a client's document to a
+// plausible-looking path that nothing links to.
+{
+  const publishPrompts = buildWorkflows()
+    .flatMap(w => w.steps.map((s, i) => ({ key: w.key, i, s })))
+    .filter(({ s }) => s.type === "agent" && s.phase === "publish")
+    .map(({ key, s }) => ({ key, prompt: String((s as any).prompt ?? "") }));
+
+  for (const { key, prompt } of publishPrompts) {
+    if (prompt.includes("/Scyne/")) {
+      fail(`${key}: publish prompt still carries the retired /Scyne/ path prefix`);
+    }
+    if (/`\/\{project\}\//.test(prompt)) {
+      fail(`${key}: publish prompt still puts {project} in the wiki path`);
+    }
+  }
+
+  // A project-level artefact sits at the wiki root and therefore has NO parent
+  // page; a feature-level one has exactly one, `/{feature}`.
+  const capabilities = publishPrompts.find(p => p.key === "capabilities");
+  if (capabilities && !capabilities.prompt.includes("`/Capability & Process Map`")) {
+    fail("capabilities: expected the page path `/Capability & Process Map`");
+  }
+  const datamodel = publishPrompts.find(p => p.key === "datamodel");
+  if (datamodel && !datamodel.prompt.includes("`/{feature}/Salesforce Data Model`")) {
+    fail("datamodel: expected the page path `/{feature}/Salesforce Data Model`");
+  }
+}
+
 console.log(bad
   ? `\n${bad} workflow check(s) FAILED`
   : `\nevery publish step (${publishSteps}) runs as the publisher, with no skill`);

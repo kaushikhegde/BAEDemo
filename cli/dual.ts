@@ -80,10 +80,13 @@ async function postChat<T = unknown>(
       headers: { "content-type": "application/json", ...chatAuth() },
       body: JSON.stringify(body),
     });
-    const parsed = await res.json().catch(() => null) as (T & { error?: string }) | null;
+    const parsed = await res.json().catch(() => null) as (T & { error?: string; message?: string }) | null;
     if (res.ok) return { side: { state: "created" }, body: parsed };
     if (res.status === 409) return { side: { state: "exists" }, body: parsed };
-    return { side: { state: "failed", detail: parsed?.error ?? res.statusText }, body: parsed };
+    // `message` before `error`, as the two upload paths below already do: the
+    // second is a code, so a refused feature name reported "reserved_name"
+    // rather than naming which names are reserved and why.
+    return { side: { state: "failed", detail: parsed?.message ?? parsed?.error ?? res.statusText }, body: parsed };
   } catch {
     // Not an error worth stopping for: the database side still succeeded, and
     // the tree can be created later. Say which half is missing.

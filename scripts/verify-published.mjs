@@ -48,7 +48,8 @@
  */
 
 import process from "node:process";
-import { API, adoFetch, loadAdo, parseArgs, projectPath, readPublished } from "./lib/ado.mjs";
+import { API, adoFetch, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished }
+  from "./lib/ado.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const project = positional[0];
@@ -113,7 +114,14 @@ if (wantedPath && recordedPath && recordedPath !== wantedPath) {
 
 let ado;
 try {
-  ado = await loadAdo({ org: flags.org, project: flags.project });
+  // The target is the one this project publishes to, not an installation-wide
+  // default — the same resolution ado-publish.mjs uses, so a verify cannot
+  // check a different project than the publish wrote to.
+  const target = await readAdoTarget(publishedFile);
+  ado = await loadAdo({
+    org: flags.org || target?.org,
+    project: flags.project || target?.project,
+  });
 } catch {
   ado = null;
 }
@@ -122,8 +130,8 @@ if (!ado?.auth || !ado?.project) {
   console.log(
     `\n  ! NOT VERIFIED AGAINST AZURE DEVOPS — no credential is configured here.\n` +
     `    Only the local record was checked, and that file is written by the\n` +
-    `    same agent whose work it vouches for. Set ADO_ORG / ADO_PROJECT and a\n` +
-    `    PAT to make this check mean something.\n`);
+    `    same agent whose work it vouches for. Set ADO_ORG and a PAT, and give\n` +
+    `    the project an \`adoTarget\`, to make this check mean something.\n`);
   process.exit(0);
 }
 

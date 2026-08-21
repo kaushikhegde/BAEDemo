@@ -69,15 +69,40 @@ interface BrandTheme {
 }
 
 /** 409 codes the backend returns for an unmet prerequisite, in plain words. */
-const GATE_REASONS: Record<string, string> = {
+export const GATE_REASONS: Record<string, string> = {
   no_product_summary: "there is no product summary yet — run the requirements stage first",
   no_data_model: "there is no data model yet — run the data model stage first",
   no_capability_map: "there is no capability map yet — run the capability map first",
-  no_documents: "that feature has no documents yet — upload an SOP or a transcript",
+  no_documents: "no readable documents yet — upload an SOP or a transcript",
   no_artefacts: "nothing has been generated for this project yet",
   missing_inputs: "some required input folders are empty",
   not_generated: "that artefact has not been generated yet, so there is nothing to revise",
 };
+
+/** A refused call: the machine-readable code, and the server's own sentence. */
+export interface Refusal { code?: string; detail?: string; message?: string }
+
+/**
+ * What to print when a trigger is refused.
+ *
+ * The SERVER's sentence wins. It knows the project, the level and what it
+ * actually found on disk; GATE_REASONS knows only the code, so it announced
+ * "that feature has no documents yet" for a PROJECT stage that takes no
+ * feature, directly beneath a `/docs` listing showing three documents — and
+ * the server had meanwhile sent "There are 3 file(s) but none are markdown",
+ * which is the half that says what to do about it.
+ *
+ * GATE_REASONS stays as the fallback for a refusal carrying no message, and
+ * the bare code as the last resort: an unrecognised code is still more use
+ * than an empty line.
+ */
+export function refusalText(err: unknown): string {
+  const e = (err ?? {}) as Refusal;
+  const detail = e.detail?.trim();
+  if (detail) return detail;
+  const code = e.code ?? "";
+  return GATE_REASONS[code] || e.message?.trim() || code || "the server refused it";
+}
 
 async function postChat(chatUrl: string, body: unknown): Promise<{ content: Block[] }> {
   const res = await fetch(chatUrl + "/api/chat", {
@@ -99,8 +124,19 @@ async function postTrigger(chatUrl: string, path: string, body: unknown):
   const text = await res.text();
   const parsed = text ? JSON.parse(text) : {};
   if (!res.ok) {
-    const err = new Error(parsed.error ?? res.statusText) as Error & { code?: string };
+    // `error` is the CODE; `message` is the sentence a person needs. Reading
+    // only the first threw away the half that says what to DO — the capability
+    // map's refusal is "There are 3 file(s) but none are markdown", and what
+    // reached the screen was the word `no_documents`, which the caller below
+    // then swapped for a canned line about a feature.
+    //
+    // `detail` is kept SEPARATE from `message` rather than merged into it. The
+    // fallback below has to be able to tell "the server explained itself" from
+    // "the server sent a bare code", and once the code has been copied into
+    // `message` those two are indistinguishable.
+    const err = new Error(parsed.message ?? parsed.error ?? res.statusText) as Refusal & Error;
     err.code = parsed.code ?? parsed.error;
+    err.detail = typeof parsed.message === "string" ? parsed.message : undefined;
     throw err;
   }
   return parsed;
@@ -1170,10 +1206,9 @@ export async function repl(): Promise<void> {
       out(`  ${tick} ${c.grey("issue")} ${c.bold(issue.identifier ?? issue.id)}`);
       await follow(chatUrl, issue.id);
     } catch (err) {
-      const code = (err as { code?: string }).code ?? "";
       // A refused prerequisite is the normal case, not a fault: say why in the
       // same words the web UI would, rather than surfacing a 409.
-      out(`  ${cross} ${GATE_REASONS[code] ?? (err as Error).message}`);
+      out(`  ${cross} ${refusalText(err)}`);
     }
   }
 

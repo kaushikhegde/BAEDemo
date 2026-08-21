@@ -36,7 +36,7 @@
 
 import fs from "node:fs/promises";
 import process from "node:process";
-import { API, adoFetch, fail, loadAdo, parseArgs, projectPath } from "./lib/ado.mjs";
+import { API, adoFetch, fail, loadAdo, parseArgs, projectPath, readAdoTarget } from "./lib/ado.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const json = Boolean(flags.json);
@@ -45,8 +45,23 @@ const say = (s) => { if (!json) console.log(s); };
 const storiesFile = positional[0];
 if (!storiesFile) fail(`usage: node scripts/ado-workitems.mjs <stories.json> [--parent <id>] [--summary-url <url>]`);
 
-const ado = await loadAdo({ org: flags.org, project: flags.project });
-if (!ado.project) fail(`No project. Pass --project, or set ADO_PROJECT in .env.`);
+// Same target resolution as ado-publish.mjs: the Scyne project's own
+// .published.json, never an installation-wide environment default.
+const target = await readAdoTarget(
+  typeof flags["published-json"] === "string" ? flags["published-json"] : null);
+
+const ado = await loadAdo({
+  org: flags.org || target?.org,
+  project: flags.project || target?.project,
+  workItemType: flags.type || target?.workItemType,
+});
+if (!ado.project) {
+  fail(
+    `No Azure DevOps project.\n` +
+    `  Pass --project, or point --published-json at a projects/<project>/.published.json\n` +
+    `  carrying an "adoTarget". A project created before per-project targets needs one\n` +
+    `  backfilled — see docs/superpowers/specs/2026-08-21-ado-project-per-scyne-project-design.md.`);
+}
 
 /**
  * The type to create stories as.
@@ -71,7 +86,10 @@ async function resolveType(explicit) {
   return hit;
 }
 
-const type = await resolveType(typeof flags.type === "string" ? flags.type : undefined);
+// `ado.workItemType` already folds in `--type` and the project's recorded
+// `adoTarget.workItemType`. Discovery below is still the fallback, so a
+// project with no recorded type is a correct guess rather than a crash.
+const type = await resolveType(ado.workItemType ?? undefined);
 say(`Creating work items as '${type}' in ${ado.org}/${ado.project}`);
 
 const raw = JSON.parse(await fs.readFile(storiesFile, "utf8").catch(() => fail(`Cannot read ${storiesFile}`)));

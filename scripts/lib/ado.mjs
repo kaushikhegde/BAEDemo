@@ -46,7 +46,10 @@ async function readEnvFile(file) {
 export async function loadAdo(overrides = {}) {
   const env = { ...(await readEnvFile(".env")), ...process.env };
   const org = overrides.org || env.ADO_ORG;
-  const project = overrides.project || env.ADO_PROJECT;
+  // No ADO_PROJECT fallback. The project comes from the Scyne project's own
+  // `adoTarget` (see `readAdoTarget`) — one installation-wide target is what
+  // that replaced, and defaulting to one would misfile a client's document.
+  const project = overrides.project || null;
   const pat = env.ADO_PAT || env.MCP_TOKEN_FOR_AZURE;
 
   if (!pat) {
@@ -60,7 +63,7 @@ export async function loadAdo(overrides = {}) {
 
   return {
     org, project, pat,
-    workItemType: overrides.workItemType || env.ADO_WORK_ITEM_TYPE || null,
+    workItemType: overrides.workItemType || null,
     auth: "Basic " + Buffer.from(`:${pat}`).toString("base64"),
   };
 }
@@ -125,6 +128,44 @@ export function parseArgs(argv) {
 /** Read `.published.json`, or an empty object. */
 export async function readPublished(file) {
   try { return JSON.parse(await fs.readFile(file, "utf8")); } catch { return {}; }
+}
+
+/**
+ * The Azure DevOps target a Scyne project publishes to.
+ *
+ * Written once, when the project is created, and read from
+ * `projects/<project>/.published.json`. There is deliberately no environment
+ * fallback: ONE target for the whole installation is exactly what per-project
+ * targets replaced, and quietly falling back to one would publish a client's
+ * document into another client's project.
+ */
+export async function readAdoTarget(publishedFile) {
+  if (!publishedFile) return null;
+  const target = (await readPublished(publishedFile))?.adoTarget;
+  return target && typeof target.project === "string" && target.project ? target : null;
+}
+
+/**
+ * The path an artefact's page is published at.
+ *
+ * `template` is where a FIRST publish goes. Once an artefact has been
+ * published, its recorded `wikiPath` wins for good — a client has a link to
+ * that page, and a change to the template must never silently move it and
+ * leave the original orphaned.
+ *
+ * This is what `.published.json` has always been DESCRIBED as doing ("so a
+ * later revision updates that page instead of creating a second one") and did
+ * not do: `ado-publish.mjs` imported `readPublished` and then resolved the
+ * path from `--path` alone. It was harmless only while the template never
+ * changed, and stopped being harmless the moment it did.
+ */
+export async function resolvePagePath(template, publishedFile, artefactKey) {
+  if (!publishedFile || !artefactKey) return template;
+  const record = (await readPublished(publishedFile))?.ado?.[artefactKey];
+  const recorded = record?.wikiPath;
+  // A path that does not start with "/" is not one ADO can address, so it is a
+  // corrupt record rather than an instruction — prefer the template.
+  return typeof recorded === "string" && recorded.startsWith("/") ? recorded : template;
 }
 
 /** Record page identity so a REVISION updates rather than creating a second page. */

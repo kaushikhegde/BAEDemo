@@ -37,15 +37,31 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { API, adoFetch, fail, loadAdo, orgPath, parseArgs, projectPath, readPublished, recordPublished }
-  from "./lib/ado.mjs";
+import { API, adoFetch, fail, loadAdo, orgPath, parseArgs, projectPath, readAdoTarget,
+         readPublished, recordPublished, resolvePagePath } from "./lib/ado.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const json = Boolean(flags.json);
 const say = (s) => { if (!json) console.log(s); };
 
-const ado = await loadAdo({ org: flags.org, project: flags.project });
-if (!ado.project) fail(`No project. Pass --project, or set ADO_PROJECT in .env.`);
+// The target comes from the Scyne project's own .published.json, not from the
+// environment: one Azure DevOps project for the whole installation is what
+// per-project targets replaced.
+const target = await readAdoTarget(
+  typeof flags["published-json"] === "string" ? flags["published-json"] : null);
+
+const ado = await loadAdo({
+  org: flags.org || target?.org,
+  project: flags.project || target?.project,
+  workItemType: target?.workItemType,
+});
+if (!ado.project) {
+  fail(
+    `No Azure DevOps project.\n` +
+    `  Pass --project, or point --published-json at a projects/<project>/.published.json\n` +
+    `  carrying an "adoTarget". A project created before per-project targets needs one\n` +
+    `  backfilled — see docs/superpowers/specs/2026-08-21-ado-project-per-scyne-project-design.md.`);
+}
 
 /** The wiki to write to: named, or the project's only one. */
 async function resolveWiki(name) {
@@ -110,12 +126,13 @@ if (flags.verify) {
     // familiar-sounding one — there is no MCP tool that lists a project's
     // types — so a wrong value fails every story, after the gate was approved
     // and the page published.
-    const want = flags.type || (await loadAdo({})).workItemType ||
-      process.env.ADO_WORK_ITEM_TYPE;
+    const want = flags.type || ado.workItemType;
     if (want && !names.includes(want)) {
       throw new Error(
-        `ADO_WORK_ITEM_TYPE is '${want}', which this project does not have.\n` +
-        `  It has: ${names.join(", ")}`);
+        `The work item type '${want}' is not one this project has.\n` +
+        `  It has: ${names.join(", ")}\n` +
+        `  The type comes from \`adoTarget.workItemType\` in the project's\n` +
+        `  .published.json (or --type). "User Story" is Agile-only; Basic has Issue.`);
     }
     return `${names.length} type(s)` + (want ? `, and '${want}' exists` : "");
   });
@@ -134,9 +151,18 @@ if (flags.verify) {
 
 const file = positional[0];
 if (!file) fail(`usage: node scripts/ado-publish.mjs <file.md> --path "/Some/Page" [--wiki <name>]`);
-const pagePath = flags.path;
-if (typeof pagePath !== "string" || !pagePath.startsWith("/")) {
-  fail(`--path is required and must start with "/" (e.g. --path "/Scyne/RTWSA/Data Model")`);
+const publishedJson = typeof flags["published-json"] === "string" ? flags["published-json"] : null;
+const artefactKey = typeof flags["artefact-key"] === "string" ? flags["artefact-key"] : null;
+
+if (typeof flags.path !== "string" || !flags.path.startsWith("/")) {
+  fail(`--path is required and must start with "/" (e.g. --path "/Appeals/Salesforce Data Model")`);
+}
+// `--path` is where a FIRST publish goes. An artefact already recorded in
+// .published.json keeps the path it was published at, so a change to the path
+// template cannot move a page a client already has a link to.
+const pagePath = await resolvePagePath(flags.path, publishedJson, artefactKey);
+if (pagePath !== flags.path) {
+  say(`  note: already published at ${pagePath} — updating that page rather than ${flags.path}`);
 }
 
 let content = await fs.readFile(file, "utf8").catch(() => fail(`Cannot read ${file}`));
@@ -180,8 +206,8 @@ const saved = await adoFetch(ado, pageUrl, {
 const viewUrl = `${projectPath(ado)}/_wiki/wikis/${encodeURIComponent(wiki.name)}` +
   `?pagePath=${encodeURIComponent(pagePath)}`;
 
-if (flags["published-json"] && flags["artefact-key"]) {
-  await recordPublished(String(flags["published-json"]), String(flags["artefact-key"]), {
+if (publishedJson && artefactKey) {
+  await recordPublished(publishedJson, artefactKey, {
     wikiPath: pagePath, wiki: wiki.name, wikiId: wiki.id,
     project: ado.project, org: ado.org, url: viewUrl,
     pageId: saved?.id ?? null, publishedAt: new Date().toISOString(),

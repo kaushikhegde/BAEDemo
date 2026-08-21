@@ -48,7 +48,7 @@ function pat(): string | null {
 
 /** True when there is enough configuration to check anything at all. */
 export function adoConfigured(): boolean {
-  return Boolean(pat() && (process.env.ADO_ORG || process.env.ADO_PROJECT));
+  return Boolean(pat() && process.env.ADO_ORG);
 }
 
 async function get(url: string, token: string): Promise<{ status: number; body: string }> {
@@ -120,7 +120,7 @@ export async function verifyAdoTarget(target: AdoTarget): Promise<AdoCheck> {
           types.includes(target.workItemType)
             ? target.workItemType
             : `The project has no '${target.workItemType}'. It has: ${types.join(", ")}. ` +
-              `Set ADO_WORK_ITEM_TYPE to one of those.`);
+              `Correct \`adoTarget.workItemType\` in projects/<project>/.published.json.`);
       } else {
         const usable = ["User Story", "Product Backlog Item", "Issue", "Requirement", "Task"]
           .filter(t => types.includes(t));

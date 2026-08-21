@@ -285,7 +285,16 @@ export type UploadHint = "sop" | "transcripts" | "notes" | "ui" | "template" | "
 export interface UploadFileSuccess {
   kind: "file" | "transcript";
   subfolder: string;
+  /**
+   * What the AGENTS will read, which is not always what was uploaded: a
+   * `.docx`/`.pdf` is converted on arrival and its source archived, so this is
+   * the resulting `.md`. Every stage gate counts `.md`, so reporting the
+   * source here would name a file that no longer exists and that no gate
+   * would have counted anyway.
+   */
   filename: string;
+  /** True when the upload was converted to markdown on arrival. */
+  converted?: boolean;
   relativePath: string;
   entryCount?: number;
   modelUsed?: string;

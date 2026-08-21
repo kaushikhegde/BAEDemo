@@ -316,12 +316,21 @@ call it out in Section 6.]
 [One Mermaid `flowchart TD` per L1 phase (or one overall flow if the phases are
 short), showing the L2 steps and their decision points in sequence. Keep the
 Mermaid source inline — it is the source of truth. Use `{ ... }` for decisions,
-put timeframes/SLAs in the node label, and avoid unescaped `()` in labels.]
+put timeframes/SLAs in the node label, and avoid unescaped `()` in labels.
+
+**A line break in a node label is `<br/>` — never `\n`.** Mermaid's label
+grammar has no backslash escape, so `\n` does not break the line: the renderer
+drops it and welds the two phrases together, which is how a label meant to read
+"Issue agreement for digital signature / Typical 4 to 8 weeks" reached a client
+wiki as `digital signatureTypical 4 to 8 weeks`. Nothing catches it — the
+diagram still parses, so the fence renders and only a reader notices. Putting an
+SLA on its own line is the whole reason a label needs a break, so the rule
+matters most on exactly the labels this section asks for.]
 
 ```mermaid
 flowchart TD
     A[Claim lodged] --> B{STP eligible?}
-    B -- Yes --> C[Auto-process]
+    B -- Yes --> C[Auto-process<br/>Within 2 business days]
     B -- No --> D[Allocate to officer]
 ```
 

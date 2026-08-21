@@ -119,13 +119,19 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot does not
 > live server, which exposes 40 tools.
 >
 > **The work item type is a PARAMETER, because no MCP tool lists them.** None of
-> those 40 can enumerate a project's work item types. "User Story" exists only
-> in the Agile process template; the current target runs **Basic**, whose types
-> are Epic → Issue → Task with no User Story at all — so an agent guessing a
-> familiar name fails every story at once, after the gate was approved and the
-> page already published. `ADO_WORK_ITEM_TYPE` (default `Issue`) is handed to
-> the publishing agent, and BOTH `npm run ado:verify` and the approval-time
-> check confirm that exact name exists in the project before anything runs.
+> those 40 can enumerate a project's work item types, and the name depends
+> entirely on the process template: "User Story" exists only under **Agile**,
+> while **Basic** has Epic → Issue → Task with no User Story at all — so an
+> agent guessing a familiar name fails every story at once, after the gate was
+> approved and the page already published.
+>
+> It is now **per project**, not per install: `adoTarget.workItemType` in
+> `projects/<project>/.published.json`, written when the project is created and
+> confirmed to exist BY NAME at that moment. New projects use the Agile
+> template and therefore `User Story`, which is what the BA's house style has
+> always described; SAPN predates this and is backfilled to Basic / `Issue`.
+> `npm run ado:verify` and the approval-time check both still confirm the exact
+> name before anything runs. `ADO_WORK_ITEM_TYPE` is retired.
 >
 > `scripts/ado-workitems.mjs` remains the deterministic fallback — it discovers
 > the type itself, refuses to write a description still containing
@@ -1127,28 +1133,68 @@ that used to sit beside them were **Atlassian-era and read by nothing**; they
 are gone, along with `CODEX_CLI` and the `PAPERCLIP_*` / `BETTER_AUTH_SECRET` /
 `GEN_APP_PORT_*` block, which only `docker-compose.yml` still referenced.
 
-**One Azure DevOps target for the whole install.** Unlike the Atlassian
-arrangement this replaced — where a Confluence space key was derived from each
-Scyne project's name — publishing goes to ONE org and ONE project (`ADO_ORG` /
-`ADO_PROJECT`, overridable per run with `adoOrg` / `adoProject`). The Scyne
-project and feature live in the **wiki page path** instead
-(`/Scyne/<project>/<feature>/<artefact>`), so one ADO project holds every
-client's work without collision and there is nothing to derive from a name.
+**One Azure DevOps project per Scyne project.** ONE organisation (`ADO_ORG`)
+holds everything; the PROJECT is created from the name the user enters, using
+the **Agile** template, and recorded in `projects/<project>/.published.json`
+under **`adoTarget`** — org, project, wiki, wiki id, process template and work
+item type. Every publish reads it from there.
 
-**The target is verified at approval, never created.** `/api/approve` reads the
-ADO org and project out of the parent issue description and calls
+There is deliberately **no `ADO_PROJECT`**. One target for the whole install is
+exactly what this replaced, and a fallback to one would publish a client's
+document into another client's project. A publish with no target STOPS and says
+so.
+
+The wiki path therefore loses its `/Scyne/<project>/` prefix, which only ever
+existed to keep tenants apart inside a shared project:
+
+| Level | Path |
+|---|---|
+| project | `/<artefact>` — e.g. `/Capability & Process Map` |
+| feature | `/<feature>/<artefact>` — e.g. `/Appeals/Salesforce Data Model` |
+
+> **A published page keeps its path.** `wikiPathTpl` decides a FIRST publish
+> only; an artefact already recorded in `.published.json` republishes to its
+> recorded `wikiPath` (`resolvePagePath` in `scripts/lib/ado.mjs`). This is
+> what `.published.json` was always described as doing and did not do —
+> `ado-publish.mjs` imported `readPublished` and then read `--path` alone,
+> which was harmless only while the template never changed. It is also what
+> lets SAPN keep its `/Scyne/SAPN/…` pages with no legacy flag anywhere: they
+> are recorded, so they stay.
+
+**Creation happens in the wizard, verification at the gate.** `POST
+/api/projects` calls `server/services/adoProject.ts`, which resolves the Agile
+template BY NAME (never a hardcoded GUID), creates the project, **polls the
+operation to a terminal state**, creates the project wiki, and confirms the
+work item type exists. Only then is `adoTarget` written.
+
+The reasoning that used to make this "verify, never create" still holds — a
+half-created project is worse to hand a client than a clear refusal — and is
+why creation polls to completion and reports the operation's own failure text.
+What changed is only WHERE: in the wizard, where the user is present and
+nothing has been generated, rather than at an approval gate after a document
+exists and a human has approved it.
+
+A failure there is **not fatal**. The folder tree, definition and branding are
+kept, the response carries `adoError`, and the project is left INCOMPLETE
+rather than broken: re-posting `/api/projects` completes it instead of
+answering `409 exists`. Nothing downstream may assume `adoTarget` exists.
+
+**`/api/approve` still verifies and still never creates.** It reads the org and
+project out of the parent issue description and calls
 `server/services/adoVerify.ts`, which checks the project exists, the token has
 the **wiki** scope, a wiki exists (and is unambiguous), and — for the
 requirements flow — that there is a usable work item type. A failed check holds
 the gate with `502 ado_target_unavailable` and says exactly what is wrong;
 nothing is approved.
 
-It deliberately does not CREATE anything, which is the one behavioural
-difference from `atlassianProvision.ts`. Creating an Azure DevOps project is a
-long-running asynchronous operation returning an operation id to poll, and a
-half-created project is worse to hand a client than a clear refusal; creating a
-wiki is a decision about where a client's documents live, which a publish step
-should not make on its own.
+> The PAT needs `vso.project_manage` on top of `vso.wiki_write` and
+> `vso.work_write`. The install's existing token already has it — measured: a
+> create with a deliberately invalid name answers `400 TF50316`, not `401`.
+> That same `TF50316` covers length, illegal characters and reserved names, so
+> project names are validated BY ADO and its message is surfaced verbatim
+> rather than re-implemented as a regex here. Note the wizard's own check is
+> more permissive (it allows `&`), so a name can pass it and fail at creation —
+> which is what the resumable path above is for.
 
 ## The Azure DevOps MCP
 
@@ -1420,10 +1466,9 @@ an existing project-level artefact without `--force`.
 **Staging converts documents to markdown first.** The skills only read `.md`, so
 a hand-placed `.pdf`/`.docx`/`.xlsx`/`.txt` under `requirements/` would otherwise
 be silently invisible to the model. `scripts/convert-to-md.mjs` writes a sibling
-`.md` for each (`Conceptual Data Model.pdf` → `Conceptual Data Model.md`), using
-the same `markitdown-ts` conversion the chatbot's upload route uses
-(`scyne-chatbot/server/services/toMarkdown.ts`). It runs automatically as step 0
-of every stage; `--no-convert` skips it, and it also stands alone:
+`.md` for each (`Conceptual Data Model.pdf` → `Conceptual Data Model.md`). It
+runs automatically as step 0 of every stage; `--no-convert` skips it, and it
+also stands alone:
 
 ```bash
 npm run convert <project> <feature>                        # convert only
@@ -1434,6 +1479,23 @@ npm run convert <project> <feature> -- --keep-originals    # leave sources besid
 Same end state as the upload route: the markdown replaces the source in
 `requirements/`, and the original is **moved** (never deleted) to
 `original-files/requirements/<Sub>/`, so `requirements/` holds markdown only.
+
+> **Both upload routes run it, and that is not a nicety.** Every stage's 409
+> gate counts `.md` under `projects/<p>/`, and staging is step 0 of a workflow
+> that the gate decides whether to start at all — so a `.docx` converted only
+> at staging time is a `.docx` the gate refuses forever. `/api/upload/project`
+> always ran the converter; `/api/upload` (the FEATURE route) did not, which is
+> why three `.docx` uploaded to a feature produced `no_documents` on every
+> retry while `/docs` listed all three. Both run it now.
+>
+> **The converter needs `markitdown-ts`, which is a declared dependency of
+> `scyne-chatbot` and lives only in its `node_modules`** — `convert-to-md.mjs`
+> resolves it from there, deliberately, so the root install stays lean and the
+> two paths cannot use different versions. It was missing from that package for
+> the whole of this repo's history, so conversion failed everywhere with
+> `markitdown-ts is not installed` and every uploaded `.docx` stayed unreadable.
+> A failure is now logged by the upload route rather than reported only in the
+> `converted: false` field nothing reads.
 
 It is idempotent (a second run reports `up-to-date`, and archives any source
 still sitting beside its markdown), never clobbers a hand-written `.md` of the
@@ -1829,6 +1891,8 @@ with the registry, the registry wins.
 | Every story fails with "work item type does not exist" | The project's process template has no `User Story` — Basic has Epic → Issue → Task. | `ado-workitems.mjs` discovers the type; if something else hard-codes one, use `--type` or let the script choose. |
 | An ADO call 401s only on Codex runs, and works on Claude | `.mcp.json` holds `${MCP_TOKEN_FOR_AZURE}` and something is not expanding it, so the server receives the literal string. | `readMcpServers` in `core/codex-runner.ts` does the expansion. Check the variable is set in the ROOT `.env` — an unset one now throws by name rather than substituting an empty string. |
 | A published wiki page has the placeholder `{{PRODUCT_SUMMARY_URL}}` in its stories | `ado-workitems.mjs` was run without `--summary-url`. | It refuses this now. If you see it on an older item, re-run with `--summary-url`; the script updates in place. |
+| A stage is refused `no documents` while `/docs` lists documents | Those rows are in the DATABASE and the files are not on DISK, and every gate counts `.md` on disk. Either the upload was refused (`ambiguous_kind` — a `.docx`/`.pdf` whose name matches neither the SOP nor the transcript pattern needs `--as`) and a pre-`51dec6e` CLI recorded the row anyway, or the file landed but never converted. | `find projects/<p> -name '*.md'` is what the gate sees. Re-upload with `--as sop\|transcripts\|notes`, or with no feature pinned for client-wide material. `node scripts/convert-to-md.mjs <p> [<f>]` converts what is already there. |
+| Every conversion fails with `markitdown-ts is not installed` | It resolves from `scyne-chatbot/node_modules` and was missing from that package's dependencies. | `cd scyne-chatbot && npm install`. Nothing under `requirements/` or `documents/` becomes readable until this works. |
 | A stage runs as the wrong stage | The chatbot's title → workflow mapping broke — it parses a generated markdown description, which nothing type-checks. | `npm run check:routing`. It asserts every title and description shape the chatbot builds. |
 | An env var is set but the chatbot doesn't see it | It was put in a `scyne-chatbot/.env`. That file is gone — `server/env.ts` loads the **workspace-root** `.env` only, by walking up for `agent-instructions/` + `skills/`. | Move the key to the root `.env` and restart; `tsx` does not watch it. The boot line `[workspace] root = …` names the directory it resolved. |
 | Two servers fight over port 4000 | Something else read `PORT` out of the shared root `.env`. | The chatbot's key is `CHATBOT_PORT`; `PORT` is only a fallback for Docker/PaaS. Don't set a bare `PORT` in `.env`. |
