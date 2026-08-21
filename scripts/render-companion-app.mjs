@@ -1196,6 +1196,9 @@ main{min-width:0}
 .mat-dot{width:.45rem;height:.45rem;border-radius:50%;display:block;flex:none}
 .mat-arrow{color:var(--line)}
 .mat-target{color:var(--ok);font-weight:600}
+/* A capability the documents said nothing about. Dimmer than an assessed one,
+   because it is the absence of a finding rather than a low score. */
+.mat-none{opacity:.65;font-style:italic}
 .cap-stage{font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 
 /* ---------- process drill-down (phase -> step -> activity) ---------- */
@@ -2264,7 +2267,24 @@ ${(() => {
       var cur = MAT.indexOf(c.currentMaturity), tgt = MAT.indexOf(c.targetMaturity);
       var d1 = el("i","mat-dot"); d1.style.background = MAT_COLOUR[c.currentMaturity] || "var(--line)";
       wrap.appendChild(d1);
-      wrap.appendChild(el("span","mat-txt", (c.currentMaturity || "?")));
+      // "not assessed", never a question mark.
+      //
+      // An empty maturity is the skill working correctly, not data going
+      // missing: it assesses L3/L4 leaves only, and where the documents say
+      // nothing it is told to leave both empty rather than guess. Rendering
+      // that as a question mark made an honest gap look like a broken page —
+      // and this is the artefact a CLIENT is shown. render-capability-map.mjs
+      // already said "not assessed"; this renderer was the one holdout.
+      //
+      // No backtick and no dollar-brace anywhere in here: this whole script is
+      // a template literal in the generator, and one backtick ends it.
+      if(!c.currentMaturity && !c.targetMaturity){
+        var none = el("span","mat-txt mat-none","not assessed");
+        none.title = "The discovery documents did not say. Assessed capabilities show a maturity here.";
+        wrap.appendChild(none);
+        return wrap;
+      }
+      wrap.appendChild(el("span","mat-txt", (c.currentMaturity || "—")));
       if(tgt > cur && tgt >= 0){
         wrap.appendChild(el("span","mat-arrow","→"));
         wrap.appendChild(el("span","mat-txt mat-target", c.targetMaturity));
