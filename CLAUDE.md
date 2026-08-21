@@ -645,11 +645,23 @@ The Delivery Lead, CEO and Business Lead exist for the org chart only — no
 workflow assigns to them, because a routing layer that reads a title to create
 one child issue is what the workflow key replaced.
 
-**Budgets** are a ceiling, not a target: 2M tokens / $15 / 45 minutes per agent
+**Budgets** are a ceiling, not a target: 10M tokens / $15 / 45 minutes per agent
 run. The one measured requirements run took 25 minutes and $3.19. A run that
 breaches the duration limit is killed (SIGTERM, then SIGKILL); token and cost
 limits are checked once the final `result` event lands and flag the run
 `over_budget`.
+
+> **The token ceiling counts cache reads at full weight, so it is a runaway
+> backstop rather than a real limit.** Codex reports `input_tokens` as the
+> total WITH cached tokens in it, and `core/spawn.ts` adds that figure raw —
+> so what the ceiling actually measures is context size times the number of
+> model round-trips, not how much unique material the agent read. Measured: a
+> 14-minute persona run reported 1,995,078 input tokens of which **1,906,560
+> were cache reads**, crossed the original 2M ceiling by 2%, and blocked an
+> issue whose outputs were already written and had passed their validator. The
+> same run cost $1.1592 — 8% of the dollar ceiling, because cached tokens
+> price at a tenth of fresh ones. The dollar limit is the one that means
+> something; the token limit is set at 10M so it does not fire first.
 
 **Reported cost is reported; estimated cost is labelled.** `runs.cost_usd` is
 read straight off the CLI's own final `result` event and recorded verbatim, so

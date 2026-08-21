@@ -246,7 +246,7 @@ node cli/index.ts logs <runId> --follow
 ```
 
 Watch it in the console at `#runs`, or in the chatbot's Live Transcript.
-Budgets are a ceiling, not a target: 2M tokens / $15 / 45 minutes per run.
+Budgets are a ceiling, not a target: 10M tokens / $15 / 45 minutes per run.
 
 > **Blocked today.** `SCYNE_ADAPTER=codex` is the default and Codex is not
 > authenticated on this machine — see blocker 2.

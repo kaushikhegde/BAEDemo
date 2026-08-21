@@ -240,7 +240,20 @@ export default defineOrchestrator({
     // A ceiling, not a target. The one measured requirements run took 25
     // minutes and $3.19 (prototype findings); 45 minutes and $15 leaves room
     // for a heavier feature without letting a runaway run all night.
-    ...(a.bundlePath ? { budget: { maxTokens: 2_000_000, maxCostUsd: 15, maxDurationMs: 45 * 60_000 } } : {}),
+    //
+    // The TOKEN ceiling is 10M rather than the 2M it started at, because it
+    // does not measure what it reads like. `inputTokens` is the run's total
+    // WITH cache reads included (Codex reports it that way, and the check in
+    // core/spawn.ts adds it raw), so the figure is really context size times
+    // the number of model round-trips — not how much unique material the
+    // agent read. Measured: a 14-minute persona run reported 1,995,078 input
+    // tokens of which 1,906,560 were cache reads, tripped the 2M ceiling by
+    // 2%, and blocked an issue whose outputs were already written and
+    // validated. It cost $1.1592 — 8% of the dollar ceiling, because those
+    // same cached tokens price at a tenth of fresh ones. So the dollar limit
+    // is the guard that actually means something, and the token limit is a
+    // runaway backstop that should not fire before it.
+    ...(a.bundlePath ? { budget: { maxTokens: 10_000_000, maxCostUsd: 15, maxDurationMs: 45 * 60_000 } } : {}),
   })),
 
   workflows: buildWorkflows(),
