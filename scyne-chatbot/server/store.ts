@@ -54,6 +54,48 @@ async function get<T>(token: string | null, path: string, fallback: T): Promise<
 export const listProjects = (token: string | null): Promise<Project[]> =>
   get<Project[]>(token, "/projects", []);
 
+/**
+ * Write the definition to the project ROW, having written the file.
+ *
+ * `definitions()` below answers "does this project have a definition?" from
+ * `projects.description`, and the assistant's whole step-1 behaviour hangs off
+ * that answer. But `POST /api/project-description` wrote only
+ * `projects/<p>/description.md` — so a definition supplied through the browser,
+ * or through the assistant's own `save_project_definition` tool, reached every
+ * SKILL and was invisible to the ASSISTANT. It then asked for the definition
+ * again on the next turn, and every turn after that, for a project that had one.
+ *
+ * That is the mirror of the failure `cli/dual.ts` was written to prevent: there,
+ * a definition saved to the database alone "looks saved everywhere a person
+ * looks and reaches no agent". Here it reached every agent and looked unsaved to
+ * every person. Both halves, or neither.
+ *
+ * Best-effort by design: the file is the artefact the pipeline needs, and a
+ * caller with no session or an unreachable orchestrator should still get it
+ * written rather than a 500. The return value says which happened, so the route
+ * can report a half-write instead of claiming success.
+ */
+export async function saveDescription(
+  token: string | null, project: string, description: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  if (!token) return { ok: false, reason: "not signed in" };
+  try {
+    const row = (await listProjects(token)).find(p => p.name === project);
+    if (!row) return { ok: false, reason: "no such project in the database" };
+    const res = await fetch(`${BASE}/projects/${row.id}`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json", accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ description }),
+    });
+    return res.ok ? { ok: true } : { ok: false, reason: `orchestrator said ${res.status}` };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+}
+
 export const listFeatures = (token: string | null, projectId: string): Promise<Feature[]> =>
   get<Feature[]>(token, `/projects/${projectId}/features`, []);
 

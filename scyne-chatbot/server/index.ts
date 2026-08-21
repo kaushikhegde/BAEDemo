@@ -1290,7 +1290,20 @@ app.post("/api/project-description", async (req, res) => {
     const content = body.startsWith("#") ? body + "\n" : `# ${project} — Project Definition\n\n${body}\n`;
     await fs.writeFile(file, content, "utf8");
     console.log(`[project-description] wrote ${file} (${content.length} bytes)`);
-    res.json({ ok: true, project, path: `projects/${project}/description.md`, bytes: content.length });
+
+    // The file is what every SKILL reads; the row is what the ASSISTANT reads
+    // to decide whether to ask for a definition. Writing only the file left it
+    // asking for one the project already had, on every turn. See
+    // store.saveDescription.
+    const db = await store.saveDescription(tokenFor(req), project, body);
+    if (!db.ok) console.warn(`[project-description] ${project}: not saved to the database — ${db.reason}`);
+
+    res.json({
+      ok: true, project, path: `projects/${project}/description.md`, bytes: content.length,
+      // Reported rather than swallowed: a caller that says "saved" when only
+      // half of it was is how this went unnoticed in the first place.
+      savedToDatabase: db.ok, databaseError: db.ok ? undefined : db.reason,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

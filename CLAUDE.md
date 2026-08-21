@@ -2,6 +2,13 @@
 
 This document is the orientation guide for anyone (Claude included) working on this repository. Read it before making changes.
 
+## Answer concisely
+
+Keep replies short and on point. Lead with the answer, name the file and line,
+skip the preamble and the recap. Explain the mechanism only when it changes what
+the reader does next. Long, structured write-ups are for when they are asked
+for — not the default.
+
 ## What this project is
 
 A local end-to-end workflow that turns a client's raw discovery artefacts

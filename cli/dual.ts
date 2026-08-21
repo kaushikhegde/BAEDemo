@@ -118,9 +118,33 @@ export async function createProject(
     // project folder tree is flat and shared, so names are unique across the
     // install. "already there" is misleading for the second, because a listing
     // in your own organisation will show nothing.
-    db = (err as ApiError).status === 409
-      ? { state: "exists", detail: (err as Error).message || undefined }
-      : { state: "failed", detail: (err as Error).message };
+    if ((err as ApiError).status !== 409) {
+      db = { state: "failed", detail: (err as Error).message };
+    } else {
+      // A 409 used to end it here, silently DISCARDING the description the
+      // wizard had just spent a paragraph collecting. The row keeps whatever
+      // description it already had — usually none — while the file is written
+      // correctly, so the assistant goes on asking for a definition the project
+      // demonstrably has.
+      //
+      // This is not a corner case: the tree and the database drift apart by
+      // design (a `reset` clears one and leaves the other), and
+      // `projectNameTaken` is install-wide, so the name can be held by a row in
+      // an organisation the caller cannot even see. Deleting projects/<p>/ and
+      // re-running `/new` hits it every time.
+      db = { state: "exists", detail: (err as Error).message || undefined };
+      if (input.description?.trim()) {
+        try {
+          const proj = await resolveProject(client, input.name);
+          await client.patch(`/projects/${proj.id}`, { description: input.description.trim() });
+          db = { state: "exists", detail: "already in the database — definition updated on it" };
+        } catch {
+          // Left as a plain `exists`. The name is held by an organisation this
+          // caller cannot reach, which is the one 409 there is nothing useful
+          // to do about — and is exactly what the detail above says.
+        }
+      }
+    }
   }
   return {
     disk, db,
@@ -286,21 +310,7 @@ export async function uploadDocument(client: Client, input: UploadInput): Promis
   //                        which is exactly right for policy and legislation.
   const path = dir ? `${dir}/${name}` : (input.feature ? `requirements/${name}` : `documents/${name}`);
 
-  let db: SideResult;
   let extra: Record<string, unknown> = { path };
-  try {
-    const proj = await resolveProject(client, input.project);
-    const res = await client.post<{ version: number; changed: boolean }>(
-      `/projects/${proj.id}/documents`, {
-        feature: input.feature ?? undefined,
-        path, category: input.as ?? null,
-        content: bytes.toString("base64"), encoding: "base64",
-      });
-    extra = { path, version: res.version, changed: res.changed };
-    db = res.changed ? { state: "created", detail: `v${res.version}` } : { state: "exists" };
-  } catch (err) {
-    db = { state: "failed", detail: (err as Error).message };
-  }
 
   // Two upload routes, one per level. A project's own documents — the
   // client-wide policy and legislation every skill reads before any feature —
@@ -335,6 +345,44 @@ export async function uploadDocument(client: Client, input: UploadInput): Promis
     }
   } catch {
     disk = { state: "skipped", detail: `chatbot server not running at ${chatUrl()}` };
+  }
+
+  // The DISK write goes first, and a REFUSAL cancels the database row.
+  //
+  // These two used to run independently and report side by side, which produced
+  // the one outcome neither side can detect afterwards: the server rejects an
+  // ambiguous `.docx` with `Couldn't infer where it belongs` (services/
+  // fileRouter.ts marks any .docx/.pdf matching neither the SOP nor the
+  // transcript pattern ambiguous), no file is written, and the row is created
+  // anyway. The session then prints
+  //
+  //     folder tree (agents read this)   ✗ Couldn't infer where … belongs
+  //     database (scyne reads this)      ✓ v1
+  //
+  // and `/docs` lists that document from then on. Every agent reads the DISK,
+  // so it does not exist for any stage — while looking uploaded in the one
+  // place a person checks.
+  //
+  // `skipped` is deliberately NOT a refusal: that is the chatbot being down,
+  // the tree can be created later, and dropping the row would lose the upload
+  // altogether. Only an ACTIVE rejection cancels it.
+  let db: SideResult;
+  if (disk.state === "failed") {
+    db = { state: "skipped", detail: "not recorded — the file was rejected, so there would be nothing to point at" };
+  } else {
+    try {
+      const proj = await resolveProject(client, input.project);
+      const res = await client.post<{ version: number; changed: boolean }>(
+        `/projects/${proj.id}/documents`, {
+          feature: input.feature ?? undefined,
+          path, category: input.as ?? null,
+          content: bytes.toString("base64"), encoding: "base64",
+        });
+      extra = { ...extra, version: res.version, changed: res.changed };
+      db = res.changed ? { state: "created", detail: `v${res.version}` } : { state: "exists" };
+    } catch (err) {
+      db = { state: "failed", detail: (err as Error).message };
+    }
   }
 
   return { disk, db, extra };

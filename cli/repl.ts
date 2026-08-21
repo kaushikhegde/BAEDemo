@@ -277,9 +277,15 @@ export function tokenize(line: string, opts: { commas?: boolean } = {}): string[
       cur += line[++i]; started = true; continue;
     }
     if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-      started = true;
+      // A closing quote ENDS the token. A shell would concatenate here —
+      // `'a''b'` is `ab` in bash — but this is a list of file paths pasted by a
+      // person, and the shell rule turns a missing comma between two quoted
+      // paths into ONE path that cannot exist. Measured: a paste reading
+      // `…Notification.docx''/Users/…Landscape.docx'` became a single token and
+      // failed with `ENOTDIR: not a directory`, naming a path the person never
+      // typed, while the other files uploaded fine.
+      if (ch === quote) { quote = null; tokens.push(cur); cur = ""; started = false; }
+      else { cur += ch; started = true; }
       continue;
     }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
@@ -556,8 +562,25 @@ export async function repl(): Promise<void> {
           // lands at the root of requirements/ rather than in SOP/,
           // Transcripts/, Notes/ or UI/, and the BA is told what each of those
           // means. Said once, not refused, exactly as `scyne doc upload` does.
+          // Two different outcomes, and the old message promised only the
+          // gentler one. An uncategorised .md or .txt really does land at
+          // requirements/ root and the BA really does read it (stage.mjs's
+          // findDocs walks the root and tags it `category: "root"`) — untyped,
+          // not invisible. An uncategorised .docx or .pdf whose NAME carries no
+          // SOP or transcript hint is REFUSED outright by services/
+          // fileRouter.ts, and saying "this goes to requirements/ uncategorised"
+          // right before that happens is how a person reads `✗ Couldn't infer
+          // where it belongs` as a warning rather than as a failed upload.
           if (!as && feature) {
-            out(`  ${dot} ${c.grey("no --as, so this goes to requirements/ uncategorised.")}`);
+            const ambiguous = files.filter(f => /\.(docx?|pdf|pptx?)$/i.test(f)
+              && !/\b(sop|policy|procedure|standard|guideline|transcript|meeting|workshop|interview|call|session)\b/i.test(f));
+            if (ambiguous.length) {
+              out(`  ${cross} ${c.grey("a .docx/.pdf needs")} ${c.cyan("--as")}${c.grey(" unless its name says what it is:")}`);
+              for (const f of ambiguous) out(`      ${c.grey(f.split("/").pop() ?? f)}`);
+              out(`    ${c.grey("one of")} ${Object.keys(CATEGORY_DIR).join(", ")}${c.grey(" — the BA treats each differently.")}`);
+              return false;
+            }
+            out(`  ${dot} ${c.grey("no --as, so this lands at the root of requirements/ — read, but untyped.")}`);
             out(`    ${c.grey("the BA treats " + Object.keys(CATEGORY_DIR).join(", ") + " differently — pass one.")}`);
           }
 
@@ -860,6 +883,13 @@ export async function repl(): Promise<void> {
       out(`    ${created.extra?.definitionWritten
         ? `${tick} ${c.grey("projects/" + name + "/description.md")}`
         : `${cross} ${c.grey("the definition was not written — retry with")} ${c.cyan(`project describe ${name} "…"`)}`}`);
+      // The definition has TWO homes and only the file was ever checked here.
+      // The row is what the assistant reads to decide whether to ask for a
+      // definition, so a green tick on the file beside an unwritten column is
+      // how a project ends up being asked for its definition forever.
+      if (created.db.state === "failed") {
+        out(`    ${cross} ${c.grey("not saved to the database — the assistant will keep asking. Retry with")} ${c.cyan(`project describe ${name} "…"`)}`);
+      }
     }
     if (website) reportBrand(name, created.extra?.brand as BrandTheme | null, created.extra?.brandError as string | null);
 
@@ -1034,7 +1064,25 @@ export async function repl(): Promise<void> {
     const tool = blocks.find(b => b.type === "tool_use");
     if (text_.trim()) say(text_);
 
-    if (!tool?.name) return;
+    if (!tool?.name) {
+      // The model said it was starting something and called nothing.
+      //
+      // Every trigger in TRIGGERS is wired and works; the failure is upstream —
+      // the turn carried prose and no tool_use, so there is nothing to
+      // dispatch. llm.ts documents this model degrading against a ~9.6k-token
+      // system prompt with this many tools, and retries a genuinely EMPTY turn
+      // with a compact prompt. A confident sentence with no call is not empty,
+      // so it sails through, and the session prints "I'm generating the
+      // Capability and Process maps now" over an installation where nothing was
+      // queued. Silence is the worst possible answer here: the person walks
+      // away believing a 25-minute run has started.
+      if (/\b(generating|starting|kicking off|running|I'll (?:now )?(?:generate|start|run|create)|firing)\b/i.test(text_)
+          && !/\bready to go\b|\?\s*$/i.test(text_.trim())) {
+        out(`  ${cross} ${c.grey("…but no stage was actually started — the assistant described the work without calling the tool.")}`);
+        out(`    ${c.grey("Start it directly with")} ${c.cyan("/run <stage>")}${c.grey(", or")} ${c.cyan("/issues")} ${c.grey("to confirm nothing is queued.")}`);
+      }
+      return;
+    }
     const args = (tool.input ?? {}) as Record<string, string>;
 
     // The model can move the target without firing anything.
