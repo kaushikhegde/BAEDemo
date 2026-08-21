@@ -38,6 +38,16 @@ export interface RunRequest {
    * prompt. createClaudeRunner ignores it, keeping its behaviour identical.
    */
   skill?: string;
+  /**
+   * The step's phase (`generate`, `publish`, …), for runners that must treat
+   * them differently.
+   *
+   * Only the Codex runner reads it, and only to decide how a step is
+   * sandboxed: a `publish` step's whole job is to hand an approved document to
+   * an external system, which is exactly the shape a general-purpose safety
+   * review refuses. Every other phase stays boxed. See buildCodexArgs.
+   */
+  phase?: string;
   budget?: { maxTokens?: number; maxCostUsd?: number; maxDurationMs?: number };
 }
 

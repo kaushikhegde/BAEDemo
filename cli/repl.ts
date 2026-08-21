@@ -195,6 +195,7 @@ const HELP = `
     ${c.cyan("/issues")} [--open] [--all]          ${c.grey("every issue, and what needs you")}
     ${c.cyan("/status")} [issue]                   activity, gates and work products
     ${c.cyan("/gates")}                            everything awaiting approval
+    ${c.cyan("/view")} [n] [issue]                 ${c.grey("read a work product before approving it")}
     ${c.cyan("/approve")} <gateId>                 approve it
     ${c.cyan("/reject")} <gateId> [note]           send it back to be regenerated
     ${c.cyan("/logs")} <runId>                     an agent's transcript
@@ -234,8 +235,37 @@ const HELP = `
  * Single and double quotes group; a backslash escapes the next character.
  * That is the whole grammar — enough for a filename, and deliberately not a
  * shell (no globs, no variables, no operators).
+ *
+ * `commas` additionally treats an unquoted comma as a separator. It is OPT-IN,
+ * for the prompts that ask for a LIST of paths, and off everywhere else: a
+ * filename may legitimately contain a comma, and `/upload notes,draft.md`
+ * must keep meaning one file.
+ *
+ * It exists because "two documents, comma separated" is what people type, and
+ * without it `a.docx, b.docx` tokenised to `["a.docx,", "b.docx"]` — the first
+ * carrying a trailing comma, so it failed as a missing file while the second
+ * uploaded. Two files in, one file out, and an error that pointed at the
+ * filename rather than at the separator. `a.docx,b.docx` was worse: one token,
+ * both lost. Inside quotes a comma is still just a character.
  */
-export function tokenize(line: string): string[] {
+/**
+ * Print a failed command, in full.
+ *
+ * This used to be `message.split("\n")[0]`, which threw away the half of every
+ * error that says what to do about it — `cannot reach the Scyne server …` kept
+ * its first line and lost `Is it running? Start it with npm run serve`. Those
+ * second lines are hand-written in client.ts precisely because the first line
+ * alone is rarely actionable.
+ *
+ * Kept to the first few lines: a stack trace is not for the person typing.
+ */
+function failed(err: unknown): void {
+  const lines = String((err as Error)?.message ?? err).split("\n").slice(0, 6);
+  out(`  ${cross} ${lines[0]}`);
+  for (const l of lines.slice(1)) out(`  ${c.grey(l.replace(/^ {0,2}/, "  "))}`);
+}
+
+export function tokenize(line: string, opts: { commas?: boolean } = {}): string[] {
   const tokens: string[] = [];
   let cur = "";
   let started = false;      // distinguishes "" (an empty argument) from no argument
@@ -253,7 +283,7 @@ export function tokenize(line: string): string[] {
       continue;
     }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
-    if (/\s/.test(ch)) {
+    if (/\s/.test(ch) || (opts.commas && ch === ",")) {
       if (started) { tokens.push(cur); cur = ""; started = false; }
       continue;
     }
@@ -564,10 +594,69 @@ export async function repl(): Promise<void> {
               if (g.status !== "pending") continue;
               found++;
               out(`  ${c.yellow("⏸")} ${c.bold(i.identifier)}  ${g.payload?.title ?? ""}`);
-              out(`     ${c.cyan(`/approve ${g.id}`)}`);
+              // /view first: approving a document nobody read is the failure
+              // this gate exists to prevent.
+              out(`     ${c.cyan(`/view`)} ${c.grey("to read it, then")} ${c.cyan(`/approve ${g.id}`)}`);
             }
           }
           if (!found) out(`  ${c.grey("(nothing awaiting approval)")}`);
+          return false;
+        }
+
+        /**
+         * Read a work product before approving it.
+         *
+         * The gate used to offer `/approve <id>` and nothing else: a reviewer
+         * could see a document's TITLE and was asked to sign off on a client
+         * deliverable they had no way to open. That is ceremony, not review.
+         *
+         * `/view` alone lists what is attached, numbered; `/view 2` prints it.
+         * Numbers rather than uuids because this is read straight after
+         * `/gates`, by someone deciding yes or no, not scripting.
+         */
+        case "view": {
+          const issues = await client.get<any[]>("/issues");
+          // The issue a reviewer means is the one waiting on them. Falling back
+          // to the newest keeps `/view` useful for looking at finished work.
+          const target = rest[1]
+            ? issues.find(i => i.identifier === rest[1] || i.id === rest[1])
+            : issues.find(i => i.status === "in_review") ?? issues[0];
+          if (!target) { out(`  ${cross} ${rest[1] ? `no issue '${rest[1]}'` : "no issues yet"}`); return false; }
+
+          const products = await client.get<any[]>(`/issues/${target.id}/work-products`);
+          if (!products.length) {
+            out(`  ${c.grey(`${target.identifier} has nothing attached yet`)}`);
+            return false;
+          }
+
+          const n = arg ? Number(arg) : NaN;
+          if (!arg || !Number.isInteger(n) || n < 1 || n > products.length) {
+            out();
+            out(`  ${c.bold(target.identifier)}  ${c.grey(target.title ?? "")}`);
+            products.forEach((w, i) => out(`  ${c.cyan(String(i + 1).padStart(2))}  ${w.title}`));
+            out();
+            out(`  ${c.grey("read one with")} ${c.cyan(`/view ${products.length > 1 ? "<n>" : "1"}`)}`);
+            if (arg) out(`  ${cross} ${c.grey(`'${arg}' is not one of 1–${products.length}`)}`);
+            return false;
+          }
+
+          const w = products[n - 1];
+          const doc = await client.get<any>(`/issues/${target.id}/work-products/${w.id}/content`);
+          out();
+          out(`  ${c.bold(w.title)}${doc.bytes ? c.grey(`  ${Math.round(doc.bytes / 1024)} KB`) : ""}`);
+          out(`  ${c.grey("─".repeat(60))}`);
+          if (doc.content == null) {
+            out(`  ${cross} ${doc.error ?? "no content"}`);
+            return false;
+          }
+          // Printed raw, not wrapped: these are markdown documents with tables
+          // and ```mermaid fences, and re-flowing them corrupts both.
+          for (const l of String(doc.content).split("\n")) out(`  ${l}`);
+          if (doc.truncated) {
+            out();
+            out(`  ${c.yellow("!")} ${c.grey("truncated at 512 KB — open the file for the rest:")}`);
+            out(`    ${c.grey(String(w.url).replace(/^file:\/\//, ""))}`);
+          }
           return false;
         }
 
@@ -629,13 +718,13 @@ export async function repl(): Promise<void> {
             const { runCommand } = await import("./index.ts");
             await runCommand(args);
           } catch (err) {
-            out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+            failed(err);
           }
           return false;
         }
       }
     } catch (err) {
-      out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+      failed(err);
       return false;
     }
   }
@@ -782,8 +871,11 @@ export async function repl(): Promise<void> {
     out(`  ${c.grey("Policy, legislation, standards, current-state architecture — what")}`);
     out(`  ${c.grey("describes the CLIENT rather than one feature. .docx and .pdf are")}`);
     out(`  ${c.grey("converted to markdown on arrival. Feature material comes later.")}`);
-    const docLine = await askParagraph("  Paths, space separated (enter to skip): ");
-    const docs = tokenize(docLine);
+    const docLine = await askParagraph("  Paths, separated by spaces or commas (enter to skip): ");
+    // `commas: true` — see tokenize. A comma-separated list is what people type
+    // here, and without it the first path kept its trailing comma and silently
+    // failed as a missing file while the rest uploaded.
+    const docs = tokenize(docLine, { commas: true });
     // A glob reaches here unexpanded — the session is not a shell — and would
     // fail as a filename containing a literal asterisk, which reads like the
     // file is missing rather than like the pattern was never expanded.

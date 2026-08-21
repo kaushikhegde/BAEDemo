@@ -9,6 +9,7 @@
 import { Router, type Request, type Response } from "express";
 import { readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync } from "node:fs";
 import { resolve, dirname, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { filterRunLog } from "../core/transcript.js";
@@ -62,6 +63,7 @@ const CORE_ROUTES = [
   { method: "GET",   path: "/issues/{id}/comments" },
   { method: "POST",  path: "/issues/{id}/comments" },
   { method: "GET",   path: "/issues/{id}/work-products" },
+  { method: "GET",   path: "/issues/{id}/work-products/{wpId}/content" },
   { method: "GET",   path: "/issues/{id}/gates" },
   { method: "POST",  path: "/gates/{id}/approve" },
   { method: "POST",  path: "/gates/{id}/reject" },
@@ -118,6 +120,17 @@ function pathParam(v: string | string[]): string {
  * reads and now WRITES that path. Confining it to the workspace is the whole
  * of the check; anything inside is the operator's own tree to edit.
  */
+/**
+ * How much of a work product `/content` will return.
+ *
+ * A product summary is ~30 KB and a capability map can be several times that,
+ * so this has to be generous enough that a reviewer reads the whole document
+ * in the normal case. It exists for the abnormal one — a stage that wrote a
+ * log or a JSON dump where a document was expected — where the alternative is
+ * an unbounded read into somebody's terminal.
+ */
+const WORK_PRODUCT_MAX_BYTES = 512 * 1024;
+
 function makeSafeBundlePath(workspace: string) {
   const root = resolve(workspace);
   return (rel: string): string | null => {
@@ -761,6 +774,76 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     const id = pathParam(req.params.id);
     if (!(await issueFor(req, res, id))) return;
     ok(res, await orch.repo.listWorkProducts(id));
+  }));
+
+  /**
+   * One work product's CONTENT, so a reviewer can read what they are approving.
+   *
+   * Until this existed, every client of this API could list a work product's
+   * title and URL and nothing else — and that URL is a `file://` path on the
+   * SERVER's disk, which is no use to the CLI (HTTP-only, possibly another
+   * machine) or to a browser. So the approval gate asked people to sign off on
+   * a client deliverable they had no way to read. An approval that cannot be
+   * informed is ceremony, not review.
+   *
+   * Two limits, both deliberate:
+   *
+   * - The path is re-checked against the workspace root even though the ENGINE
+   *   wrote it. `attach` resolves `produces[]` against the work root, and
+   *   `produces` comes from `pipeline.mjs` — but this endpoint turns a database
+   *   row into a file read, and the day someone adds a way to attach a
+   *   caller-supplied path is the day that becomes arbitrary file disclosure.
+   *   Cheap here, impossible to retrofit after the fact.
+   * - Content is capped and the response says when it was truncated, rather
+   *   than streaming an unbounded file into a terminal.
+   */
+  r.get("/issues/:id/work-products/:wpId/content", guard, wrap(async (req, res) => {
+    const id = pathParam(req.params.id);
+    if (!(await issueFor(req, res, id))) return;
+
+    const wpId = pathParam(req.params.wpId);
+    const wp = (await orch.repo.listWorkProducts(id)).find(w => w.id === wpId);
+    if (!wp) { notFound(res, `work product '${wpId}'`); return; }
+
+    // Only `provider: "local"` products are files on this machine. A published
+    // wiki page is a URL somebody else serves, and pretending we can read it
+    // would be a lie with a 500 attached.
+    if (wp.provider !== "local" || !wp.url?.startsWith("file://")) {
+      ok(res, { id: wp.id, title: wp.title, url: wp.url, content: null,
+                error: `'${wp.title}' is not a local file — open ${wp.url}` });
+      return;
+    }
+
+    let abs: string;
+    try { abs = fileURLToPath(wp.url); }
+    catch { badRequest(res, `work product '${wp.title}' has an unreadable url`); return; }
+
+    if (!safeBundlePath(abs)) {
+      // `url` is echoed like every other branch: the same caller can already
+      // read it from GET /work-products, so withholding it here would hide
+      // nothing while making the refusal harder to act on. What this guard
+      // protects is the READ — no bytes of a file outside the workspace ever
+      // reach the response.
+      ok(res, { id: wp.id, title: wp.title, url: wp.url, content: null,
+                error: `'${wp.title}' resolves outside the workspace` });
+      return;
+    }
+
+    try {
+      const raw = readFileSync(abs, "utf8");
+      const truncated = raw.length > WORK_PRODUCT_MAX_BYTES;
+      ok(res, {
+        id: wp.id, title: wp.title, url: wp.url,
+        bytes: raw.length, truncated,
+        content: truncated ? raw.slice(0, WORK_PRODUCT_MAX_BYTES) : raw,
+      });
+    } catch (err) {
+      // Not a 404. The work product exists and was attached, which means the
+      // file was there when the run checked it — so a missing file now is a
+      // finding about the workspace, not about this request.
+      ok(res, { id: wp.id, title: wp.title, url: wp.url, content: null,
+                error: err instanceof Error ? err.message : String(err) });
+    }
   }));
 
   r.get("/issues/:id/gates", guard, wrap(async (req, res) => {

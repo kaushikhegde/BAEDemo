@@ -262,7 +262,7 @@ function publishPrompt(key: string, s: Stage): string {
  * never retried, run outside the agent sandbox, and cost nothing — and asking
  * a model whether a model succeeded is not a check.
  */
-function verifyPublishStep(key: string, s: Stage): Step {
+function verifyPublishStep(key: string, s: Stage, publishStepIndex: number): Step {
   return {
     type: "exec",
     label: "Confirming the page is really there",
@@ -270,6 +270,11 @@ function verifyPublishStep(key: string, s: Stage): Step {
          ` --artefact "${artefactKeyTpl(key, s)}"` +
          ` --path "${wikiPathTpl(s)}"`,
     timeoutMs: 5 * MINUTES,
+    // This step judges the PUBLISH step, so a failure has to send Resume back
+    // there. Without it the issue parks on the verifier and every Resume
+    // re-runs the check — which cannot pass, because the publish step already
+    // recorded `succeeded` and is never re-run. SCY-1 sat in exactly that loop.
+    rewindOnFailure: publishStepIndex,
   };
 }
 
@@ -301,8 +306,12 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   steps.push({ type: "gate", title: `Approve ${s.label} — ${scope(s)}`, summary: approvalSummary(s) });
 
   if (s.publishes) {
+    // Captured rather than hard-coded as "one back": the index is read off the
+    // array as it is being built, so inserting anything between publish and
+    // its verifier cannot silently point the rewind at the wrong step.
+    const publishAt = steps.length;
     steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
-    steps.push(verifyPublishStep(key, s));
+    steps.push(verifyPublishStep(key, s, publishAt));
   }
 
   // Every stage feeds the one companion app, so it is re-rendered after each —
@@ -376,8 +385,12 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     ].join("\n"),
   });
   if (s.publishes) {
+    // Captured rather than hard-coded as "one back": the index is read off the
+    // array as it is being built, so inserting anything between publish and
+    // its verifier cannot silently point the rewind at the wrong step.
+    const publishAt = steps.length;
     steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
-    steps.push(verifyPublishStep(key, s));
+    steps.push(verifyPublishStep(key, s, publishAt));
   }
   steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 

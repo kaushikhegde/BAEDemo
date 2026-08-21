@@ -66,11 +66,29 @@ export function createClient(overrides: Partial<CliConfig> = {}): Client {
       // `message`. A person reading a terminal needs the sentence; printing
       // the code alone makes a legible refusal look like a crash.
       const obj = (parsed && typeof parsed === "object") ? parsed as Record<string, unknown> : null;
-      const detail = obj && typeof obj.message === "string" && obj.message
+      const raw = obj && typeof obj.message === "string" && obj.message
         ? obj.message
         : obj && "error" in obj
           ? String(obj.error)
-          : text.slice(0, 500) || res.statusText;
+          : text;
+      // `safeJson` wraps a non-JSON body as `{ error: text }`, so an HTML error
+      // page arrives here looking like a perfectly ordinary message and used to
+      // be printed verbatim — a terminal full of markup.
+      const detail = (looksLikeHtml(raw) ? "" : raw.slice(0, 500)) || res.statusText;
+
+      // A 404 whose body is HTML is Express's own not-found page, which means
+      // the SERVER has no such route — not that the thing asked for is
+      // missing. This CLI ships separately from the engine and reads its stage
+      // list from the server precisely so the two need not upgrade in lockstep,
+      // which makes "your server is older than this command" an ordinary
+      // state, not a bug. Before this, it printed `<!DOCTYPE html>` and left
+      // the person to guess.
+      if (res.status === 404 && looksLikeHtml(text)) {
+        throw new ApiError(404,
+          `this server has no ${method} ${path}.\n` +
+          `  The server at ${config.apiUrl} is older than this CLI, or it was\n` +
+          `  started before that route existed — restart it and try again.`);
+      }
       if (res.status === 401) {
         throw new ApiError(401, `not authenticated — run \`scyne login\`.\n  (${detail})`);
       }
@@ -103,6 +121,18 @@ export function createClient(overrides: Partial<CliConfig> = {}): Client {
 
 function safeJson(text: string): unknown {
   try { return JSON.parse(text); } catch { return { error: text }; }
+}
+
+/**
+ * Is this body a web page rather than an API answer?
+ *
+ * Express serves an HTML page for an unmatched route and for an unhandled
+ * error, and this client turns any non-JSON body into a message. So the one
+ * thing a person most needs to be told — the server does not have this route —
+ * arrived as `<!DOCTYPE html>` and nothing else.
+ */
+function looksLikeHtml(text: string): boolean {
+  return /^\s*(<!DOCTYPE|<html\b)/i.test(text);
 }
 
 /**

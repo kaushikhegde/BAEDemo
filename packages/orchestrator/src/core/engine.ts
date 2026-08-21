@@ -347,9 +347,20 @@ export function createEngine(deps: {
           // stderr. A failure is the one moment the exact command is worth
           // having — but it belongs in the diagnostics block a person opens,
           // not in the sentence a client reads.
+          const rewind = step.rewindOnFailure;
           await block(issue.id,
             `${step.label ? interpolate(step.label, vars) : "A step"} failed (exit ${r.code}).` +
-            `\n\n\`\`\`\n$ ${cmd}\n\n${r.stderr.slice(-2000)}\n\`\`\``);
+            `\n\n\`\`\`\n$ ${cmd}\n\n${r.stderr.slice(-2000)}\n\`\`\`` +
+            (rewind != null && rewind < issue.step_index
+              ? `\n\nResume will re-run step ${rewind + 1}, not this one — this step ` +
+                `checks that step's work, so re-running the check cannot change the answer.`
+              : ""));
+          // AFTER block(), which sets the status: this only moves the cursor.
+          // Guarded on `< step_index` so a mis-set value can never turn Resume
+          // into an infinite loop forward through the workflow.
+          if (rewind != null && rewind < issue.step_index) {
+            await repo.updateIssue(issue.id, { stepIndex: rewind });
+          }
           return "blocked";
         }
         return "next";
@@ -461,6 +472,9 @@ export function createEngine(deps: {
             // Passed so a non-Claude adapter can load the SKILL.md itself;
             // createClaudeRunner ignores it and discovers the skill as before.
             skill: step.skill,
+            // Read only by the Codex runner, to sandbox a `publish` step
+            // differently from a `generate` one.
+            phase: step.phase,
             // workRoot: the agent's prompt names `projects/{project}/…`
             // relatively, so it must stand in the project tree.
             cwd: workRoot,

@@ -84,15 +84,23 @@ if (!record) {
   ].join("\n"));
 }
 
-console.log(`  ✓ ${publishedFile} records ado.${artefact}`);
-if (record.path) console.log(`    path: ${record.path}`);
-if (record.url)  console.log(`    url:  ${record.url}`);
+// `wikiPath` is what `recordPublished` writes (scripts/ado-publish.mjs), and
+// what the publish prompt tells an agent to record. `path` is accepted too:
+// this check reads a file written by an agent, and refusing a reasonable
+// synonym would turn a successful publish into a blocked issue over a key
+// name. Reading ONLY `path` is how the mismatch test below silently never
+// fired — the value was always undefined.
+const recordedPath = record.wikiPath ?? record.path ?? null;
 
-if (wantedPath && record.path && record.path !== wantedPath) {
+console.log(`  ✓ ${publishedFile} records ado.${artefact}`);
+if (recordedPath) console.log(`    path: ${recordedPath}`);
+if (record.url)   console.log(`    url:  ${record.url}`);
+
+if (wantedPath && recordedPath && recordedPath !== wantedPath) {
   die([
     `The recorded page path is not the one this stage publishes to.`,
     ``,
-    `  recorded: ${record.path}`,
+    `  recorded: ${recordedPath}`,
     `  expected: ${wantedPath}`,
     ``,
     `Identity is the PATH. A revision republished to a different path leaves`,
@@ -119,7 +127,7 @@ if (!ado?.auth || !ado?.project) {
   process.exit(0);
 }
 
-const pagePath = record.path || wantedPath;
+const pagePath = recordedPath || wantedPath;
 if (!pagePath) {
   die(`No page path recorded and none supplied, so there is nothing to look up.`);
 }

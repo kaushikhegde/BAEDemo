@@ -686,6 +686,32 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/WorkProduct" }
 
+  /issues/{id}/work-products/{wpId}/content:
+    get:
+      operationId: readWorkProduct
+      summary: One work product's content, so a reviewer can read it before approving
+      description: >
+        Returns the file's text for a `local` work product. A work product's
+        `url` is a `file://` path on the SERVER, which no HTTP client can open —
+        this is how the CLI and the console show a reviewer the document they
+        are being asked to approve. Content is capped at 512 KB; `truncated`
+        says whether it was cut. A non-local product (a published wiki page)
+        returns `content: null` with an `error` naming its URL instead.
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+        - name: wpId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The work product's content, or an error explaining why there is none
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkProductContent" }
+        "404":
+          description: No such issue, or no such work product on it
+
   /issues/{id}/gates:
     get:
       operationId: listIssueGates
@@ -1718,6 +1744,24 @@ components:
         author_user: "tagari"
         body: "Approved: ship it."
         created_at: "2026-08-17T09:15:00.000Z"
+
+    WorkProductContent:
+      type: object
+      description: >
+        `content` is null whenever the file could not be read — the product is
+        remote, resolves outside the workspace, or is missing — and `error`
+        then says which. A missing file is reported this way rather than as a
+        404 because the product exists and was attached, so its absence is a
+        finding about the workspace rather than about the request.
+      required: [id, title, url]
+      properties:
+        id:        { type: string, format: uuid }
+        title:     { type: string, example: "capability-process.md" }
+        url:       { type: string, format: uri }
+        content:   { type: string, nullable: true }
+        bytes:     { type: integer, description: "Size on disk, before any truncation." }
+        truncated: { type: boolean, description: "True when the file exceeded 512 KB." }
+        error:     { type: string, description: "Why there is no content." }
 
     WorkProduct:
       type: object

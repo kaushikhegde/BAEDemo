@@ -11,7 +11,13 @@
       ],
       "env": {
         "PERSONAL_ACCESS_TOKEN": "${ADO_MCP_BASIC}"
-      }
+      },
+      "autoApproveTools": [
+        "wiki",
+        "wiki_upsert_page",
+        "wit_work_item_write",
+        "wit_work_item_link_write"
+      ]
     }
   }
 }

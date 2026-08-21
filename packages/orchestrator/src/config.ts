@@ -20,7 +20,27 @@ export type Step =
        * The command is still recorded verbatim on FAILURE, where whoever is
        * debugging needs it.
        */
-      label?: string }
+      label?: string;
+      /**
+       * On failure, rewind the issue to this step index before blocking, so a
+       * Resume re-runs THAT step rather than this one.
+       *
+       * For a step that checks its own command, the default is right: a
+       * validator that exited non-zero will do the same again until a person
+       * changes something, and resuming at it is exactly what you want.
+       *
+       * It is wrong for a step that checks ANOTHER step's work. `verify
+       * published` asserts the publish step actually published; when it fails,
+       * re-running the verifier can never change the answer, because the thing
+       * that would have to change happened one step earlier — and that step
+       * already recorded `succeeded`, so it is never re-run. Measured on
+       * SCY-1: Resume, fail, block, Resume, fail, block, with the issue
+       * permanently at step 6 and the timeline showing nothing but repeats.
+       *
+       * Rewinding makes Resume mean "do the thing that was not done", which is
+       * what a person clicking it intends.
+       */
+      rewindOnFailure?: number }
   | { type: "agent";  agent?: string; phase: string; skill?: string; prompt?: string;
                       adapter?: string; model?: string; effort?: Effort;
                       /**

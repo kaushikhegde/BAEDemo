@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createOrchestrator, type Orchestrator } from "../src/index.js";
 import { defineOrchestrator } from "../src/config.js";
 import { createRouter } from "../src/http/router.js";
@@ -881,5 +882,95 @@ describe("one organisation cannot reach another's issues", () => {
     })).json();
     if (!runs.length) return;   // nothing ran; the assertion above already covers the listing
     expect((await fetch(`${baseUrl}/runs/${runs[0].id}`)).status).toBe(404);
+  });
+});
+
+/**
+ * Reading a work product before approving it.
+ *
+ * A work product's `url` is a `file://` path on the SERVER's disk, so listing
+ * one told an HTTP client the document's name and gave it no way to open the
+ * document. The CLI showed `capability-process.md  file:///…` beside
+ * `/approve <id>` and nothing else — a reviewer signing off on a client
+ * deliverable sight unseen, which makes the gate ceremony rather than review.
+ */
+describe("reading a work product's content", () => {
+  async function issueWithProduct(rel: string, body: string): Promise<{ issue: string; wp: string }> {
+    const created = await (await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    })).json();
+
+    const abs = join(dir, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, body, "utf8");
+    const wp = await orch.repo.attachWorkProduct(created.id, {
+      type: "document", provider: "local", title: rel.split("/").pop()!,
+      url: pathToFileURL(abs).href,
+    });
+    return { issue: created.id, wp: wp!.id };
+  }
+
+  it("returns the document a reviewer is being asked to approve", async () => {
+    const md = "# Capability Map\n\n| L1 | L2 |\n|---|---|\n| Claims | Lodge |\n";
+    const { issue, wp } = await issueWithProduct("outputs/capability-process.md", md);
+
+    const res = await fetch(`${baseUrl}/issues/${issue}/work-products/${wp}/content`);
+    expect(res.status).toBe(200);
+    const doc = await res.json();
+    // Byte for byte: these are markdown documents with tables and ```mermaid
+    // fences, and anything that reflows them corrupts both.
+    expect(doc.content).toBe(md);
+    expect(doc.bytes).toBe(md.length);
+    expect(doc.truncated).toBe(false);
+    expect(doc.title).toBe("capability-process.md");
+  });
+
+  it("404s a work product that is not on this issue", async () => {
+    const { issue } = await issueWithProduct("outputs/a.md", "a");
+    const other = await issueWithProduct("outputs/b.md", "b");
+    expect((await fetch(`${baseUrl}/issues/${issue}/work-products/${other.wp}/content`)).status)
+      .toBe(404);
+  });
+
+  it("reports a missing file rather than 404ing — the product exists, the file is the finding", async () => {
+    const { issue, wp } = await issueWithProduct("outputs/gone.md", "x");
+    rmSync(join(dir, "outputs/gone.md"));
+
+    const doc = await (await fetch(`${baseUrl}/issues/${issue}/work-products/${wp}/content`)).json();
+    expect(doc.content).toBeNull();
+    expect(doc.error).toBeTruthy();
+    expect(doc.title).toBe("gone.md");
+  });
+
+  it("refuses to read a product resolving outside the workspace", async () => {
+    const created = await (await fetch(`${baseUrl}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow: "requirements", params: { project: "P" } }),
+    })).json();
+    // The engine only ever attaches paths under the work root. This asserts the
+    // endpoint does not TRUST that: it turns a database row into a file read,
+    // and the day something attaches a caller-supplied path is the day this
+    // becomes arbitrary file disclosure.
+    const wp = await orch.repo.attachWorkProduct(created.id, {
+      type: "document", provider: "local", title: "passwd",
+      url: pathToFileURL("/etc/passwd").href,
+    });
+
+    const doc = await (await fetch(`${baseUrl}/issues/${created.id}/work-products/${wp!.id}/content`)).json();
+    expect(doc.content).toBeNull();
+    expect(doc.error).toContain("outside the workspace");
+    // What matters is that no BYTE of the file crossed the boundary. The `url`
+    // is echoed, and deliberately so — the same caller already reads it from
+    // GET /work-products, so hiding it here would conceal nothing.
+    expect(JSON.stringify(doc)).not.toContain("root:");
+  });
+
+  it("requires a credential, like every other engine route", async () => {
+    const { issue, wp } = await issueWithProduct("outputs/c.md", "c");
+    expect((await rawFetch(`${baseUrl}/issues/${issue}/work-products/${wp}/content`)).status)
+      .toBe(401);
   });
 });

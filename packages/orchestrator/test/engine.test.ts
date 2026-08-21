@@ -135,6 +135,65 @@ describe("engine", () => {
     expect((await repo.listComments(issue.id)).map(c => c.body).join("\n")).toContain("boom");
   });
 
+  /**
+   * A step that checks ANOTHER step's work has to send Resume back to that
+   * step. `verify published` asserts the publish step actually published; when
+   * it fails, re-running the verifier cannot change the answer, because the
+   * thing that would have to change happened one step earlier — and that step
+   * already recorded `succeeded`, so it is never re-run.
+   *
+   * Measured on SCY-1 before this existed: Resume → fail → block → Resume →
+   * fail → block, the issue permanently at the verifier, the timeline showing
+   * nothing but repeats, and no way out short of hand-editing step_index.
+   */
+  it("rewinds to the step being checked when a checking step fails", async () => {
+    const cfg = defineOrchestrator({
+      workspace: dir,
+      db: { driver: "pglite", dir: join(dir, "pg") },
+      adapters: { claude_local: fakeRunner },
+      defaults: { adapter: "claude_local", model: "claude-sonnet-4-6", effort: "medium" },
+      org: [{ key: "ba", name: "BA", model: "claude-sonnet-4-6" }],
+      workflows: [{
+        key: "pub", label: "Publish", assignee: "ba",
+        steps: [
+          { type: "agent", phase: "publish" },                              // 0
+          { type: "exec",  cmd: "verify", label: "Confirming", rewindOnFailure: 0 },  // 1
+        ],
+      }],
+    });
+    const engine = createEngine({
+      repo, config: cfg,
+      exec: async () => ({ code: 1, stdout: "", stderr: "no record" }),
+    });
+
+    const issue = await engine.start("pub", { project: "P" });
+    await engine.advance(issue.id);
+
+    const i = await repo.getIssue(issue.id);
+    expect(i?.status).toBe("blocked");
+    // The cursor is back on the publish step, so Resume re-publishes rather
+    // than re-checking a result that cannot have changed.
+    expect(i?.step_index).toBe(0);
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("no record");
+    expect(timeline).toContain("Resume will re-run step 1");
+  });
+
+  it("does not rewind a step that checks its own command", async () => {
+    // The default, and correct for a validator: it exited non-zero on work it
+    // did itself, so resuming AT it is exactly what a person wants.
+    const engine = createEngine({
+      repo, config: config(dir),
+      exec: async () => ({ code: 1, stdout: "", stderr: "boom" }),
+    });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const i = await repo.getIssue(issue.id);
+    expect(i?.status).toBe("blocked");
+    expect(i?.step_index).toBe(0);        // the exec step itself, not moved
+  });
+
   it("blocks when a produces file is missing, naming it, and raises NO gate", async () => {
     const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
     const issue = await engine.start("requirements", { project: "P", feature: "F" });
