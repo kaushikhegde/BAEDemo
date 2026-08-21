@@ -1817,14 +1817,23 @@ components:
 
     Usage:
       type: object
-      required: [runCount, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd]
+      description: >
+        Reported and estimated spend are returned separately and must never be
+        added together. `costUsd` is the sum of what each CLI reported for
+        itself; `estCostUsd` is our own arithmetic, priced from token counts
+        against the model catalogue, and is the only figure a Codex run has.
+        `unpricedRunCount` counts runs carrying neither, because their model has
+        no recorded price.
+      required: [runCount, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, estCostUsd, unpricedRunCount]
       properties:
         runCount:            { type: integer }
         inputTokens:         { type: number }
         outputTokens:        { type: number }
         cacheReadTokens:     { type: number }
         cacheCreationTokens: { type: number }
-        costUsd:             { type: number }
+        costUsd:             { type: number, description: "Reported by the CLI, verbatim." }
+        estCostUsd:          { type: number, description: "Our estimate. Never merged into costUsd." }
+        unpricedRunCount:    { type: integer, description: "Runs with neither figure." }
 
     TranscriptEvent:
       type: object

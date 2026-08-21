@@ -21,6 +21,7 @@
     "mcp:test": "tsx scripts/mcp-test.mjs",
     "check:routing": "tsx scripts/check-routing.mts",
     "scyne": "node cli/index.ts",
+    "test:cli": "node --test \"cli/*.test.ts\"",
     "build:cli": "node scripts/build-cli.mjs",
     "pack:cli": "node scripts/build-cli.mjs && npm pack ./dist/cli --pack-destination ./dist",
     "typecheck": "./packages/orchestrator/node_modules/.bin/tsc --noEmit -p packages/orchestrator/tsconfig.json && ./packages/orchestrator/node_modules/.bin/tsc --noEmit -p cli/tsconfig.json",

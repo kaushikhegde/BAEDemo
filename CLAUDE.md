@@ -199,10 +199,19 @@ The engine owns every status transition (`todo → in_progress → in_review →
 done/blocked`) and parks at anything waiting on a human. One issue, one workflow,
 one gate per artefact.
 
-**It also narrates itself.** Every step posts a comment to its issue — the
-command an `exec` is running, which agent is starting and with which skill, what
-it cost when it finished, what `attach` recorded, that a gate is waiting, and a
-closing total. That timeline is what the chatbot's Activity panel and the
+**It also narrates itself.** Every step posts a comment to its issue — what an
+`exec` step is doing, which agent is starting and with which skill, what it cost
+when it finished, what `attach` recorded, that a gate is waiting, and a closing
+total.
+
+> **An `exec` narrates its `label`, never its command.** That timeline is what a
+> CLIENT watches in the chatbot while their run proceeds, and `Step 7 of 7 ·
+> running node scripts/render-companion-app.mjs SAPN` tells them nothing they
+> wanted to know while disclosing a path on our machine. A step with no label
+> says only "running" — describing a command is opt-IN, so a step added later
+> cannot leak one by omission. The command IS recorded, verbatim, in the
+> blocking comment when the step fails, inside the fence with the stderr, which
+> is the one moment somebody needs it. That timeline is what the chatbot's Activity panel and the
 console's issue detail render, and it is written by the ENGINE, not by the
 agents. The Paperclip bundles used to instruct each agent to post its own
 progress ("clients watch the chatbot timeline"); that was correctly deleted when
@@ -597,6 +606,23 @@ runs — but every run shows `—` for cost, and no cost budget can fire on it.
 >
 > **A model with no published price stays unpriced** — `—`, never `$0.00`,
 > which would read as a run that cost nothing.
+>
+> **A run is attributed to its project at CREATION.** `002_platform` added
+> `issues.project_id` / `issues.feature_id` saying "cost per project is a
+> group-by once this exists" — and then nothing ever wrote them, for months.
+> `/spend?by=project` joins through those columns, so every row came back
+> `project_name: null`: ONE anonymous row holding the whole installation's
+> cost, by project, by feature, for every run ever recorded. The project was
+> never missing — it sat in `issues.params` as jsonb, because that is what the
+> workflow is parameterised by. `repo.createIssue` now resolves it into the
+> foreign key, by name within the company, and `008_issue_project_backfill`
+> lifts the history. A name that resolves to nothing leaves a null rather than
+> guessing, and the issue is still created: the tree and the database do
+> disagree (a `reset` clears one and leaves the other), and an unattributed run
+> is a gap in a chart where a refused run is somebody's afternoon.
+>
+> It survived that long because every spend test seeded `project_id` by hand
+> with an `update`, exercising the report and never the path that was missing.
 
 There are no agent UUIDs to keep in sync, no placeholder swap, and no
 `.bootstrap/ids.json` — all of that belonged to Paperclip's hire flow and is
@@ -949,6 +975,9 @@ open http://127.0.0.1:5173
 | POST | `/api/approve/:approvalId` | Resolves a gate; wakes the gate's own issue assignee. Atlassian auto-provisioning keys off the keys in the issue description |
 | POST | `/api/reject/:approvalId` | Rejects a gate |
 | POST | `/api/request-changes/:approvalId` | Reviewer feedback → comments it, re-fires the assignee to regenerate |
+| **GET** | **`/api/issues`** | **Every issue in the company**, shaped like `scyne issues` — `5/6 gate`, target, control request, `needsHuman`. `?project=&feature=&status=&open=` |
+| **GET** | **`/api/spend`** | **`?by=project\|feature\|user\|agent\|adapter\|model`.** Admin only upstream; the 403 is passed through, never collapsed to an empty table |
+| **GET** | **`/api/actions`** | **The organisation's audit feed.** Admin only upstream, same 403 rule |
 | GET | `/api/history` | All completed runs with their wiki + work item links |
 | GET | `/api/runs/:issueId` | Compact agent run summaries for the run tree |
 | GET | `/api/features` | `projects/<project>/<feature>/` on disk. Excludes the project's own folders (`solutions`, `documents`, `design`, …) |
@@ -993,6 +1022,23 @@ The system prompt teaches the dependency chain (requirements → data model → 
 - **Login gate**: the app shows a `Login.tsx` screen first, which authenticates against the **orchestrator's own user table** — the same accounts the CLI and console use. There are no demo credentials. The first account is created by `scyne init`, which claims the installation as its **superadmin**; everyone else is created with `scyne user create` or from the console. The session is an **httpOnly cookie** on the chatbot origin, never `localStorage` — a credential JavaScript cannot read is one an injected script cannot steal — and the chatbot forwards *that user's* token to the orchestrator, so a run started from chat records `issues.created_by`.
 - **Session persistence**: `parentIssueId` is saved to `localStorage.scyne_parent_issue_id`. Refresh resumes the workflow.
 - **Right-pane tabs**: `Activity` (live workflow status) and `UI` (iframes the generated app from `/api/preview/:project/:feature`). The UI tab unlocks the moment a generated app is registered.
+- **Left rail**: `Chat` · `Issues` · `Spend` · `Actions` — the chatbot is a full
+  client now, not only a launcher, so `/orch` is for installation admin (agents,
+  skills, budgets, orgs) rather than for daily work. Selecting an issue in
+  **Issues** sets the active issue and returns to Chat, where the Activity panel
+  already renders one; `parentIssueId` therefore means *the issue being watched*
+  rather than *the run this browser last started*. Spend and Actions are
+  **hidden for a non-admin** — cosmetic only, because the orchestrator refuses
+  `/spend` and `/actions` for them regardless, and that refusal is the boundary.
+  A count badge on Issues tracks `in_review`/`blocked`/`paused` and polls every
+  30s from whichever view is open, because its whole job is to interrupt.
+- **The preview iframe is same-origin.** `registry.json` stores an ABSOLUTE
+  `devUrl` (`http://127.0.0.1:4000/…`) for the UX auditor's real browser, but
+  every `/api/*` route needs the session cookie and **cookies are keyed by host
+  with no regard for port** — Vite binds `[::1]:5173`, so the app is served from
+  `localhost` and an iframe pointed at `127.0.0.1` carries no cookie and renders
+  `{"error":"not_authenticated"}`. `PreviewPane` strips the origin so the iframe
+  goes through the Vite proxy on whatever host is actually being viewed.
 - **Comments render as markdown**: `MiniMarkdown` component handles headings, bullets, bold, inline code, fenced code blocks, and links (both `[label](url)` and bare URLs).
 
 ### Defaults baked into `.env`
@@ -1494,6 +1540,22 @@ a missing parameter is refused as a usage error instead of blocking mid-run on
 > `scripts/build-cli.mjs` asserts one shebang, sets the mode, and executes
 > `scyne --help` — the one entirely offline command — before `npm pack` sees it.
 
+> **A paste is one answer, not one answer per line.** Every prompt in the
+> interactive session reads a single readline `line` event, which is right for
+> a typed answer and wrong for a pasted one: a pasted paragraph is N events, so
+> `/new` consumed one client description as its description, its website, its
+> document paths and its first feature name — and the lines still left over
+> fell through to the chat loop, where the assistant read each stray sentence
+> as an instruction and created a feature for it. `cli/paste.ts` asks the
+> terminal for **bracketed paste** (DECSET 2004) and strips the markers out of
+> stdin BEFORE readline sees them, which is the only way to tell a pasted
+> newline from a pressed Return — the bytes are otherwise identical, and Node's
+> readline splits an insert on newlines and submits each piece. A multi-line
+> block shows as `[Pasted text #1 +12 lines]` and expands back on Return; a
+> paste never submits itself. Piped input is passed through untouched, so
+> `printf '/use RTWSA\n/gates\n/exit\n' | scyne` still works. `npm run test:cli`
+> covers the parser and the readline seam.
+
 ### Watch what an agent is doing
 
 Open `http://127.0.0.1:3100/orch#runs` and click any run — the transcript
@@ -1701,6 +1763,7 @@ with the registry, the registry wins.
 | `/api/features` returns `{}` | `projects/` missing, or `WORKSPACE_PATH` pointing elsewhere. | `mkdir projects/<project>/<feature>/...`, restart the dev server. |
 | Refresh loses the workflow | `localStorage.scyne_parent_issue_id` cleared. | The workflow status panel's "New session" button starts over; otherwise it restores automatically. |
 | `SCYNE_ADAPTER='codex' is not registered` at boot | The `codex` binary is not on PATH. | `npm i -g @openai/codex && codex login`, then restart. |
+| A pasted paragraph in `scyne` is read as several answers | The terminal is not bracketing its pastes (DECSET 2004), so `cli/paste.ts` cannot tell a pasted newline from a pressed Return — tmux and screen can be configured to strip the markers. | Paste and look: a multi-line block should collapse to `[Pasted text #1 +N lines]` before you press Return. If it does not, `/new` refuses the step rather than spreading the block across the four that follow, and `project describe <p> "…"` takes the paragraph in one go. |
 | A Codex run's transcript is empty in the console | The decoder did not recognise the event kinds — a Codex version bump. | `npm run orch -- log <runId> --raw` shows the real events; update `decodeCodexLine` in `core/transcript.ts`. Unrecognised events render as framing lines, so an empty transcript means the log itself is empty. |
 
 ---

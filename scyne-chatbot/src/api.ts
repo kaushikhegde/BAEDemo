@@ -476,3 +476,174 @@ export async function resumeIssue(issueId: string) {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `Resume failed (${r.status})`);
   return r.json();
 }
+
+// ─── Ops: issues, spend, actions ────────────────────────────────────────────
+//
+// Each mirrors a `scyne` command, so the two clients answer the same question
+// the same way. A refusal is NOT swallowed: spend and the audit feed are
+// admin-only in the orchestrator, and the caller needs to tell "you cannot see
+// this" apart from "there is nothing here".
+
+export interface OpsIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  status: string;
+  workflow: string | null;
+  project: string | null;
+  feature: string | null;
+  /** `5/6 gate` — where it is, and what that step does. */
+  step: string;
+  stepIndex: number;
+  stepCount: number | null;
+  controlRequest: string | null;
+  needsHuman: boolean;
+  createdBy: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/** A refusal or an outage, in a shape a view can render without guessing. */
+export class OpsError extends Error {
+  constructor(readonly status: number, readonly code: string, message: string) {
+    super(message);
+    this.name = "OpsError";
+  }
+  /** Your role cannot see this. Retrying will not help — so views do not. */
+  get forbidden(): boolean { return this.status === 403; }
+  get unreachable(): boolean { return this.status === 503; }
+}
+
+async function ops<T>(path: string): Promise<T> {
+  const r = await apiFetch(path);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({} as any));
+    throw new OpsError(r.status, body?.error ?? "error",
+      body?.message || `Request failed (${r.status})`);
+  }
+  return r.json() as Promise<T>;
+}
+
+export function getIssues(
+  filter: { project?: string | null; feature?: string | null; status?: string; open?: boolean } = {},
+): Promise<OpsIssue[]> {
+  const q = new URLSearchParams();
+  if (filter.project) q.set("project", filter.project);
+  if (filter.feature) q.set("feature", filter.feature);
+  if (filter.status) q.set("status", filter.status);
+  if (filter.open) q.set("open", "true");
+  return ops<OpsIssue[]>(`/api/issues${q.toString() ? `?${q}` : ""}`);
+}
+
+export type SpendDimension = "project" | "feature" | "user" | "agent" | "adapter" | "model";
+
+export interface SpendRow {
+  project_name?: string; feature_name?: string; user_email?: string;
+  agent_key?: string; adapter?: string; model?: string;
+  run_count?: number | string;
+  input_tokens?: number | string; output_tokens?: number | string;
+  reported_cost_usd?: number | string | null;
+  estimated_cost_usd?: number | string | null;
+  /**
+   * Runs with NEITHER a reported nor an estimated cost.
+   *
+   * Not the same as costing nothing: the model was never billed by a CLI and
+   * has no row in `model_prices`, so its spend is unknown. Counted in the run
+   * and token figures and in neither cost column — which is why the total can
+   * look too low, and why the view says so rather than letting somebody
+   * conclude a fleet of runs was free.
+   */
+  unpriced_run_count?: number | string | null;
+}
+
+export function getSpend(by: SpendDimension, extra: Record<string, string> = {}): Promise<SpendRow[]> {
+  return ops<SpendRow[]>(`/api/spend?${new URLSearchParams({ by, ...extra })}`);
+}
+
+/**
+ * One audit row, in the shape the orchestrator actually returns — verified
+ * against a live response, not inferred from the CLI's column headings.
+ *
+ * Two fields are easy to get wrong. The verb is `verb`, not `action`. And
+ * `detail` is an OBJECT (`{path, version, changed}`), not a string: rendering
+ * it directly produces `[object Object]` in a column meant to say what
+ * happened.
+ */
+export interface ActionRow {
+  id?: string;
+  verb?: string;
+  /** Null for an action taken by an agent, or before attribution existed. */
+  user_email?: string | null;
+  /** Set when an AGENT acted rather than a person. */
+  agent_key?: string | null;
+  project_name?: string | null;
+  target_type?: string | null;
+  target_id?: string | null;
+  detail?: Record<string, unknown> | string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * `detail` as one readable clause.
+ *
+ * Pure and exported so it can be tested: every audit row goes through it, and
+ * the failure mode is silent — an object stringifies to `[object Object]`,
+ * which looks like a rendering bug rather than the missing data it is.
+ */
+export function summariseDetail(detail: ActionRow["detail"]): string {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  // A path is what a person is looking for when they scan this column, so it
+  // wins over the other keys rather than being alphabetised among them.
+  const path = detail.path ?? detail.file ?? detail.name;
+  if (typeof path === "string") return path;
+  const pairs = Object.entries(detail)
+    .filter(([, v]) => v !== null && v !== undefined && typeof v !== "object")
+    .map(([k, v]) => `${k} ${v}`);
+  return pairs.join(" · ");
+}
+
+export function getActions(limit = 100): Promise<ActionRow[]> {
+  return ops<ActionRow[]>(`/api/actions?limit=${limit}`);
+}
+
+/**
+ * The time ranges the Spend view offers.
+ *
+ * Presets rather than two date pickers: "what did last month cost" is the
+ * question people actually have, and a pair of empty date fields makes them
+ * compute the answer to a different one first. `""` is all time, and is the
+ * default — a cost figure silently covering only the last week is worse than
+ * no filter at all.
+ */
+export const SPEND_PERIODS = [
+  { value: "", label: "All time" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "mtd", label: "This month" },
+  { value: "today", label: "Today" },
+] as const;
+
+export type SpendPeriod = (typeof SPEND_PERIODS)[number]["value"];
+
+/**
+ * A period → the `since` the API wants, or null for all time.
+ *
+ * `now` is a parameter so this is pure and testable; every caller passes
+ * `Date.now()`. Day boundaries are LOCAL — somebody asking for "today" in
+ * Adelaide means their today, and computing it in UTC puts the boundary in the
+ * middle of their morning for most of the year.
+ */
+export function sinceFor(period: SpendPeriod, now: number = Date.now()): string | null {
+  if (!period) return null;
+  const d = new Date(now);
+  if (period === "today") { d.setHours(0, 0, 0, 0); return d.toISOString(); }
+  if (period === "mtd") { d.setHours(0, 0, 0, 0); d.setDate(1); return d.toISOString(); }
+  const days = Number(period.replace("d", ""));
+  if (!Number.isFinite(days)) return null;
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - days);
+  return d.toISOString();
+}

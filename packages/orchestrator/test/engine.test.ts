@@ -81,6 +81,49 @@ describe("engine", () => {
     expect((await repo.getIssue(issue.id))?.status).toBe("done");
   });
 
+  it("never narrates the COMMAND — that timeline is read by clients", async () => {
+    // `Step 7 of 7 · running `node scripts/render-companion-app.mjs SAPN`` is
+    // what this timeline used to say, in a panel a client watches while their
+    // run proceeds. It tells them nothing they wanted to know and discloses a
+    // path on our machine. An unlabelled step says "running" and nothing more:
+    // describing a command is opt-IN, so a new step cannot leak by omission.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).not.toContain("stage P");
+    expect(timeline).toContain("running");
+  });
+
+  it("narrates an exec step's label when it has one", async () => {
+    const cfg = config(dir);
+    cfg.workflows[0].steps[0] = { type: "exec", cmd: "stage {project}", label: "Gathering the inputs" };
+    const engine = createEngine({ repo, config: cfg, exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("Gathering the inputs");
+    expect(timeline).not.toContain("stage P");
+  });
+
+  it("DOES record the command when the step fails — that is when it is needed", async () => {
+    // The one moment the exact command earns its place. It goes inside the
+    // diagnostics fence with the stderr, not in the sentence.
+    const failing = async () => ({ code: 1, stdout: "", stderr: "boom" });
+    const cfg = config(dir);
+    cfg.workflows[0].steps[0] = { type: "exec", cmd: "stage {project}", label: "Gathering the inputs" };
+    const engine = createEngine({ repo, config: cfg, exec: failing });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("Gathering the inputs failed");
+    expect(timeline).toContain("$ stage P");
+    expect(timeline).toContain("boom");
+  });
+
   it("blocks when an exec step exits non-zero, and does not reach the agent", async () => {
     const failing = async () => ({ code: 1, stdout: "", stderr: "boom" });
     const engine = createEngine({ repo, config: config(dir), exec: failing });
@@ -578,8 +621,12 @@ describe("engine (fix round 1: idempotent wait steps, interpolate() throws don't
     expect(bodies.length).toBeGreaterThan(0);
     const all = bodies.join("\n");
 
-    expect(all).toContain("Step 1 of 5");            // the exec, named
-    expect(all).toContain("stage P");
+    expect(all).toContain("Step 1 of 5");            // the exec, positioned
+    // NOT the command. This asserted `stage P` until the timeline turned out to
+    // be something clients read: an unlabelled exec now narrates "running" and
+    // the command appears only if the step fails.
+    expect(all).not.toContain("stage P");
+    expect(all).toContain("running");
     // The fixture never seeds the org, so the engine falls back to the agent
     // KEY — which is the right fallback: a name it does not have must not stop
     // it saying who is working.

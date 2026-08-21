@@ -174,11 +174,14 @@ describe("console", () => {
       .toEqual({ text: "$3.5000", unpriced: 0 });
   });
 
-  // IMPORTANT 4: a cost budget cannot fire on a run whose adapter reports no
-  // cost (Codex does not price its own runs) — only its token and duration
-  // ceilings still can. The design called for a warning beside such a
-  // workflow (and, here, such an agent) on the Budgets tab; it never existed.
-  it("costCeilingWarning names an adapter that cannot honour a cost ceiling, and says nothing for one that can", () => {
+  // A cost budget on an adapter that reports no cost of its own (Codex) fires
+  // on OUR estimate — core/engine.ts prices the run and checks the ceiling
+  // against that. So the warning beside such a workflow on the Budgets tab
+  // must say what the ceiling now depends on (a recorded model price), NOT
+  // that it cannot fire: this assertion previously pinned a claim that
+  // migration 007 had already made false, and a warning telling an operator
+  // their ceiling is inert when it is live is worse than no warning.
+  it("costCeilingWarning says the ceiling fires on an estimate, and says nothing for an adapter that prices itself", () => {
     const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
     const start = script.indexOf("const esc =");
     const end = script.indexOf("const mdlite =");
@@ -188,11 +191,59 @@ describe("console", () => {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const costCeilingWarning = new Function(src + "; return costCeilingWarning;")();
 
-    expect(costCeilingWarning("codex")).toMatch(/cost ceiling/i);
+    expect(costCeilingWarning("codex")).toMatch(/estimate/i);
     expect(costCeilingWarning("codex")).toContain("codex");
+    // The claim it must NOT make any more.
+    expect(costCeilingWarning("codex")).not.toMatch(/cannot fire|inert/i);
     // claude_local prices its own runs — no warning belongs beside it.
     expect(costCeilingWarning("claude_local")).toBe("");
     expect(costCeilingWarning(undefined)).toBe("");
+  });
+
+  // The bug this pins: every cost site in the console read `cost_usd` alone,
+  // which is null for every Codex run BY DESIGN — Codex reports tokens and no
+  // dollars, so the engine prices the run itself into `est_cost_usd`. A
+  // Codex-first install therefore rendered "—" on every run and "$0.0000
+  // spent" on every total, while the estimates sat in the next column of the
+  // same row. Reported and estimated must both render, labelled, never summed.
+  it("renders an estimated cost when the CLI reported none, and never merges the two", () => {
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+    const src = script.slice(script.indexOf("const esc ="), script.indexOf("const mdlite ="));
+    const f = (name: string) => new Function(src + "; return " + name + ";")();
+    const runCost = f("runCost"), spendText = f("spendText"),
+          spendSummary = f("spendSummary"), turns = f("turns");
+
+    // A Codex run: no reported figure, an estimate beside it.
+    const codex = { cost_usd: null, est_cost_usd: "0.817817", num_turns: null };
+    expect(runCost(codex)).toContain("0.8178");
+    expect(runCost(codex)).toContain("~");
+    expect(runCost(codex)).toMatch(/est/);
+
+    // A Claude run: reported, and NOT dressed up as an estimate.
+    expect(runCost({ cost_usd: 3.19, est_cost_usd: null })).toContain("$3.1900");
+    expect(runCost({ cost_usd: 3.19, est_cost_usd: null })).not.toContain("~");
+
+    // Neither figure is "—", never "$0.00" — a free run and an unpriced one
+    // are different facts.
+    expect(runCost({ cost_usd: null, est_cost_usd: null })).toContain("—");
+    expect(runCost({ cost_usd: null, est_cost_usd: null })).not.toContain("$0.00");
+
+    // Totals stay side by side. A merged figure cannot be audited.
+    expect(spendText(4.1, 1.23)).toBe("$4.1000 + ~$1.2300 est");
+    expect(spendText(0, 0)).toBe("—");
+
+    const sum = spendSummary([
+      { cost_usd: 2, est_cost_usd: null },
+      { cost_usd: null, est_cost_usd: "0.5" },
+      { cost_usd: null, est_cost_usd: null },
+    ]);
+    expect(sum.text).toBe("$2.0000 + ~$0.5000 est");
+    expect(sum.unpriced).toBe(1);   // the one carrying neither
+
+    // Codex reports no turn count. A confident "0" reads as a run that did
+    // nothing; the screenshot that started this said TURNS 0 for a 10-minute run.
+    expect(turns(null)).toBe("—");
+    expect(turns(14)).toBe("14");
   });
 
   it("defines both light and dark palettes", () => {

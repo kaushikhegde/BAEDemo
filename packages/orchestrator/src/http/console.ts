@@ -657,33 +657,64 @@ const dur = (ms) => {
 // Four decimals: a single cheap step really does cost $0.0043, and rounding it
 // to $0.00 is how a bill becomes a surprise.
 const money = (n) => n == null ? "—" : "$" + Number(n).toFixed(4);
-// Summing cost_usd over a mix of priced and unpriced runs (Codex does not
-// price its own runs) with a plain "+ (r.cost_usd || 0)" reduce used to render
-// as "$0.0000" for a run set that was NEVER free — only never reported. Same
-// discipline closingNote (core/engine.ts) already applies to one issue's own
-// timeline, compressed for a spot with little room: a dash instead of a
-// dollar figure when nothing here is priced, and the unpriced count named
-// rather than folded silently into a total that looks complete.
-const spendSummary = (runs) => {
-  const priced = runs.filter((r) => r.cost_usd !== null && r.cost_usd !== undefined);
-  const total = priced.reduce((n, r) => n + Number(r.cost_usd), 0);
-  const unpriced = runs.length - priced.length;
-  return { text: priced.length ? money(total) : "—", unpriced };
+/* Reported and estimated as one PLAIN-TEXT phrase, side by side, NEVER added
+   together - the same discipline costCell already applies on the Spend tab.
+   A single merged figure cannot be audited, because nobody reading it can tell
+   which half came from a vendor and which from a price table somebody typed. */
+const spendText = (rep, est) => {
+  const bits = [];
+  if (rep > 0) bits.push(money(rep));
+  if (est > 0) bits.push("~" + money(est) + " est");
+  return bits.length ? bits.join(" + ") : "—";
 };
+// One run set's spend. Summing cost_usd alone with a plain "+ (r.cost_usd || 0)"
+// reduce used to render "$0.0000" for a run set that was NEVER free — only
+// never reported, which is every Codex run. unpriced now means what it says:
+// neither figure exists, because the model has no recorded price. Named rather
+// than folded silently into a total that then looks complete.
+const spendSummary = (runs) => {
+  const rep = runs.filter((r) => r.cost_usd !== null && r.cost_usd !== undefined);
+  const est = runs.filter((r) => (r.cost_usd === null || r.cost_usd === undefined) &&
+                                 r.est_cost_usd !== null && r.est_cost_usd !== undefined);
+  return {
+    text: spendText(rep.reduce((n, r) => n + Number(r.cost_usd), 0),
+                    est.reduce((n, r) => n + Number(r.est_cost_usd), 0)),
+    unpriced: runs.length - rep.length - est.length,
+  };
+};
+/* ONE run's cost, as HTML (so do not wrap it in esc). cost_usd is the CLI's
+   own arithmetic, verbatim; est_cost_usd is OURS, priced by priceRun from the
+   run's token counts and the model_prices table. On a Codex run the estimate is
+   the only figure that exists at all - Codex reports tokens and no dollars - so
+   reading cost_usd alone is why a whole Codex-first install rendered "—"
+   everywhere while its estimates sat in the database beside them. */
+const runCost = (r) => {
+  if (r && r.cost_usd !== null && r.cost_usd !== undefined) {
+    return '<span title="Reported by the CLI that ran it">' + money(r.cost_usd) + '</span>';
+  }
+  if (r && r.est_cost_usd !== null && r.est_cost_usd !== undefined) {
+    return '<span class="muted" title="Our arithmetic, from the model price table: this runtime reports no cost of its own">~' +
+      money(r.est_cost_usd) + ' est</span>';
+  }
+  return '<span class="muted">—</span>';
+};
+/* Turns are a Claude Code figure. Codex reports none, and num() rendering null
+   as a confident "0" reads as a run that did no work. */
+const turns = (v) => (v === null || v === undefined) ? "—" : num(v);
 const num = (n) => Number(n == null ? 0 : n).toLocaleString("en-AU");
 const plain = (v) => (v === null || v === undefined || v === "") ? "" : String(Number(v));
-// Adapters known to never report a cost figure (core/usage.ts: Codex reports
-// tokens but does not price its own runs). A cost ceiling on a workflow whose
-// resolved adapter is one of these can never fire — only its token and
-// duration ceilings still can. IMPORTANT 4 in the branch review: the design
-// called for a warning beside such a workflow on the Budgets tab and it was
-// never carried into the plan.
+// Adapters that report no cost figure of their own (core/usage.ts: Codex
+// reports tokens and does not price them). Their cost ceiling is no longer
+// inert - since migration 007 the engine prices the run itself and checks the
+// ceiling against THAT estimate - but it now depends on the model having a row
+// in the price table, so the warning says what it actually depends on rather
+// than claiming the ceiling cannot fire.
 const UNPRICED_ADAPTERS = ["codex"];
 const costCeilingWarning = (adapter) =>
   UNPRICED_ADAPTERS.indexOf(adapter) === -1 ? "" :
     ' <span class="muted" title="' + esc(adapter) +
-    ' does not report a cost figure - its cost ceiling cannot fire; tokens and duration still can.">' +
-    '&#9888; cost ceiling inert (' + esc(adapter) + ')</span>';
+    ' reports no cost of its own. This ceiling fires on OUR estimate, so it needs a price recorded for the model it runs - check the model catalogue. Tokens and duration are unaffected.">' +
+    '&#9888; ceiling fires on an estimate (' + esc(adapter) + ')</span>';
 
 /* A deliberately tiny markdown renderer for agent and engine comments, which
    arrive as markdown (fenced stderr, inline code paths). Escapes FIRST, then
@@ -898,7 +929,7 @@ async function renderRuns() {
       '<td>' + st(r.status) + '</td>' +
       '<td class="num">' + esc(dur(r.duration_ms)) + '</td>' +
       '<td class="num">' + num(r.input_tokens) + "+" + num(r.output_tokens) + '</td>' +
-      '<td class="num">' + esc(money(r.cost_usd)) + '</td></tr>').join("") +
+      '<td class="num">' + runCost(r) + '</td></tr>').join("") +
     '</tbody></table></div></div>';
 
   on("tr[data-run]", "click", (e) => { location.hash = "#run/" + e.currentTarget.dataset.run; });
@@ -924,8 +955,10 @@ async function renderRun(runId) {
     '<div class="grid" style="margin-top:.9rem">' +
       '<div class="metric"><div class="l">state</div><div class="v" style="font-size:1rem">' + st(run.status) + '</div></div>' +
       '<div class="metric"><div class="l">duration</div><div class="v">' + esc(dur(run.duration_ms)) + '</div></div>' +
-      '<div class="metric"><div class="l">cost</div><div class="v">' + esc(money(run.cost_usd)) + '</div></div>' +
-      '<div class="metric"><div class="l">turns</div><div class="v">' + num(run.num_turns) + '</div></div>' +
+      '<div class="metric"><div class="l">cost</div><div class="v" style="font-size:1.15rem">' + runCost(run) + '</div>' +
+        (run.cost_source ? '<div class="s">' + esc(run.cost_source) +
+          (run.model ? ' · ' + esc(run.model) : "") + '</div>' : "") + '</div>' +
+      '<div class="metric"><div class="l">turns</div><div class="v">' + turns(run.num_turns) + '</div></div>' +
       '<div class="metric"><div class="l">tokens in / out</div><div class="v" style="font-size:1.05rem">' +
         num(run.input_tokens) + " / " + num(run.output_tokens) + '</div></div>' +
     '</div></div>' +
@@ -1079,7 +1112,7 @@ async function renderIssue(id) {
               '<td>' + esc(r.phase || "—") + '</td>' +
               '<td class="mono">' + esc(agentKey[r.agent_id] || "—") + '</td>' +
               '<td>' + st(r.status) + '</td><td class="num">' + esc(dur(r.duration_ms)) + '</td>' +
-              '<td class="num">' + esc(money(r.cost_usd)) + '</td></tr>').join("") +
+              '<td class="num">' + runCost(r) + '</td></tr>').join("") +
             '</tbody></table></div></div>' +
             '<p class="hint">' + esc(spend.text) +
               (spend.unpriced ? ' (' + num(spend.unpriced) + ' unpriced)' : '') +
@@ -1315,6 +1348,7 @@ async function renderOrg(selected) {
     stats[a.key] = {
       runs: rs.length,
       cost: rs.reduce((n, r) => n + Number(r.cost_usd || 0), 0),
+      est: rs.reduce((n, r) => n + (r.cost_usd == null ? Number(r.est_cost_usd || 0) : 0), 0),
       running: rs.some(r => !r.finished_at),
       last: rs.length ? rs[0] : null,
     };
@@ -1339,7 +1373,7 @@ async function renderOrg(selected) {
   const initials = (name) => String(name).split(/\\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
 
   const node = (a) => {
-    const s = stats[a.key] || { runs: 0, cost: 0, running: false };
+    const s = stats[a.key] || { runs: 0, cost: 0, est: 0, running: false };
     const isBlocked = !!blockedFor[a.key];
     const cls = (a.status === "disabled" ? "off" : (s.running ? "running" : (isBlocked ? "blocked" : "")));
     // What this agent actually invokes. The three management roles invoke
@@ -1355,7 +1389,7 @@ async function renderOrg(selected) {
       '<span class="av">' + esc(initials(a.name)) + '<span class="live"></span></span>' +
       '<span class="who"><span class="n">' + esc(a.name) + '</span>' +
       '<span class="k">' + esc(a.key) +
-        (s.cost > 0 ? ' · ' + esc(money(s.cost)) : "") + '</span>' +
+        (s.cost > 0 || s.est > 0 ? ' · ' + esc(spendText(s.cost, s.est)) : "") + '</span>' +
       (skillLine ? '<span class="sk">' + skillLine + '</span>' : "") + '</span>' +
       '</button>' +
       (children[a.key] && children[a.key].length
@@ -1554,7 +1588,7 @@ async function renderAgent(key, target) {
         '<th>State</th><th class="num">Duration</th><th class="num">Cost</th></tr></thead><tbody>' +
         runs.map(r => '<tr class="clickable" data-run="' + esc(r.id) + '"><td>' + esc(ago(r.started_at)) +
           '</td><td>' + esc(r.phase || "—") + '</td><td>' + st(r.status) + '</td><td class="num">' +
-          esc(dur(r.duration_ms)) + '</td><td class="num">' + esc(money(r.cost_usd)) + '</td></tr>').join("") +
+          esc(dur(r.duration_ms)) + '</td><td class="num">' + runCost(r) + '</td></tr>').join("") +
         '</tbody></table></div></div>'
       : '<div class="empty" style="margin-top:1rem"><b>Never run</b>Its spend and transcripts appear here after its first run.</div>');
 
@@ -1857,7 +1891,9 @@ async function renderBudgets() {
 
   const perAgent = await Promise.all(agents.map(async a => {
     const runs = await api("/agents/" + a.key + "/runs").catch(() => []);
-    return { key: a.key, runs: runs.length, cost: runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0) };
+    return { key: a.key, runs: runs.length,
+             cost: runs.reduce((n, r) => n + Number(r.cost_usd || 0), 0),
+             est: runs.reduce((n, r) => n + (r.cost_usd == null ? Number(r.est_cost_usd || 0) : 0), 0) };
   }));
   // The same step -> agent -> defaults chain resolveRuntime uses for adapter,
   // as far as this page can see it: the console has no view of per-project
@@ -1893,8 +1929,10 @@ async function renderBudgets() {
 
   view.innerHTML =
     '<div class="grid">' +
-      '<div class="metric"><div class="l">total spend</div><div class="v">' + esc(money(usage.costUsd)) + '</div>' +
-        '<div class="s">' + num(usage.runCount) + ' run(s)</div></div>' +
+      '<div class="metric"><div class="l">total spend</div><div class="v" style="font-size:1.15rem">' +
+        esc(spendText(usage.costUsd, usage.estCostUsd)) + '</div>' +
+        '<div class="s">' + num(usage.runCount) + ' run(s)' +
+        (usage.unpricedRunCount ? ', ' + num(usage.unpricedRunCount) + ' unpriced' : "") + '</div></div>' +
       '<div class="metric"><div class="l">tokens in</div><div class="v" style="font-size:1.2rem">' + num(usage.inputTokens) + '</div></div>' +
       '<div class="metric"><div class="l">tokens out</div><div class="v" style="font-size:1.2rem">' + num(usage.outputTokens) + '</div></div>' +
       '<div class="metric"><div class="l">cache read</div><div class="v" style="font-size:1.2rem">' + num(usage.cacheReadTokens) + '</div></div>' +
@@ -1911,7 +1949,7 @@ async function renderBudgets() {
       const p = perAgent.find(x => x.key === a.key);
       return limitRow("agent", a.key, agentLink(a.key) + ' <span class="muted">' + esc(a.name) + '</span>' +
           costCeilingWarning(agentAdapter[a.key]),
-        '<td class="mono">' + esc(money(p.cost)) + ' <span class="muted">(' + num(p.runs) + ')</span></td>');
+        '<td class="mono">' + esc(spendText(p.cost, p.est)) + ' <span class="muted">(' + num(p.runs) + ')</span></td>');
     }).join("") + '</tbody></table></div></div>' +
 
     '<h2>Per workflow</h2><div class="tablewrap"><div class="scroll-x"><table>' +
@@ -2128,15 +2166,19 @@ async function renderHealth() {
     'the next boot — orphan recovery runs once, at startup, and must never be put on a timer.</p>' +
 
     '<h2>Consumption</h2><div class="grid">' +
-      m("spent", esc(money(u.costUsd)), null, "reported by the CLI") +
+      m("spent", '<span style="font-size:1.15rem">' + esc(spendText(u.costUsd, u.estCostUsd)) + '</span>',
+        null, u.unpricedRunCount ? num(u.unpricedRunCount) + " run(s) unpriced" : "reported + estimated") +
       m("runs", num(u.runCount)) +
       m("tokens in", num(u.inputTokens)) +
       m("tokens out", num(u.outputTokens)) +
       m("cache read", num(u.cacheReadTokens)) +
     '</div>' +
-    '<p class="hint">Cost is not computed here and no price table is kept: every figure is the ' +
-    '<span class="mono">total_cost_usd</span> Claude Code reports on its own final <span class="mono">result</span> ' +
-    'event. A model the CLI does not price shows as &mdash; rather than as a guess.</p>' +
+    '<p class="hint">Two figures, never added together. A plain amount is <b>reported</b>: the ' +
+    '<span class="mono">total_cost_usd</span> Claude Code puts on its own final <span class="mono">result</span> ' +
+    'event, recorded verbatim. A <span class="mono">~</span> amount is <b>estimated</b> by us, priced from the ' +
+    'run&rsquo;s token counts against the model catalogue &mdash; which is the only figure a Codex run has, since ' +
+    'Codex reports tokens and no dollars. A model with no recorded price stays &mdash;, never ' +
+    '<span class="mono">$0.00</span>.</p>' +
 
     '<h2>Self-healing</h2><div class="card"><p class="hint" style="margin:0">' +
     'A failed agent step is retried <b>once</b>, and only when the first attempt demonstrably spent nothing — ' +
@@ -2218,7 +2260,7 @@ async function renderStrip() {
       chip("running", num(q.inProgress), "") +
       chip("queued", num(q.todo), "") +
       chip("blocked", num(q.blocked), q.blocked > 0 ? "fault" : "") +
-      chip("spent", money(u.costUsd), "");
+      chip("spent", spendText(u.costUsd, u.estCostUsd), "");
     badge("gates", q.awaitingApproval, false);
     badge("issues", q.blocked, true);
     dot.classList.remove("down");

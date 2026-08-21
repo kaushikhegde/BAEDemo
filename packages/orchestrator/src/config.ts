@@ -4,7 +4,23 @@ import type { Runner } from "./core/runner.js";
 import { placeholdersIn } from "./core/interpolate.js";
 
 export type Step =
-  | { type: "exec";   cmd: string; cwd?: string; timeoutMs?: number }
+  | { type: "exec";
+      cmd: string; cwd?: string; timeoutMs?: number;
+      /**
+       * What to call this step in the issue's timeline.
+       *
+       * The narration used to print `cmd` itself, which is the wrong audience:
+       * that timeline is what a CLIENT sees in the chatbot while their run
+       * proceeds, and `node scripts/render-companion-app.mjs SAPN` tells them
+       * nothing they wanted to know while disclosing a path on somebody's
+       * machine. With no label the step narrates as plain "running", never as
+       * the command — a consumer has to opt IN to describing it, rather than
+       * opting out of leaking it.
+       *
+       * The command is still recorded verbatim on FAILURE, where whoever is
+       * debugging needs it.
+       */
+      label?: string }
   | { type: "agent";  agent?: string; phase: string; skill?: string; prompt?: string;
                       adapter?: string; model?: string; effort?: Effort;
                       /**

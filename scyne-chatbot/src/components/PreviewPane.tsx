@@ -83,12 +83,25 @@ export function PreviewPane({ project, feature, onPush }: PreviewPaneProps) {
 
   if (!entry) return null;
 
-  // Cache-bust on top of the key remount. The route already sends no-store, so
-  // this is belt-and-braces — and the query does not change how the page's own
-  // relative links (mockups/…) resolve.
+  // SAME-ORIGIN, always — this is why the iframe rendered
+  // `{"error":"not_authenticated"}` instead of the companion app.
+  //
+  // The registry stores an ABSOLUTE devUrl (`http://127.0.0.1:4000/api/...`)
+  // because the UX auditor drives a real browser at it. But every `/api/*`
+  // route needs the session cookie, and cookies are keyed by HOST with no
+  // regard for port: a page served from `localhost:5173` has its cookie on
+  // `localhost`, and an iframe pointed at `127.0.0.1:4000` is a different host
+  // and carries nothing. Same machine, same site by every intuition, different
+  // cookie jar.
+  //
+  // Stripping the origin makes the iframe go through the Vite proxy on
+  // whatever host the app is actually being viewed on, so the cookie travels
+  // and the whole class of problem disappears. The registry keeps its absolute
+  // URL for the auditor, which is what it is for.
+  const relative = entry.devUrl.replace(/^https?:\/\/[^/]+/, "");
   const src = entry.generatedAt
-    ? `${entry.devUrl}${entry.devUrl.includes("?") ? "&" : "?"}r=${encodeURIComponent(entry.generatedAt)}`
-    : entry.devUrl;
+    ? `${relative}${relative.includes("?") ? "&" : "?"}r=${encodeURIComponent(entry.generatedAt)}`
+    : relative;
   const renderedAt = entry.generatedAt
     ? new Date(entry.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : null;
@@ -115,7 +128,10 @@ export function PreviewPane({ project, feature, onPush }: PreviewPaneProps) {
             asChild
           >
             <a
-              href={entry.devUrl}
+              // Relative for the same reason as the iframe: opened from
+              // localhost this must stay on localhost, or the new tab lands on
+              // a host that has no session cookie and shows the JSON error.
+              href={relative}
               target="_blank"
               rel="noreferrer"
               title="Open preview in new tab"

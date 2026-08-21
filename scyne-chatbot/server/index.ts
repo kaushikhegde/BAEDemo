@@ -33,7 +33,8 @@ import { MeetingSession } from "./services/geminiLive.js";
 // server all need the same answer to "what does this stage require". Importing
 // it here rather than restating it is what stops the chatbot refusing a stage
 // the CLI would happily run.
-// @ts-expect-error — plain ESM with JSDoc types; no .d.ts and none warranted.
+// Typed by server/pipeline.d.ts — ambient, because pipeline.mjs stays plain
+// JavaScript on purpose (four consumers, one definition of the stage graph).
 import * as pipeline from "../../scripts/pipeline.mjs";
 import {
   carryAuth, requireSession, login, logout, whoami,
@@ -1283,6 +1284,71 @@ app.get("/api/features", async (req, res) => {
   // orchestrator has never heard of is one every trigger would refuse.
   try {
     res.json(await store.available(tokenFor(req)));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+
+// ─── Ops: issues, spend, actions ─────────────────────────────────────────────
+//
+// The three reads that make this app a client rather than only a launcher.
+// Each forwards the CALLER's token, so what a person sees here is exactly what
+// they would see from `scyne` or the console — the authorisation lives in the
+// orchestrator and is not re-implemented, widened or cached here.
+
+/**
+ * Render one ops read, preserving the upstream status.
+ *
+ * A 403 is NOT collapsed into an empty list. Spend and the organisation-wide
+ * audit are admin-only upstream, and an empty table shown to a member reads as
+ * "nothing has been spent" — a confident wrong answer where "you are not
+ * allowed to see this" is the true one.
+ */
+function sendOps(res: any, r: { ok: boolean; status: number; data: unknown }): void {
+  if (r.ok) { res.json(r.data); return; }
+  const error =
+    r.status === 403 ? "forbidden" :
+    r.status === 401 ? "not_authenticated" :
+    r.status === 503 ? "orchestrator_unreachable" : "upstream_error";
+  const message =
+    r.status === 403 ? "Your role cannot see this. An administrator can." :
+    r.status === 503 ? "The orchestrator is not reachable — start it with `npm run dev`." :
+    `The orchestrator answered ${r.status}.`;
+  res.status(r.status).json({ error, message });
+}
+
+app.get("/api/issues", async (req, res) => {
+  try {
+    sendOps(res, await store.listIssues(tokenFor(req), {
+      ...(req.query.project ? { project: String(req.query.project) } : {}),
+      ...(req.query.feature ? { feature: String(req.query.feature) } : {}),
+      ...(req.query.status ? { status: String(req.query.status) } : {}),
+      // `?open` with no value is still "open" — a bare flag in a query string
+      // arrives as the empty string, which is falsy and would silently do
+      // nothing.
+      ...(req.query.open !== undefined && String(req.query.open) !== "false" ? { open: true } : {}),
+    }));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.get("/api/spend", async (req, res) => {
+  try {
+    const query: Record<string, string> = { by: String(req.query.by || "project") };
+    for (const k of ["project", "feature", "user", "since", "until"]) {
+      if (req.query[k]) query[k] = String(req.query[k]);
+    }
+    sendOps(res, await store.spend(tokenFor(req), query));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.get("/api/actions", async (req, res) => {
+  try {
+    sendOps(res, await store.actions(tokenFor(req), Number(req.query.limit ?? 100)));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

@@ -1,0 +1,19 @@
+{
+  // The API server, which `tsx` runs untyped. Nothing checked it until the ops
+  // reads landed — measured at the time: ONE error in 3,800 lines, and it was
+  // the untyped pipeline.mjs import (declared in server/pipeline.d.ts). So this
+  // costs nothing to turn on and catches the next one.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["server/**/*.ts", "server/**/*.d.ts"]
+}

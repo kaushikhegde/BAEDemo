@@ -330,15 +330,26 @@ export function createEngine(deps: {
     switch (step.type) {
       case "exec": {
         const cmd = interpolate(step.cmd, vars);
-        // The first thing a person sees after clicking Run. Naming the command
-        // is what distinguishes "staging inputs" from "rendering the app".
-        await note(issue.id, `${where(issue, wf)} · running \`${cmd}\``);
+        // The first thing a person sees after clicking Run — and that person is
+        // often a CLIENT watching the chatbot, not an operator. So this narrates
+        // the step's `label` and never the command: a shell line tells them
+        // nothing they wanted to know while disclosing a path on somebody's
+        // machine. The command is still recorded verbatim in the blocking
+        // comment below, where whoever is debugging actually needs it.
+        await note(issue.id,
+          `${where(issue, wf)} · ${step.label ? interpolate(step.label, vars) : "running"}`);
         // installRoot: the command says `node scripts/stage.mjs …`, and that
         // path is relative to where the scripts live. The project tree reaches
         // it through WORKSPACE_PATH in execEnv() instead.
         const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv());
         if (r.code !== 0) {
-          await block(issue.id, `Step \`${cmd}\` failed (exit ${r.code}).\n\n\`\`\`\n${r.stderr.slice(-2000)}\n\`\`\``);
+          // The label in the headline, the command inside the fence with the
+          // stderr. A failure is the one moment the exact command is worth
+          // having — but it belongs in the diagnostics block a person opens,
+          // not in the sentence a client reads.
+          await block(issue.id,
+            `${step.label ? interpolate(step.label, vars) : "A step"} failed (exit ${r.code}).` +
+            `\n\n\`\`\`\n$ ${cmd}\n\n${r.stderr.slice(-2000)}\n\`\`\``);
           return "blocked";
         }
         return "next";

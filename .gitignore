@@ -58,3 +58,6 @@ paperclip-base.tar.gz
 
 # graphify knowledge graph (local index)
 graphify-out/
+
+# Brainstorming companion mockups (superpowers)
+.superpowers/

@@ -22,6 +22,7 @@ import {
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
 import { readSecret, setPromptReader } from "./prompt.ts";
+import { attachPasteAwareInput } from "./paste.ts";
 
 /** Anthropic-shaped blocks, which is what `/api/chat` returns. */
 interface Block { type: string; text?: string; name?: string; input?: Record<string, unknown> }
@@ -287,11 +288,17 @@ export async function repl(): Promise<void> {
    */
   async function ask(label: string, silent = false): Promise<string> {
     if (silent && process.stdin.isTTY) {
+      // readSecret() reads raw stdin itself. The session's paste reader is on
+      // the same stream, so it has to let go first — otherwise both consume
+      // every keystroke and the password is echoed into readline's buffer.
+      // readSecret also leaves stdin paused, which term.resume() undoes.
+      term.suspend();
       rl.pause();
       try {
         return (await readSecret(label.replace(/:\s*$/, "") + " (hidden as you type): ")).trim();
       } finally {
         rl.resume();
+        term.resume();
       }
     }
     process.stdout.write(label);
@@ -356,8 +363,13 @@ export async function repl(): Promise<void> {
   if (signedOut) out(`  ${cross} not signed in — type ${c.cyan("/login")}`);
   else await retarget();
 
+  // Pastes are lifted out of stdin BEFORE readline sees them — see paste.ts
+  // for why readline cannot do it itself — so what readline is handed is a
+  // plain stream carrying only what was typed, plus a placeholder standing in
+  // for each pasted block.
+  const term = attachPasteAwareInput();
   const rl: Interface = createInterface({
-    input: process.stdin, output: process.stdout, historySize: 500,
+    input: term.input, output: process.stdout, terminal: term.terminal, historySize: 500,
   });
 
   // The conversation, in the shape /api/chat expects — the same array the
@@ -419,6 +431,25 @@ export async function repl(): Promise<void> {
         case "new": {
           if (signedOut) { out(`  ${cross} sign in first: ${c.cyan("/login")}`); return false; }
           await wizard();
+          // Belt and braces for a terminal that does not bracket its pastes —
+          // tmux and screen can be configured to strip the markers, and paste.ts
+          // has nothing to go on without them. At a terminal nobody types a line
+          // faster than the wizard consumes it, so a queue standing here is
+          // input that spilled out of a prompt. Handing it to the loop is how
+          // one pasted paragraph became a feature per line: each leftover
+          // sentence reached the assistant as its own instruction.
+          //
+          // Reported rather than silently dropped: a line typed ahead during
+          // the wizard's network calls lands here too, and swallowing somebody's
+          // command without a word is its own bug.
+          const spilled = process.stdin.isTTY ? pending.splice(0, pending.length) : [];
+          if (spilled.length) {
+            out();
+            out(`  ${c.yellow("!")} ${c.grey(`ignored ${spilled.length} line${spilled.length === 1 ? "" : "s"} that arrived while the wizard was running`)}`);
+            out(`    ${c.grey("A paste your terminal did not bracket, most likely — the first line")}`);
+            out(`    ${c.grey("was taken as an answer and the rest would have gone to the assistant.")}`);
+            out(`    ${c.grey("Set the definition in one go with")} ${c.cyan(`project describe ${project ?? "<project>"} "…"`)}`);
+          }
           return false;
         }
 
@@ -610,6 +641,56 @@ export async function repl(): Promise<void> {
   }
 
   /**
+   * Two wizard prompts, for a terminal that does NOT bracket its pastes.
+   *
+   * paste.ts handles every terminal that does, which is nearly all of them —
+   * but tmux and screen can be configured to strip the markers, and then a
+   * pasted paragraph is N Returns again. The wizard is the one place that is
+   * detectable without guessing: its prompts are strictly sequential, each
+   * printed only once the previous answer is in, so a line still queued a
+   * moment after an answer was never a reply to anything. Nobody types the
+   * next four answers before being asked for them.
+   *
+   * What to do with those lines differs by step, and that is the point. A
+   * paragraph WANTS them, so they are joined back on. Every other step is one
+   * line by definition and refuses them outright — the alternative is what
+   * this whole change is about: the overflow reaching the assistant one
+   * sentence at a time, and a feature created for each.
+   */
+  async function trailingBurst(): Promise<string[]> {
+    // A pipe delivers every line at once by design — that is what makes the
+    // session scriptable, and it is not a paste.
+    if (!process.stdin.isTTY) return [];
+    await new Promise(r => setTimeout(r, 20));   // let the rest of it land
+    return pending.splice(0, pending.length);
+  }
+
+  /** A step whose answer may run to several lines: a definition, a list of paths. */
+  async function askParagraph(label: string): Promise<string> {
+    const first = await ask(label);
+    return [first, ...await trailingBurst()].join("\n").trim();
+  }
+
+  /**
+   * A step whose answer is one line — a name, a URL, a folder name.
+   *
+   * Two shapes of the same mistake, refused together: the terminal bracketed
+   * the paste and the whole block arrived as one multi-line answer, or it did
+   * not and the rest of it is queued behind this one. Left blank rather than
+   * truncated to its first line, because a project called "ReturnToWorkSA
+   * administers the scheme." is a folder somebody has to live with.
+   */
+  async function askLine(label: string): Promise<string> {
+    const answer = (await ask(label)).trim();
+    const more = await trailingBurst();
+    const lines = more.length + answer.split("\n").length;
+    if (lines === 1) return answer;
+    out(`  ${c.yellow("!")} ${c.grey(`that came in as ${lines} lines and this step takes one — left blank`)}`);
+    out(`    ${c.grey("Paste a paragraph at the definition step; this one is a single line.")}`);
+    return "";
+  }
+
+  /**
    * The New Project wizard, as four prompts.
    *
    * The browser has this and the terminal did not: a project could be created
@@ -629,7 +710,7 @@ export async function repl(): Promise<void> {
 
     out();
     out(`  ${c.bold("Step 1 — the client")}`);
-    const name = (await ask("  Project name: ")).trim();
+    const name = await askLine("  Project name: ");
     if (!name) { out(`  ${cross} nothing entered — cancelled`); return; }
     if (!/^[A-Za-z0-9 ._&-]+$/.test(name)) {
       out(`  ${cross} letters, numbers, spaces and . _ & - only`);
@@ -643,13 +724,23 @@ export async function repl(): Promise<void> {
     out(`  ${c.grey("Who are they? What are they regulated or obliged to do, who are")}`);
     out(`  ${c.grey("their customers really, what can they not do? Every skill reads")}`);
     out(`  ${c.grey("this before any discovery document, so it is worth a paragraph.")}`);
-    let description = (await ask("  > ")).trim();
+    if (process.stdin.isTTY) {
+      out(`  ${c.grey("Paste as many lines as you like — the block arrives as one answer.")}`);
+    }
+    let description = await askParagraph("  > ");
+    // The prompt showed `[Pasted text #1 +12 lines]` rather than the paragraph,
+    // so say what it stood for. A paste that silently landed as one word is
+    // exactly the outcome nobody would notice until the agents ran on it.
+    if (description.includes("\n")) {
+      const lines = description.split("\n").length;
+      out(`    ${tick} ${c.grey(`${description.length} characters, ${lines} lines`)}`);
+    }
     // The server refuses anything under 40 characters, and silently NOT writing
     // description.md is the one outcome nobody would notice until an agent
     // produced generic requirements. Say so and offer the retype once.
     if (description && description.length < 40) {
       out(`  ${c.yellow("!")} ${c.grey("that is too short to be a definition — a couple of sentences at least.")}`);
-      const retry = (await ask("  > ")).trim();
+      const retry = await askParagraph("  > ");
       description = retry.length >= 40 ? retry : "";
       if (!description) out(`    ${c.grey("skipped — add it later with")} ${c.cyan(`project describe ${name} "…"`)}`);
     }
@@ -658,7 +749,7 @@ export async function repl(): Promise<void> {
     out(`  ${c.bold("Step 2 — the branding")}`);
     out(`  ${c.grey("The companion app comes out in the client's colours. Without one it")}`);
     out(`  ${c.grey("falls back to the Scyne palette, which is perfectly presentable.")}`);
-    const website = (await ask("  Their website? (enter to skip): ")).trim();
+    const website = await askLine("  Their website? (enter to skip): ");
 
     // One call does all three: scaffolds the tree, writes description.md, and
     // runs extract-brand inline. Re-extracting afterwards to show the palette
@@ -691,7 +782,7 @@ export async function repl(): Promise<void> {
     out(`  ${c.grey("Policy, legislation, standards, current-state architecture — what")}`);
     out(`  ${c.grey("describes the CLIENT rather than one feature. .docx and .pdf are")}`);
     out(`  ${c.grey("converted to markdown on arrival. Feature material comes later.")}`);
-    const docLine = (await ask("  Paths, space separated (enter to skip): ")).trim();
+    const docLine = await askParagraph("  Paths, space separated (enter to skip): ");
     const docs = tokenize(docLine);
     // A glob reaches here unexpanded — the session is not a shell — and would
     // fail as a filename containing a literal asterisk, which reads like the
@@ -713,7 +804,10 @@ export async function repl(): Promise<void> {
     out();
     out(`  ${c.bold("Step 4 — a first feature")}`);
     out(`  ${c.grey("One slice of work: 'Appeals & Reviews', 'Interim Benefit'.")}`);
-    const featureName = (await ask("  Feature name (enter to skip): ")).trim();
+    // askLine, not ask: a feature name becomes a directory under
+    // projects/<project>/, and one whose name spans lines is a name every
+    // later `--feature` argument has to reproduce exactly.
+    const featureName = await askLine("  Feature name (enter to skip): ");
     if (featureName && RESERVED.has(featureName.toLowerCase())) {
       out(`  ${cross} '${featureName}' is reserved — the CLI would read it as a stage`);
     } else if (featureName) {
@@ -965,7 +1059,13 @@ export async function repl(): Promise<void> {
   let waiting: ((line: string | null) => void) | null = null;
   let closed = false;
 
-  rl.on("line", (l) => {
+  rl.on("line", (raw) => {
+    // The pasted block reached readline as a one-line placeholder, so that its
+    // newlines could not each submit a line of their own. This is where it
+    // becomes the text again — at arrival, so every prompt and every command
+    // downstream sees what was actually pasted. readline's history keeps the
+    // placeholder, which is what makes ↑ usable after a forty-line paste.
+    const l = term.expand(raw);
     if (waiting) { const w = waiting; waiting = null; w(l); }
     else pending.push(l);
   });
@@ -1005,6 +1105,7 @@ export async function repl(): Promise<void> {
   }
 
   rl.close();
+  term.restore();
   out();
   out(`  ${c.grey("bye")}`);
 }

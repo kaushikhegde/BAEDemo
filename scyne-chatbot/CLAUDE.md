@@ -26,7 +26,7 @@ Both are launched together with `npm run dev` (concurrently).
 ```
 scyne-chatbot/
 ├── .env / .env.example     (config — see below)
-├── package.json            (scripts: dev | dev:vite | dev:api | build | preview)
+├── package.json            (scripts: dev | dev:vite | dev:api | build | preview | typecheck | test)
 ├── vite.config.ts          (proxy /api → :4000)
 ├── tailwind.config.js      (Scyne palette under `theme.extend.colors.scyne`)
 ├── components.json         (shadcn/ui aliases)
@@ -69,7 +69,12 @@ scyne-chatbot/
         ├── NewProjectWizard.tsx(3-step project creation; takes over the whole view)
         ├── AttachmentButton.tsx(upload .docx / .pdf / .png to a chosen scope)
         ├── RecordMeetingPanel.tsx (browser audio capture → Gemini Live transcription)
-        └── PreviewPane.tsx     (iframes the generated app from /api/preview/:project; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes, because the companion app is re-rendered by every stage that completes)
+        ├── PreviewPane.tsx     (iframes the generated app from /api/preview/:project; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes. The iframe src is made RELATIVE — see Gotchas)
+        ├── Rail.tsx            (left rail: Chat · Issues · Spend · Actions; hides the admin two by role, badges Issues with what is waiting)
+        ├── IssuesView.tsx      (every issue in the company; selecting one sets the active issue and returns to Chat)
+        ├── SpendView.tsx       (GROUP BY chips + Period/Project/Feature/User filters; reported and estimated in SEPARATE columns, unpriced runs called out)
+        ├── ActionsView.tsx     (the organisation's audit feed — who did what)
+        └── OpsState.tsx        (shared by the ops views: the three not-a-table states — refused, unreachable, empty — plus FilterSelect, ClearFilters, ago(), money())
 ```
 
 ## Backend endpoints
@@ -133,6 +138,8 @@ The only stateful React component is `src/App.tsx`. All other components are pre
 | `targetProject`/`targetFeature` | `string \| null`        | What the user has selected in `TargetPicker`. Sent with the trigger.     |
 | `featuresRefreshKey`   | `number`                        | Bumped after an upload to force `TargetPicker` to re-fetch `/api/features`. |
 | `rightTab`             | `"activity" \| "ui"`            | Toggle on the right pane: workflow status vs UI preview.                 |
+| `view`                 | `View`                          | What the left rail selects: `workspace` (chat + workflow) · `issues` · `spend` · `actions` · `history`. Persisted to `localStorage.scyne_view` — being returned to Chat after every refresh is the wrong default for somebody watching a run. |
+| `needsAttention`       | `number`                        | Issues sitting `in_review`/`blocked`/`paused`. Drives the rail badge; polled every 30s regardless of the open view, because its job is to interrupt. |
 | `previewAvailable`     | `boolean`                       | True once `/api/preview/:project/:feature` returns a URL.                |
 | `pendingUiPrompt`      | `{project, feature} \| null`    | When the bot suggests a UI build, this stages a one-click trigger.       |
 | `seenCommentIds`       | `useRef<Set<string>>`           | Dedupes agent comments so the same one doesn't appear twice in the chat. |
@@ -299,6 +306,39 @@ Click "New session" in the right-pane header. This clears `localStorage`, drops 
 
 ## Gotchas
 
+- **An absolute URL into `/api/*` loses the session cookie.** Cookies are keyed
+  by HOST and ignore the port, and Vite binds `[::1]:5173` — so the app is served
+  from `localhost` while `registry.json` holds `http://127.0.0.1:4000/…`. Same
+  machine, same site by every intuition, different cookie jar: the companion-app
+  iframe rendered `{"error":"not_authenticated"}`. Anything the browser loads
+  from this API must be RELATIVE so it goes through the Vite proxy. The registry
+  keeps its absolute URL for the UX auditor, which drives a real browser at it.
+- **The ops reads live in `server/store.ts`, NOT `server/orchestrator.ts`.**
+  That module falls back to `SCYNE_API_TOKEN` when there is no caller token,
+  which is right for the unattended staleness sweep and exactly wrong for a
+  browser read — a request arriving without a session would be served the whole
+  organisation's spend under a service credential. `store.ts` returns nothing.
+- **Nothing is filtered by default, and grouping is not filtering.** Issues
+  opened scoped to the pinned project AND to open-only, so a page headed
+  "Issues" could show one row out of forty with nothing saying so. Both views
+  now open unfiltered and show `3 of 41` whenever a filter is on. In Spend, the
+  chips choose how rows are GROUPED and the dropdowns choose which runs count
+  at all — they are rendered deliberately unalike, because "group by project"
+  and "only project SAPN" sit inches apart.
+- **Filter options come from the data.** Issues derives them from the rows it
+  already holds; Spend reads the unfiltered grouping on each filterable
+  dimension once. Neither can offer an option that returns nothing, and neither
+  re-derives them as filters change — an option list that shrinks while you use
+  it is one you cannot get back out of.
+- **A 403 must not become an empty table.** `/spend` and `/actions` are
+  admin-only upstream. An empty table shown to a member says "nothing has been
+  spent" — a confident wrong answer where "you are not allowed to see this" is
+  the true one. `sendOps` preserves the status; `OpsState` renders the three
+  cases apart.
+- **`server/` is typechecked now** (`npm run typecheck`, `tsconfig.server.json`),
+  and `pipeline.mjs` is typed by the ambient `server/pipeline.d.ts`. That
+  declaration must stay COMPLETE — a partial one silences the implicit-any and
+  then reports every export it forgot as a missing property.
 - **`status: "backlog"`** — Paperclip's default. Agents won't pick it up. Always create issues with `status: "todo"`.
 - **Project vs feature.** Half the pipeline takes a project only. Passing a feature to `trigger_capability_map` or `trigger_personas` is ignored server-side, but it makes the chat say the wrong thing — the prompt tells the LLM not to.
 - **`PROJECT_OWN_DIRS` lives in three files** (`scripts/pipeline.mjs`, `server/index.ts`, `server/llm.ts`). They must agree, or `solutions/` and `documents/` show up as selectable features.

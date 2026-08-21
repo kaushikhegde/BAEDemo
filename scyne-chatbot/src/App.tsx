@@ -16,6 +16,10 @@ import { PreviewPane } from "./components/PreviewPane";
 import { NewProjectWizard } from "./components/NewProjectWizard";
 import { SuggestionChips } from "./components/SuggestionChips";
 import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
+import { Rail, type View } from "./components/Rail";
+import { IssuesView } from "./components/IssuesView";
+import { SpendView } from "./components/SpendView";
+import { ActionsView } from "./components/ActionsView";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
@@ -23,7 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, UNAUTHENTICATED_EVENT, type RunSummary } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -186,8 +190,66 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   // auto-retry note instead of sitting on skeletons forever (e.g. when the
   // backend or Paperclip isn't reachable right after a refresh).
   const [statusError, setStatusError] = useState<string | null>(null);
-  // Top-level view: the live workspace (chat + workflow) vs the History page.
-  const [view, setView] = useState<"workspace" | "history">("workspace");
+  // Top-level view — what the left rail selects. `workspace` is the chat plus
+  // its workflow panel and is unchanged; the other three are the ops surfaces
+  // that make this a client rather than only a launcher. Persisted, because
+  // being returned to Chat after every refresh is exactly the wrong default
+  // for somebody who is watching a run.
+  const [view, setViewRaw] = useState<View>(() => {
+    if (typeof window === "undefined") return "workspace";
+    const saved = window.localStorage.getItem("scyne_view");
+    return (saved === "issues" || saved === "spend" || saved === "actions" || saved === "history")
+      ? saved : "workspace";
+  });
+  const setView = (v: View | ((prev: View) => View)) => {
+    setViewRaw((prev) => {
+      const next = typeof v === "function" ? v(prev) : v;
+      try { window.localStorage.setItem("scyne_view", next); } catch { /* private mode */ }
+      return next;
+    });
+  };
+  // How many issues are sitting on a person. Drives the rail badge, and is the
+  // one thing worth polling while you are looking at another screen.
+  const [needsAttention, setNeedsAttention] = useState(0);
+
+  // The rail badge. Polled regardless of which view is open — its whole job is
+  // to tell you something needs you WHILE you are looking at something else.
+  // Slower than the status poll (30s vs 3s): a gate that has been waiting four
+  // minutes is not more urgent than one that has been waiting four minutes and
+  // twenty seconds, and this runs for the life of the session.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const open = await getIssues({ open: true });
+        if (!cancelled) setNeedsAttention(open.filter((i) => i.needsHuman).length);
+      } catch {
+        // A refusal or an outage means no badge, not a broken app. The Issues
+        // view says what went wrong; a number in the rail cannot.
+        if (!cancelled) setNeedsAttention(0);
+      }
+      if (!cancelled) timer = window.setTimeout(tick, 30_000);
+    };
+    tick();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, []);
+
+  /** Watch an issue chosen from the Issues list, in the panel that already renders one. */
+  const openIssue = (issue: OpsIssue) => {
+    setParentIssueId(issue.id);
+    if (issue.project) setTargetProject(issue.project);
+    setTargetFeature(issue.feature ?? null);
+    // Drop the previous issue's snapshot so the panel shows a loading state
+    // rather than another run's timeline under this issue's identifier. NOT a
+    // resetSession: the conversation is not being abandoned, only the issue
+    // being watched. `seenLinkUrls` is deliberately left alone — it dedupes by
+    // URL, and a different issue publishes different pages.
+    setStatus(null);
+    setStatusError(null);
+    setRuns([]);
+    setView("workspace");
+  };
   // Compact agent run summaries for the Activity panel.
   const [runs, setRuns] = useState<RunSummary[]>([]);
   // Whether the Agent Runs panel (beside Workflow) is shown. Remembered across refreshes.
@@ -999,7 +1061,34 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         }
       />
 
-      {view === "history" ? (
+      {/* The rail and the view it selects. `min-h-0` on the row is what lets a
+          child scroll instead of pushing the page taller — without it the
+          tables grow the document and the rail scrolls away with them. */}
+      <div className="flex items-stretch min-h-0">
+        <Rail
+          view={view}
+          onChange={setView}
+          // Cosmetic only. The orchestrator refuses /spend and /actions for a
+          // member whether or not this rail offers them, and THAT is the
+          // boundary; hiding just spares somebody two rows that would always
+          // answer "you cannot see this".
+          isAdmin={session.isSuperadmin || /admin|owner/i.test(session.role ?? "")}
+          needsAttention={needsAttention}
+        />
+        <div className="flex-1 min-w-0">
+
+      {view === "issues" ? (
+        <main className="px-6 lg:px-8 pt-6 pb-10">
+          {/* No project/feature passed: the list is UNFILTERED by default and
+              the filters are chosen there. Seeding them from the pinned target
+              meant a page headed "Issues" quietly showing a fraction of them. */}
+          <IssuesView activeIssueId={parentIssueId} onSelect={openIssue} />
+        </main>
+      ) : view === "spend" ? (
+        <main className="px-6 lg:px-8 pt-6 pb-10"><SpendView /></main>
+      ) : view === "actions" ? (
+        <main className="px-6 lg:px-8 pt-6 pb-10"><ActionsView /></main>
+      ) : view === "history" ? (
         <main className="px-6 lg:px-8 pt-6 pb-10">
           <HistoryView />
         </main>
@@ -1357,6 +1446,9 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       </div>
       </>
       )}
+
+        </div>
+      </div>
     </div>
   );
 }

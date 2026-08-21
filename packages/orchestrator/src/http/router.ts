@@ -875,17 +875,27 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     ok(res, { ok: true, scope, scopeKey, maxTokens, maxCostUsd, maxDurationMs });
   }));
 
+  // `costUsd` is REPORTED spend and stays that way; `estCostUsd` is ours,
+  // summed from the runs whose CLI reported nothing (every Codex run) and
+  // returned BESIDE it rather than added into it — the same separation
+  // core/platform.ts already keeps for the Spend tab. Summing cost_usd alone
+  // made a Codex-first install read "$0.0000 spent" across the console while
+  // its estimates sat in the next column.
   r.get("/usage", guard, wrap(async (req, res) => {
     const { rows } = await orch.db.query<{
       run_count: string; input_tokens: string | null; output_tokens: string | null;
       cache_read_tokens: string | null; cache_creation_tokens: string | null; cost_usd: string | null;
+      est_cost_usd: string | null; unpriced_run_count: string | null;
     }>(
       `select count(*)::text as run_count,
               coalesce(sum(r.input_tokens),0)::text as input_tokens,
               coalesce(sum(r.output_tokens),0)::text as output_tokens,
               coalesce(sum(r.cache_read_tokens),0)::text as cache_read_tokens,
               coalesce(sum(r.cache_creation_tokens),0)::text as cache_creation_tokens,
-              coalesce(sum(r.cost_usd),0)::text as cost_usd
+              coalesce(sum(r.cost_usd),0)::text as cost_usd,
+              coalesce(sum(r.est_cost_usd),0)::text as est_cost_usd,
+              count(*) filter (where r.cost_usd is null and r.est_cost_usd is null)::text
+                as unpriced_run_count
          from runs r
          join issues i on i.id = r.issue_id
         where i.company_id = $1`,
@@ -898,6 +908,8 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       cacheReadTokens: Number(row?.cache_read_tokens ?? 0),
       cacheCreationTokens: Number(row?.cache_creation_tokens ?? 0),
       costUsd: Number(row?.cost_usd ?? 0),
+      estCostUsd: Number(row?.est_cost_usd ?? 0),
+      unpricedRunCount: Number(row?.unpriced_run_count ?? 0),
     });
   }));
 

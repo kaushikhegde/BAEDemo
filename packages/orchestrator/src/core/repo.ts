@@ -159,6 +159,38 @@ export interface BudgetRow {
 }
 
 export function createRepo(db: Db) {
+  /**
+   * `params.project` / `params.feature` → the foreign keys, by NAME.
+   *
+   * Name is how every other part of this system addresses a project —
+   * `scyne use <name>`, the chatbot's target picker, `stage.mjs` — and names
+   * are unique per company by constraint. The feature lookup is deliberately
+   * scoped through the resolved project: matching a feature by name alone
+   * would file one client's "Appeals" under another client's.
+   */
+  async function resolveIssueScope(
+    companyId: string, issueParams?: Record<string, unknown>,
+  ): Promise<{ projectId: string | null; featureId: string | null }> {
+    const name = (v: unknown): string | null =>
+      typeof v === "string" && v.trim() ? v.trim() : null;
+    const projectName = name(issueParams?.project);
+    if (!projectName) return { projectId: null, featureId: null };
+
+    const { rows: projects } = await db.query<{ id: string }>(
+      `select id from projects where company_id=$1 and name=$2 limit 1`,
+      [companyId, projectName]);
+    const projectId = projects[0]?.id ?? null;
+    if (!projectId) return { projectId: null, featureId: null };
+
+    const featureName = name(issueParams?.feature);
+    if (!featureName) return { projectId, featureId: null };
+
+    const { rows: features } = await db.query<{ id: string }>(
+      `select id from features where project_id=$1 and name=$2 limit 1`,
+      [projectId, featureName]);
+    return { projectId, featureId: features[0]?.id ?? null };
+  }
+
   return {
     async ensureCompany(name: string): Promise<string> {
       const found = await db.query<{ id: string }>(`select id from companies where name=$1`, [name]);
@@ -240,21 +272,40 @@ export function createRepo(db: Db) {
       // connections can interleave even with the atomic form.
       const maxAttempts = 3;
       const id = newId();
+
+      // Attribute the issue to its project and feature.
+      //
+      // These columns were added by 002_platform expressly so that cost could
+      // be grouped by project — and then nothing wrote them, so `/spend?by=
+      // project` returned one anonymous row holding the whole installation.
+      // The project was never missing: it is a workflow PARAM, because that is
+      // what the workflow is parameterised by. This resolves the name into the
+      // foreign key the reporting side reads, once, at the only moment every
+      // creation path passes through.
+      //
+      // Resolved rather than required: a caller naming a project that does not
+      // exist in the database still gets its issue, with no attribution. The
+      // folder tree and the database can disagree (a `reset` clears one and
+      // leaves the other), and refusing to start a run over a reporting column
+      // would be the wrong trade — an unattributed run is a gap in a chart, a
+      // refused run is somebody's afternoon.
+      const scope = await resolveIssueScope(input.companyId, input.params);
+
       const params = [
         id, input.companyId, input.parentId ?? null, input.title,
         input.description ?? null, input.status ?? "todo", input.assigneeAgentId ?? null,
         input.workflowKey ?? null, 0, JSON.stringify(input.params ?? {}),
-        input.createdBy ?? null,
+        input.createdBy ?? null, scope.projectId, scope.featureId,
       ];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const { rows } = await db.query<IssueRow>(
             `insert into issues (id, company_id, identifier, parent_id, title, description,
                                  status, assignee_agent_id, workflow_key, step_index, params,
-                                 created_by)
+                                 created_by, project_id, feature_id)
              values ($1, $2,
                      'SCY-' || (select count(*) + 1 from issues where company_id = $2),
-                     $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              returning *`,
             params);
           return parseIssueRow(rows[0]);

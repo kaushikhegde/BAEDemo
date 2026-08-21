@@ -215,7 +215,12 @@ function publishPrompt(key: string, s: Stage): string {
 
 export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   const steps: Step[] = [
-    { type: "exec", cmd: `node scripts/stage.mjs ${stageArgs(s, key)}`, timeoutMs: 10 * MINUTES },
+    // Every exec step carries a `label`, and the engine narrates THAT rather
+    // than the command. The issue timeline is what a client watches in the
+    // chatbot while their run proceeds: `node scripts/stage.mjs SAPN qa` tells
+    // them nothing they wanted to know, and discloses a path on our machine.
+    // The command is still recorded verbatim if the step fails.
+    { type: "exec", label: "Gathering the inputs", cmd: `node scripts/stage.mjs ${stageArgs(s, key)}`, timeoutMs: 10 * MINUTES },
   ];
 
   if (s.skill) {
@@ -224,11 +229,11 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
     // `app` has no skill — it is a renderer, and a shell step is the honest
     // expression of that. Running it through an agent would spend a model call
     // to type one command.
-    steps.push({ type: "exec", cmd: swap(s.script), timeoutMs: 20 * MINUTES });
+    steps.push({ type: "exec", label: `Building the ${s.label.toLowerCase()}`, cmd: swap(s.script), timeoutMs: 20 * MINUTES });
   }
 
   // The validator that must pass before a human is asked to approve anything.
-  if (s.then) steps.push({ type: "exec", cmd: swap(s.then), timeoutMs: 5 * MINUTES });
+  if (s.then) steps.push({ type: "exec", label: "Checking the output", cmd: swap(s.then), timeoutMs: 5 * MINUTES });
 
   const files = attachFiles(s);
   if (files.length) steps.push({ type: "attach", files });
@@ -241,7 +246,7 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
 
   // Every stage feeds the one companion app, so it is re-rendered after each —
   // not once at the end, which would leave the chatbot's UI tab stale for hours.
-  if (key !== "app") steps.push({ type: "exec", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
+  if (key !== "app") steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 
   return { key, label: s.label, assignee: s.agentKey, title: `${s.label} — ${scope(s)}`, steps };
 }
@@ -283,7 +288,7 @@ function revisePrompt(key: string, s: Stage): string {
 
 export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
   const steps: Step[] = [
-    { type: "exec", cmd: `node scripts/stage.mjs ${stageArgs(s, key)}`, timeoutMs: 10 * MINUTES },
+    { type: "exec", label: "Gathering the inputs", cmd: `node scripts/stage.mjs ${stageArgs(s, key)}`, timeoutMs: 10 * MINUTES },
     {
       type: "agent", phase: "revise", skill: s.skill, effort: "high",
       // The whole point of the flow: the previous version becomes {previous}.
@@ -293,7 +298,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
       prompt: revisePrompt(key, s),
     },
   ];
-  if (s.then) steps.push({ type: "exec", cmd: swap(s.then), timeoutMs: 5 * MINUTES });
+  if (s.then) steps.push({ type: "exec", label: "Checking the revision", cmd: swap(s.then), timeoutMs: 5 * MINUTES });
   steps.push({ type: "attach", files: attachFiles(s) });
   steps.push({
     type: "gate",
@@ -312,7 +317,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
   if (s.publishes) {
     steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
   }
-  steps.push({ type: "exec", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
+  steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 
   // A mode of the stage it revises, not a tenth stage. The engine does not care
   // — it runs every workflow the same way — but a console listing eighteen peers
