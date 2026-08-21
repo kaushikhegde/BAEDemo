@@ -87,6 +87,43 @@ describe("filterRunLog on a codex transcript", () => {
     expect(events.some(e => e.kind === "framing")).toBe(true);
   });
 
+  it("renders a command once, though codex reports it both started and completed", () => {
+    // Codex emits the same command_execution item twice — `item.started` when
+    // it is dispatched, `item.completed` when it returns — and BOTH carry
+    // `command`. Both were decoded, so the console showed every shell line
+    // twice, seconds apart, which reads as an agent running everything two
+    // times. Measured on run d3b42b39: 41 commands rendered as 82 lines.
+    const item = { id: "item_7", type: "command_execution", command: ["/bin/zsh", "-lc", "ls -la"] };
+    const log = [
+      { type: "item.started", item },
+      { type: "item.completed", item: { ...item, status: "completed" } },
+    ].map(o => JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout", chunk: JSON.stringify(o) + "\n",
+    })).join("\n") + "\n";
+
+    const { events } = filterRunLog(log, "codex");
+    const commands = events.filter(e => e.kind === "tool_use" && e.tool === "run_command");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ preview: expect.stringContaining("ls -la") });
+  });
+
+  it("still renders a command reported only as completed", () => {
+    // The dedup drops `item.started` rather than `item.completed`, so a build
+    // that reports only the completion keeps every command line. Dropping the
+    // completion instead would lose all of them on such a build — the failure
+    // this decoder exists to prevent.
+    const log = JSON.stringify({
+      ts: "2026-08-20T01:02:03.000Z", stream: "stdout",
+      chunk: JSON.stringify({
+        type: "item.completed",
+        item: { id: "item_8", type: "command_execution", command: ["/bin/zsh", "-lc", "pwd"] },
+      }) + "\n",
+    }) + "\n";
+
+    const { events } = filterRunLog(log, "codex");
+    expect(events.filter(e => e.kind === "tool_use" && e.tool === "run_command")).toHaveLength(1);
+  });
+
   it("keeps the Claude decoder as the default for callers that pass nothing", () => {
     const claudeLine = JSON.stringify({
       ts: "2026-08-20T01:02:03.000Z", stream: "stdout",

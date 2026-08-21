@@ -252,6 +252,23 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
     // in tools.ts, so the transcript reads the same across adapters.
     const command = body.command ?? body.cmd;
     if (command) {
+      // Codex reports the SAME command item twice — `item.started` when it is
+      // dispatched and `item.completed` when it returns — and both carry
+      // `command`. Both were decoded, so every shell line appeared twice in the
+      // transcript, seconds apart, reading as an agent that ran everything two
+      // times. Measured on run d3b42b39: 41 commands, 41 `item.started` and 41
+      // `item.completed`, 82 rendered lines.
+      //
+      // Deduping by item id is not an option: `filterRunLog` is called
+      // incrementally as the console polls, so a started/completed pair can
+      // straddle two calls and no within-call state would see both. One of the
+      // two event kinds has to be dropped unconditionally, and it is the start:
+      // dropping the completion instead would lose the exit of every command,
+      // and a build that stopped emitting `item.started` would silently lose
+      // every command line. The cost is that a command still in flight when a
+      // run is killed does not appear — the blocking comment records that
+      // command verbatim, which is where somebody looks for it anyway.
+      if (kind === "item.started") return;
       const shown = Array.isArray(command) ? command.join(" ") : String(command);
       events.push({ ts, kind: "tool_use", tool: "run_command", preview: scrub(summarise(shown)) });
       return;

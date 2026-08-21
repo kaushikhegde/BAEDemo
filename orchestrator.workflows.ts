@@ -310,7 +310,11 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
     const publishAt = steps.length;
-    steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    // `agent: "publisher"` rather than the stage's own specialist — see the
+    // note on the `publisher` entry in ORG. Publishing is the same job for
+    // every stage and needs none of the domain brief that produced the
+    // artefact; being handed one is what turned a publish into a rewrite.
+    steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
     steps.push(verifyPublishStep(key, s, publishAt));
   }
 
@@ -389,7 +393,11 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
     const publishAt = steps.length;
-    steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    // `agent: "publisher"` rather than the stage's own specialist — see the
+    // note on the `publisher` entry in ORG. Publishing is the same job for
+    // every stage and needs none of the domain brief that produced the
+    // artefact; being handed one is what turned a publish into a rewrite.
+    steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
     steps.push(verifyPublishStep(key, s, publishAt));
   }
   steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
@@ -428,6 +436,27 @@ export const ORG: AgentSpec[] = [
     bundlePath: "agent-instructions/ux-designer.thin.md" },
   { key: "ui",           name: "Developer",         title: "Developer",         icon: "code",          reportsTo: "archLead",
     bundlePath: "agent-instructions/ui.thin.md" },
+  // Every stage's publish step runs as THIS agent, not as the specialist that
+  // generated the artefact. There is one system prompt per agent, and each
+  // specialist's is written entirely in generate terms — "your inputs are
+  // staged", "invoke your skill", "the validator must pass after you". Handing
+  // that to a publish step means the model reads a brief to generate and a task
+  // to publish, and the brief is the one it wakes up holding.
+  //
+  // Measured on the personas publish for SAPN (run d3b42b39, issue 8fc6b03f
+  // step 5): the Service Designer's prompt states that journey stages must
+  // align to the capability map's L1 phases and that validate-experience.mjs
+  // must pass. The publish agent read that, went and re-read the capability map
+  // and process model, rewrote personas-journeys.md four times, re-normalised
+  // journey-map.json, stamped the document "1.0 (Approved)" itself — and then
+  // published it. What reached the wiki was not what the human approved at the
+  // gate one step earlier, and it took 14 minutes and 2.5M tokens to get there.
+  //
+  // The publish prompt already said none of that. It lost to the system prompt
+  // above it, which is not an argument a prompt wins reliably — so the publish
+  // step no longer receives one that disagrees with it.
+  { key: "publisher",    name: "Publisher",         title: "Publisher",         icon: "upload-cloud",  reportsTo: "pm",
+    bundlePath: "agent-instructions/publisher.thin.md", mcpEnabled: true },
 ];
 
 /**
@@ -447,8 +476,12 @@ function baselineWorkflow(): WorkflowDef {
     assignee: "capArchitect",
     title: "Project Baseline — {project}",
     steps: [
-      ...cap.steps.map(s => (s.type === "agent" ? { ...s, agent: "capArchitect" } : s)),
-      ...per.steps.map(s => (s.type === "agent" ? { ...s, agent: "serviceDesigner" } : s)),
+      // `s.agent ??`, not a blanket assignment: the publish steps already name
+      // the `publisher`, and flattening them back onto the specialist here
+      // would reintroduce the generate-shaped system prompt this workflow is
+      // the only place that could silently undo.
+      ...cap.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "capArchitect" } : s)),
+      ...per.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "serviceDesigner" } : s)),
     ],
   };
 }

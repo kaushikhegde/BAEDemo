@@ -20,6 +20,7 @@
     "smoke": "node scripts/smoke-test.mjs",
     "mcp:test": "tsx scripts/mcp-test.mjs",
     "check:routing": "tsx scripts/check-routing.mts",
+    "check:workflows": "tsx scripts/check-workflows.mts",
     "scyne": "node cli/index.ts",
     "test:cli": "node --test \"cli/*.test.ts\"",
     "build:cli": "node scripts/build-cli.mjs",
