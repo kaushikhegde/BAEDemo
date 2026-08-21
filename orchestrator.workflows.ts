@@ -94,6 +94,22 @@ function approvalSummary(s: Stage): string {
 const wikiPathTpl = (s: Stage): string =>
   isProject(s) ? `/Scyne/{project}/${s.label}` : `/Scyne/{project}/{feature}/${s.label}`;
 
+/**
+ * The container pages above an artefact, outermost first.
+ *
+ * Azure DevOps does NOT create these for you: upsert a page at
+ * `/Scyne/RTWSA/Appeals/Data Model` with no `/Scyne/RTWSA/Appeals` and the page
+ * exists but is unreachable by browsing the tree — a client finds it only by
+ * search, which is not how anyone reads a delivery pack.
+ *
+ * Derived from `wikiPathTpl` rather than written out beside it, so a change to
+ * the path shape cannot leave the parent list describing the old one.
+ */
+const parentPagesTpl = (s: Stage): string[] => {
+  const parts = wikiPathTpl(s).split("/").filter(Boolean).slice(0, -1);
+  return parts.map((_, i) => "/" + parts.slice(0, i + 1).join("/"));
+};
+
 function publishPrompt(key: string, s: Stage): string {
   const stories = key === "requirements";
   return [
@@ -112,6 +128,19 @@ function publishPrompt(key: string, s: Stage): string {
     `  Keep it identical between runs. The page is identified BY PATH, which is`,
     `  what makes a revision update the same page instead of creating a second`,
     `  copy. Do not "tidy" the path.`,
+    ``,
+    `### Create the parents first, in this order`,
+    ``,
+    ...parentPagesTpl(s).map((p, i) =>
+      `${i + 1}. \`${p}\` — a container. If it exists, leave its content alone.`),
+    `${parentPagesTpl(s).length + 1}. \`${wikiPathTpl(s)}\` — the document itself.`,
+    ``,
+    `A wiki page whose parent does not exist is created detached, so the client`,
+    `opens the wiki and cannot find it by browsing — only by search. Creating`,
+    `the branch top-down is what makes one project's work read as one tree`,
+    `instead of a flat list of unrelated pages. For a container that does not`,
+    `exist yet, a single line naming it is enough content; do not invent a`,
+    `summary of work you have not been shown.`,
     ``,
     `## How`,
     ``,
@@ -213,6 +242,37 @@ function publishPrompt(key: string, s: Stage): string {
   ].join("\n");
 }
 
+/**
+ * The step that makes a publish PROVE itself.
+ *
+ * Every other stage is guarded by its `produces` files: the artefact lands on
+ * disk and `attach` blocks if it did not. A publish leaves nothing on this
+ * machine — the output is on somebody else's server — so it was the one step
+ * in the pipeline whose success was taken on the agent's word.
+ *
+ * SCY-1 is why that is not good enough. Its publish agent could not reach
+ * Azure DevOps, said so in prose, and finished its turn: exit 0. The engine
+ * recorded `succeeded`, the timeline read "finished publish in 8m 20s", and
+ * the issue closed **`done`** with no wiki page and no `.published.json`.
+ *
+ * An agent's exit code says the MODEL finished talking. It has never said the
+ * WORK happened, and for a publish those are entirely different claims.
+ *
+ * It is an `exec` rather than another agent turn on purpose: exec steps are
+ * never retried, run outside the agent sandbox, and cost nothing — and asking
+ * a model whether a model succeeded is not a check.
+ */
+function verifyPublishStep(key: string, s: Stage): Step {
+  return {
+    type: "exec",
+    label: "Confirming the page is really there",
+    cmd: `node scripts/verify-published.mjs {project}` +
+         ` --artefact "${artefactKeyTpl(key, s)}"` +
+         ` --path "${wikiPathTpl(s)}"`,
+    timeoutMs: 5 * MINUTES,
+  };
+}
+
 export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   const steps: Step[] = [
     // Every exec step carries a `label`, and the engine narrates THAT rather
@@ -242,6 +302,7 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
 
   if (s.publishes) {
     steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    steps.push(verifyPublishStep(key, s));
   }
 
   // Every stage feeds the one companion app, so it is re-rendered after each —
@@ -316,6 +377,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
   });
   if (s.publishes) {
     steps.push({ type: "agent", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    steps.push(verifyPublishStep(key, s));
   }
   steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 

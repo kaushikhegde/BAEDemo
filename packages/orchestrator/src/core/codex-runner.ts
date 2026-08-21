@@ -96,7 +96,30 @@ export function buildCodexArgs(
     "--ephemeral",         // no session files; the orchestrator owns run history
     "--skip-git-repo-check",
     "--ignore-user-config", // a developer's ~/.codex/config.toml must never leak into a run
-    "--sandbox", "workspace-write",
+    // An agent that publishes gets `--approve-for-me`; everyone else keeps the
+    // plain sandbox. This is an EITHER/OR, not an extra flag: codex refuses
+    // `--sandbox` beside `--approve-for-me`, which applies workspace-write
+    // itself, so nothing is loosened by the swap.
+    //
+    // Why it is needed at all: `codex exec` is non-interactive and pins
+    // `approval_policy` to `never`, and an MCP tool call is something codex
+    // wants approved. With nobody to ask, EVERY MCP call fails with
+    //   `MCP tool call requires approval, but approval policy is never`
+    // Measured on run SCY-1: the agent reached `wiki`, was refused, explained
+    // itself in prose, exited 0 — and the issue closed `done` with no page.
+    // Neither `mcp_servers.<name>.default_tools_approval_mode` nor
+    // `approval_policy` supplied as a `-c` override changes it; exec overrides
+    // both. This flag is the only lever that does.
+    //
+    // The cost is one extra model call per tool call, for the automatic
+    // review — and that review is hard-wired to **gpt-5.6-luna**. No config
+    // key redirects it: `auto_review_model_override` and
+    // `guardian_review_model_override` are both accepted and both ignored,
+    // confirmed by capturing the outgoing request. An install whose endpoint
+    // does not serve that model must map it to one that is. See MCP-CODEX.md.
+    ...(req.agent.mcpEnabled
+      ? ["--approve-for-me"]
+      : ["--sandbox", "workspace-write"]),
     "--cd", req.cwd,
   ];
 

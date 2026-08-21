@@ -28,6 +28,23 @@ describe("buildCodexArgs", () => {
     expect(a).toContain("--skip-git-repo-check");
   });
 
+  // `codex exec` pins approval_policy to `never` and an MCP tool call is
+  // something it wants approved, so without this flag EVERY MCP call dies with
+  // "MCP tool call requires approval, but approval policy is never" — measured
+  // on run SCY-1, which was refused, said so in prose, exited 0, and closed the
+  // issue `done` with no wiki page. Codex REFUSES `--sandbox` beside
+  // `--approve-for-me`, so the two must never both be emitted.
+  it("gives a publishing agent --approve-for-me instead of --sandbox, never both", () => {
+    const pub = buildCodexArgs({ ...base, agent: { key: "ba", mcpEnabled: true } }, {});
+    expect(pub).toContain("--approve-for-me");
+    expect(pub).not.toContain("--sandbox");
+
+    // An agent with no MCP has nothing to approve, so it keeps the plain box.
+    const plain = buildCodexArgs({ ...base, agent: { key: "ux", mcpEnabled: false } }, {});
+    expect(plain).not.toContain("--approve-for-me");
+    expect(plain[plain.indexOf("--sandbox") + 1]).toBe("workspace-write");
+  });
+
   it("leaves no session files behind and ignores the developer's own config", () => {
     const a = buildCodexArgs(base, {});
     expect(a).toContain("--ephemeral");
