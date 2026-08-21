@@ -30,3 +30,21 @@ test("ordinary slash-command parsing is unchanged", () => {
   assert.deepEqual(tokenize(``), []);
   assert.deepEqual(tokenize(`a  b   c`), ["a", "b", "c"]);
 });
+
+// `/upload 'a.pdf', 'b.pdf'` — a comma-separated list is what a person types
+// for a list of paths, and the bare `,` left behind by the default split reads
+// as a filename: `✗ ,: no such file on this machine: ,`, printed between two
+// uploads that worked.
+test("an /upload path list splits on the commas between quoted paths", () => {
+  const line = `upload '/a/Introduction.pdf', '/a/Attachment 1 - Draft V1.pdf'`;
+  assert.deepEqual(
+    tokenize(line, { commas: true }).slice(1).filter(Boolean),
+    ["/a/Introduction.pdf", "/a/Attachment 1 - Draft V1.pdf"]);
+});
+
+test("without commas the same line leaves a comma masquerading as a path", () => {
+  const line = `upload '/a/Introduction.pdf', '/a/Attachment 1 - Draft V1.pdf'`;
+  assert.deepEqual(
+    tokenize(line).slice(1).filter(Boolean),
+    ["/a/Introduction.pdf", ",", "/a/Attachment 1 - Draft V1.pdf"]);
+});

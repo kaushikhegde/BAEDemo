@@ -153,7 +153,33 @@ async function main(): Promise<void> {
   if (verb === "serve") {
     const orch = await createOrchestrator(await loadConfig());
     const app = express();
-    app.use(express.json());
+    // `express.json()` defaults to 100 KB, and a DOCUMENT goes through this
+    // router base64-encoded in a JSON body — `POST /projects/{id}/documents`.
+    // Base64 adds a third, so the default refused a 275 KB PDF: every upload
+    // wrote the folder tree correctly and answered `✗ Payload Too Large` on the
+    // database half, with Express's own HTML error page behind it, so the CLI
+    // had nothing to print but the status text.
+    //
+    // 100 MB matches the chatbot's multer cap, so the two halves of an upload
+    // now accept the same file rather than one accepting what the other
+    // refuses. It is a ceiling, not a buffer: Express reads only what is sent.
+    app.use(express.json({ limit: "100mb" }));
+    // Body-parser failures are thrown, not routed, so without this they reach
+    // Express's default handler and come back as an HTML page — which the CLI
+    // deliberately refuses to print, leaving `Payload Too Large` and no numbers.
+    // Registered before the router so it cannot be shadowed by a route.
+    app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const e = err as { type?: string; status?: number; length?: number; limit?: number };
+      if (e?.type === "entity.too.large") {
+        const mb = (n?: number) => (n == null ? "?" : `${(n / 1024 / 1024).toFixed(1)} MB`);
+        return res.status(413).json({
+          error: "payload_too_large",
+          message: `That body is ${mb(e.length)} and the limit is ${mb(e.limit)}. ` +
+            `A document travels base64-encoded, which adds about a third to the file's size.`,
+        });
+      }
+      return next(err);
+    });
     // Standalone: the console is the product's face, so `/` goes there. When the
     // router is embedded in a consumer's app, `/` stays the consumer's.
     app.get("/", (_req, res) => { res.redirect("/orch"); });

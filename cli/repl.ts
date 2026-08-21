@@ -609,7 +609,14 @@ export async function repl(): Promise<void> {
           // The session had no way to add a document at all — the assistant
           // cannot read your filesystem, and the web UI's attach button has no
           // equivalent here. This is that button.
-          const parts = rest.filter(Boolean);
+          // Re-tokenized WITH commas. `/upload 'a.pdf', 'b.pdf'` is what a
+          // person types — it is a list — and the top-level split leaves the
+          // bare `,` as its own token, which then reads as a filename:
+          // `✗ ,: no such file on this machine: ,`, wedged between two uploads
+          // that worked. `commas` is not switched on for every slash command
+          // because `project describe X "one, two"` joins its tail back into a
+          // sentence, and splitting there would silently eat the commas.
+          const parts = tokenize(line.slice(1).trim(), { commas: true }).slice(1).filter(Boolean);
           const asFlag = parts.indexOf("--as");
           const as = asFlag >= 0 ? parts[asFlag + 1] : undefined;
           // `asFlag + 1` is the flag's VALUE — but only when the flag is
