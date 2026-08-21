@@ -29,7 +29,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WORK_ROOT } from "./lib/roots.mjs";
-import { convertTree, report as reportConversion } from "./convert-to-md.mjs";
+import { convertTree, report as reportConversion, CONVERTIBLE, PLAIN_TEXT } from "./convert-to-md.mjs";
 import {
   LEVEL, STAGES, ORDERED, ordered, NOT_SOURCE, SAFE_NAME, RENDER_CMD,
   isProjectStage, projectDir, featureDir, resolveInput, exists,
@@ -236,8 +236,9 @@ async function stageCapabilities(ctx) {
 
   const n = await stageAllDocuments(ctx, dirs.documents, staged);
   if (n === 0) {
-    die(`no .md source documents for project ${ctx.project} — nothing for the capability map to read\n` +
-        `  Drop documents in projects/${ctx.project}/documents/ or in a feature's requirements/`);
+    await dieWithNoSources(ctx,
+      `no .md source documents for project ${ctx.project} — nothing for the capability map to read`,
+      [projectDir(WORKSPACE, ctx.project)]);
   }
 
   const refs = (await fs.readdir(dirs["capability-reference"]).catch(() => [])).filter((f) => f.toLowerCase().endsWith(".md"));
@@ -253,7 +254,11 @@ async function stagePersonas(ctx) {
   const dirs = await mkdirs(work, ["documents", "capabilities", "productsummary", "outputs"]);
 
   const n = await stageAllDocuments(ctx, dirs.documents, staged);
-  if (n === 0) die(`no .md source documents for project ${ctx.project} — personas must be evidenced, not invented`);
+  if (n === 0) {
+    await dieWithNoSources(ctx,
+      `no .md source documents for project ${ctx.project} — personas must be evidenced, not invented`,
+      [projectDir(WORKSPACE, ctx.project)]);
+  }
 
   // Journey stages align to the capability model's L1 lifecycle phases.
   const capOut = path.join(projectDir(WORKSPACE, ctx.project), "solutions", "Capabilities", "outputs");
@@ -292,7 +297,11 @@ async function stageRequirements(ctx) {
     staged.push(`requirements/${sub}/  — ${files.length} file(s)${files.length ? "" : "  (empty)"}`);
   }
   const docs = await findDocs(fdir);
-  if (docs.length === 0) die(`no .md files under ${rel(reqDir)} — the BA has nothing to read`);
+  if (docs.length === 0) {
+    await dieWithNoSources(ctx,
+      `no .md files under ${rel(reqDir)} — the BA has nothing to read`,
+      [reqDir]);
+  }
 
   // Templates are the house style for THIS project and override ./examples/.
   for (const t of ["templates", "Templates"]) {
@@ -583,12 +592,70 @@ async function convertSources(ctx, opts) {
   // all, which is the right place for it: that check knows whether anything
   // else was readable. This block only makes sure the REASON is on screen
   // directly above it.
+  ctx.conversionFailures = failed;
   if (failed.length) {
-    console.log(`⚠  ${failed.length} document(s) could not be converted to markdown, so no stage can read them:`);
-    for (const r of failed) console.log(`     ${r.file} — ${r.detail}`);
-    console.log(`   Everything else was staged. If that says markitdown-ts is not installed:`);
-    console.log(`     cd scyne-chatbot && npm install\n`);
+    // STDERR, not stdout. This runs as the workflow's first `exec` step and the
+    // engine's blocking comment quotes the step's STDERR only — so the entire
+    // conversion report, and this warning with it, was invisible in the console
+    // where somebody is trying to work out why a run stopped. A reason nobody
+    // can see is not a reason.
+    console.error(`⚠  ${failed.length} document(s) could not be converted to markdown, so no stage can read them:`);
+    for (const r of failed) console.error(`     ${r.file} — ${r.detail}`);
+    console.error(`   Everything else was staged. If that says markitdown-ts is not installed:`);
+    console.error(`     cd scyne-chatbot && npm install\n`);
   }
+}
+
+/** Sources still sitting on disk that a stage cannot read until they convert. */
+async function unconvertedSources(root) {
+  const found = [];
+  const walk = async (dir, depth) => {
+    if (depth > 6) return;
+    for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        const lower = e.name.toLowerCase();
+        if (NOT_SOURCE.has(lower) && lower !== "documents") continue;
+        await walk(full, depth + 1);
+      } else {
+        const ext = path.extname(e.name).toLowerCase();
+        if (CONVERTIBLE.has(ext) || PLAIN_TEXT.has(ext)) found.push(rel(full));
+      }
+    }
+  };
+  await walk(root, 0);
+  return found;
+}
+
+/**
+ * Refuse a stage that has no readable sources — and say which of the two
+ * reasons it is.
+ *
+ * "Drop documents in projects/<p>/documents/" is the right advice for an empty
+ * project and exactly the wrong advice for the case that keeps happening: the
+ * documents ARE there, as `.docx`, and the converter that would have made them
+ * readable failed. Telling somebody to upload files they are looking at is how
+ * a broken dependency reads as an empty project.
+ */
+async function dieWithNoSources(ctx, why, roots) {
+  const failures = ctx.conversionFailures ?? [];
+  if (failures.length) {
+    die(`${why}\n\n` +
+        `  ${failures.length} document(s) FAILED to convert to markdown — that is the reason, not missing files:\n` +
+        failures.map((r) => `    ✗ ${r.file} — ${r.detail}`).join("\n") +
+        `\n\n  If that says markitdown-ts is not installed:  cd scyne-chatbot && npm install`);
+  }
+  const pending = (await Promise.all(roots.map(unconvertedSources))).flat();
+  if (pending.length) {
+    die(`${why}\n\n` +
+        `  ${pending.length} source document(s) are on disk but are not markdown:\n` +
+        pending.slice(0, 10).map((f) => `    · ${f}`).join("\n") +
+        (pending.length > 10 ? `\n    … and ${pending.length - 10} more` : "") +
+        `\n\n  Convert them with:  node scripts/convert-to-md.mjs "${ctx.project}"` +
+        `\n  (staging does this itself unless --no-convert was passed)`);
+  }
+  die(`${why}\n  Drop documents in projects/${ctx.project}/documents/ or in a feature's requirements/`);
 }
 
 // ---------------------------------------------------------------------------
