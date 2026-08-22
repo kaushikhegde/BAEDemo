@@ -29,7 +29,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, republishArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -758,6 +758,26 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           const msg = e?.code === "not_generated"
             ? `${e.message} Want me to generate it instead?`
             : `Couldn't raise that change: ${e?.message ?? e}`;
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: msg }]);
+        }
+      } else if (toolUse?.name === "republish_artefact") {
+        const args = toolUse.input as any;
+        const proj = String(args?.project || targetProject || "").trim();
+        const feat = String(args?.feature || targetFeature || "").trim();
+        const artefact = String(args?.artefact || "").trim();
+        if (proj) setTargetProject(proj);
+        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Sending the ${artefact} to the publisher — nothing will be regenerated…` }]);
+        try {
+          const issue = await republishArtefact(proj, artefact, feat || undefined);
+          setParentIssueId(issue.id);
+          setChipsKey((k) => k + 1);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** raised. Nothing is being rewritten — approve the gate and it publishes exactly what is there now${artefact === "requirements" ? ", work items included" : ""}. Live progress on the right →` }]);
+        } catch (e: any) {
+          const msg = e?.code === "not_generated"
+            ? `${e.message} Want me to generate it instead?`
+            : e?.code === "not_publishable"
+              ? e.message
+              : `Couldn't raise that: ${e?.message ?? e}`;
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: msg }]);
         }
       } else if (toolUse?.name === "list_documents") {

@@ -29,10 +29,27 @@ function scrub(s: string): string {
   return out;
 }
 
-// Trim to a single line, strip excessive whitespace, cap length.
-function summarise(s: string, max = 240): string {
-  const cleaned = s.replace(/\s+/g, " ").trim();
-  return cleaned.length > max ? cleaned.slice(0, max - 1) + "…" : cleaned;
+// Flatten to a single line. For the one-line kinds — a command, a file path,
+// a JSON dump — where the line IS the information.
+//
+// It used to cap length too, and that cap is gone: an agent's reasoning was
+// cut at 600 characters and handed to the reader ending in "…", so the
+// transcript could show that a decision had been made but not what it was.
+// Nothing elides now, at any length. The cost is that a run which echoes a
+// large file into its output produces a correspondingly large response, on an
+// endpoint both viewers poll every three seconds — a deliberate trade, made
+// because a transcript that hides the answer is not worth polling for.
+function summarise(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// The prose kinds — what the agent said, thought, or failed with. Line breaks
+// are structure here, not whitespace: the paragraphs, the numbered steps and
+// the code blocks are how the text is meant to be read, and collapsing them
+// turned every message into one grey run-on line. The console already renders
+// with `white-space: pre-wrap`, so it has been ready for this all along.
+function prose(s: string): string {
+  return s.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function localTime(iso: string): string {
@@ -135,7 +152,7 @@ export function filterRunLog(rawLog: string, adapter?: string | null): FilterRes
     // the JSON parse for both decoders.
     if (line.startsWith("[paperclip]") || line.startsWith("[orchestrator]") ||
         line.startsWith("[event]") || line.startsWith("Status:") || line.startsWith("Run ")) {
-      const text = scrub(summarise(line, 200));
+      const text = scrub(summarise(line));
       // We keep framing as a low-noise breadcrumb (just 'paperclip:' / 'event:')
       events.push({ ts: tsLocal, kind: "framing", text });
       continue;
@@ -163,19 +180,19 @@ function decodeClaudeLine(tsLocal: string, obj: any, events: TranscriptEvent[]):
     if (!Array.isArray(blocks)) return;
     for (const b of blocks) {
       if (b?.type === "text" && typeof b.text === "string") {
-        const text = scrub(summarise(b.text, 600));
+        const text = scrub(prose(b.text));
         if (text) events.push({ ts: tsLocal, kind: "assistant", text });
       } else if (b?.type === "tool_use") {
         const tool = String(b.name || "Tool");
         if (tool === "Skill") {
-          events.push({ ts: tsLocal, kind: "skill", name: scrub(summarise(String(b.input?.skill ?? ""), 80)) });
+          events.push({ ts: tsLocal, kind: "skill", name: scrub(summarise(String(b.input?.skill ?? ""))) });
         } else {
           const preview = scrub(describeToolInput(tool, b.input));
           events.push({ ts: tsLocal, kind: "tool_use", tool, preview });
         }
       } else if (b?.type === "thinking") {
         // Surface extended thinking as assistant prose (clients asked for chatty).
-        const text = scrub(summarise(String(b.thinking ?? ""), 600));
+        const text = scrub(prose(String(b.thinking ?? "")));
         if (text) events.push({ ts: tsLocal, kind: "assistant", text });
       }
     }
@@ -193,7 +210,7 @@ function decodeClaudeLine(tsLocal: string, obj: any, events: TranscriptEvent[]):
           : Array.isArray(b.content)
             ? b.content.map((c: any) => c?.text ?? "").join("\n")
             : "";
-        const preview = scrub(summarise(raw, 240));
+        const preview = scrub(summarise(raw));
         if (preview) events.push({ ts: tsLocal, kind: "tool_result", preview });
       }
     }
@@ -234,7 +251,7 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
   // rather than being silently lost.
   if (kind === "error" || kind === "turn.failed" || body?.type === "error") {
     const errMessage = obj.error?.message ?? (typeof obj.error === "string" ? obj.error : undefined);
-    const m = scrub(summarise(String(obj.message ?? errMessage ?? body?.message ?? ""), 300));
+    const m = scrub(prose(String(obj.message ?? errMessage ?? body?.message ?? "")));
     if (m) {
       events.push({ ts, kind: "framing", text: m });
       return;
@@ -244,7 +261,7 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
     // Assistant prose, wherever this version puts it.
     const text = body.text ?? body.message ?? body.delta ?? body.last_agent_message;
     if (typeof text === "string" && text.trim() && !/token|usage/i.test(kind)) {
-      events.push({ ts, kind: "assistant", text: scrub(summarise(text, 600)) });
+      events.push({ ts, kind: "assistant", text: scrub(prose(text)) });
       return;
     }
 
@@ -281,6 +298,6 @@ function decodeCodexLine(ts: string, obj: any, events: TranscriptEvent[]): void 
   if (kind !== "turn.failed" && /^(session|thread|turn)[._]/i.test(kind)) return;
 
   // Unrecognised: show it rather than lose it.
-  const dump = scrub(summarise(JSON.stringify(obj), 240));
+  const dump = scrub(summarise(JSON.stringify(obj)));
   if (dump) events.push({ ts, kind: "framing", text: dump });
 }

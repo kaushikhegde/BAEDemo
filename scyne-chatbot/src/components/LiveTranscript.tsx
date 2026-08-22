@@ -172,7 +172,10 @@ export function LiveTranscript({ parentIssueId }: Props) {
               <li key={i} className="flex items-start gap-2">
                 <span className="mt-0.5 shrink-0">{iconFor(e.kind)}</span>
                 <span className="text-[10px] text-slate-400 tabular-nums shrink-0 w-14">{e.ts}</span>
-                <span className="flex-1 break-words">
+                {/* pre-wrap, because the server now preserves the line breaks in an
+                    agent's prose. Without it the browser collapses them and the text
+                    is the same wall of grey it was when the server flattened it. */}
+                <span className="flex-1 break-words whitespace-pre-wrap">
                   {e.kind === "assistant" && <span className="italic text-scyne-ink-800">{e.text}</span>}
                   {e.kind === "tool_use" && (
                     <span><span className="font-semibold text-scyne-ink-700">{e.tool}</span> · {e.preview}</span>

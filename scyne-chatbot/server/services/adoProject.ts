@@ -78,7 +78,20 @@ export async function ensureAdoProject(opts: {
   org: string;
   project: string;
   processTemplate?: string;
+  /**
+   * A PREFERENCE, not an assertion. Absent, or present and unavailable, and
+   * the type is discovered from what the project actually has.
+   *
+   * Use `requireWorkItemType` for the other meaning.
+   */
   workItemType?: string;
+  /**
+   * Fail rather than discover when `workItemType` is not available.
+   *
+   * For a caller that TYPED a type — the CLI's `--work-item-type` — where
+   * being wrong is worth hearing about rather than absorbing.
+   */
+  requireWorkItemType?: boolean;
 }): Promise<EnsureResult> {
   const token = pat();
   if (!token) {
@@ -88,6 +101,11 @@ export async function ensureAdoProject(opts: {
   const { org, project } = opts;
   const templateName = opts.processTemplate ?? "Agile";
   const wantType = opts.workItemType ?? "User Story";
+  // Every story-bearing type across the templates, best first. Agile calls it
+  // "User Story" and Basic calls it "Issue" — the two this installation has
+  // met, and the pair CLAUDE.md documents. "Product Backlog Item" (Scrum) and
+  // "Requirement" (CMMI) complete the standard set.
+  const STORY_TYPES = [wantType, "User Story", "Issue", "Product Backlog Item", "Requirement"];
   const orgUrl = `https://dev.azure.com/${encodeURIComponent(org)}`;
   const projUrl = `${orgUrl}/${encodeURIComponent(project)}`;
 
@@ -184,8 +202,28 @@ export async function ensureAdoProject(opts: {
   const types = await call(`${projUrl}/_apis/wit/workitemtypes?api-version=${API}`, token);
   if (!types.ok) return { ok: false, error: explain(types.status, types.body) };
   const names = (types.json?.value ?? []).map((t: any) => String(t.name));
-  if (!names.includes(wantType)) {
+
+  // Asserting a type an EXISTING project does not have is how this blocked a
+  // publish that was otherwise fine: the default is Agile's "User Story", and
+  // SA-Power-Networks runs Basic — Epic, Issue, Task, no User Story anywhere.
+  // The step meant to guarantee somewhere to publish TO refused a project that
+  // had been publishing happily.
+  //
+  // So the default is now a preference and gets resolved against reality, the
+  // way `ado-workitems.mjs` has always discovered the type rather than
+  // insisting on one. A caller that explicitly requires a type still gets an
+  // assertion — being wrong about one you typed is worth hearing.
+  const resolvedType = STORY_TYPES.find((t) => names.includes(t));
+  if (opts.requireWorkItemType && !names.includes(wantType)) {
     return { ok: false, error: `"${project}" has no "${wantType}" work item type. It has: ${names.join(", ")}.` };
+  }
+  if (!resolvedType) {
+    return {
+      ok: false,
+      error: `"${project}" has no work item type stories can be created as ` +
+        `(looked for ${STORY_TYPES.filter((t, i) => STORY_TYPES.indexOf(t) === i).map(t => `"${t}"`).join(", ")}). ` +
+        `It has: ${names.join(", ")}.`,
+    };
   }
 
   return {
@@ -196,7 +234,10 @@ export async function ensureAdoProject(opts: {
       wiki: String(wiki.name),
       wikiId: String(wiki.id),
       processTemplate: templateName,
-      workItemType: wantType,
+      // What the project HAS, not what was hoped for — this is written into
+      // .published.json by both callers, so a wrong recorded value corrects
+      // itself on the next run rather than blocking every publish after it.
+      workItemType: resolvedType,
       createdAt: new Date().toISOString(),
     },
   };

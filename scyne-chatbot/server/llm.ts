@@ -412,6 +412,8 @@ When the user asks for a change to an artefact that already exists — "add an S
 
 It routes to the same specialist that produced the artefact, which revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing Confluence page instead of creating a second one.
 
+**Publishing again is not a revision.** If the user wants what already exists to reach Azure DevOps — "publish the user stories again", "push the data model up again", "the stories never made it into DevOps" — call \`republish_artefact\` instead. The test is whether the document should be DIFFERENT afterwards: if yes it is a revision, if no it is a republish. A republish runs no specialist and changes nothing; it still asks the user to approve before it publishes. Never answer a request to publish by revising — it spends twenty-five minutes rewriting a document the user was happy with.
+
 Rules:
 
 1. **Only for artefacts that already exist.** If the stage has not run, the backend returns \`not_generated\` — offer to generate it instead.
@@ -644,6 +646,24 @@ const triggerTool: Tool = {
           feature: { type: SchemaType.STRING, description: "The feature name, which becomes its folder. Required. Cannot be 'capabilities', 'personas', 'solutions', 'documents' or 'design' - those are reserved." },
         },
         required: ["project", "feature"],
+      },
+    },
+    {
+      name: "republish_artefact",
+      description: "Publishes an artefact that ALREADY EXISTS, again, WITHOUT changing it. Call this when the user asks for something to be pushed rather than altered - 'publish the user stories again', 'can you republish the data model', 'push the capability map to the wiki again', 'the stories never made it into DevOps', 'send it up again'. The line between this and revise_artefact is whether anything about the document should be DIFFERENT afterwards: if the user wants a change, that is revise_artefact; if they want what already exists to reach Azure DevOps, it is this. For the requirements artefact this also pushes the user stories as work items, so it is the right call when a backlog is missing. The user still approves before anything is published. Only artefacts that publish: capabilities, personas, requirements, datamodel, architecture, qa, design. The UI mockups and the companion app are local and cannot be republished - re-run those instead.",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required for every artefact EXCEPT capabilities and personas, which are project-level." },
+          artefact: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: ["capabilities", "personas", "requirements", "datamodel", "architecture", "qa", "design"],
+            description: "Which artefact to publish again. requirements = product summary + the user stories as work items. capabilities and personas are project-level. There is no ui or app here - neither publishes anywhere.",
+          },
+        },
+        required: ["project", "artefact"],
       },
     },
     {

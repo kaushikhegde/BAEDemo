@@ -503,6 +503,57 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
            variantOf: key, variant: "revise", steps };
 }
 
+/**
+ * Publish an artefact that already exists, without regenerating it.
+ *
+ * "Can you publish the user stories again" used to reach `revise_artefact` —
+ * the only tool whose description mentioned an artefact that already exists —
+ * so a request to push a finished document started a full agent regeneration
+ * and offered a diff nobody asked for. The publish agent was always the right
+ * worker; there was simply no way to ask for it on its own.
+ *
+ * No `stage.mjs` step: `publishPrompt` reads the stage's own `outputs/` path,
+ * not a staged working copy, so there is nothing to gather.
+ *
+ * The gate stays. Nothing has been regenerated, but the artefact on disk may
+ * have been edited since it was approved, and this is the last point before it
+ * reaches a client's wiki.
+ */
+export function publishWorkflow(key: string, s: Stage): WorkflowDef {
+  const steps: Step[] = [
+    {
+      type: "gate",
+      title: `Approve republish of ${s.label} — ${scope(s)}`,
+      summary: [
+        `Republish the ${s.label} for ${scope(s)}.`,
+        ``,
+        `**Nothing has been regenerated.** This publishes the document exactly`,
+        `as it stands on disk, to the page it already has, and creates nothing`,
+        `new — a revision is the other thing, and this is not it.`,
+        ...(key === "requirements" ? [
+          ``,
+          `The work items go with it: stories that already carry an \`adoId\` are`,
+          `updated, and any without one are created.`,
+        ] : []),
+      ].join("\n"),
+    },
+  ];
+  steps.push(ensureAdoProjectStep());
+  const publishAt = steps.length;
+  steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+  steps.push(verifyPublishStep(key, s, publishAt));
+
+  return {
+    key: `publish-${key}`,
+    label: `Republish ${s.label}`,
+    assignee: s.agentKey,
+    title: `Republish ${s.label} — ${scope(s)}`,
+    variantOf: key,
+    variant: "publish",
+    steps,
+  };
+}
+
 // Reporting lines mirror `scripts/bootstrap.mjs`'s org chart. `mcpEnabled` is
 // granted ONLY to agents that publish — an Atlassian tool surface on an agent
 // with nothing to push is a way to reach a client's wiki by accident.
@@ -611,5 +662,8 @@ export function buildWorkflows(): WorkflowDef[] {
   // `app` renders the companion app from other artefacts — there is nothing to
   // revise and no skill to enter Revision mode. Every other stage gets one.
   const revise = entries.filter(([, s]) => Boolean(s.skill)).map(([key, s]) => reviseWorkflow(key, s));
-  return [...generate, ...revise, baselineWorkflow()];
+  // Only a stage that publishes has anything to republish. `ui` and `app`
+  // produce local artefacts only, so there is no page to push them to.
+  const republish = entries.filter(([, s]) => s.publishes).map(([key, s]) => publishWorkflow(key, s));
+  return [...generate, ...revise, ...republish, baselineWorkflow()];
 }

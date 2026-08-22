@@ -35,6 +35,17 @@ const cases: Array<[string, string, string]> = [
   ["Revise Data Model — RTWSA/Demo",
    "- Project: RTWSA\n- Feature: Demo\n- Artefact: datamodel\n- Owner: Data Modeler\n\n## instruction\nAdd an SLA breach field to the Case object.\n\n## How to run this\n- Stage your inputs.",
    "revise-datamodel"],
+  // A republish carries no instruction — that is the whole difference from a
+  // revision, and the reason the two must not collapse onto one workflow.
+  ["Republish Data Model — RTWSA/Demo",
+   "- Project: RTWSA\n- Feature: Demo\n- Artefact: datamodel\n- Owner: Data Modeler",
+   "publish-datamodel"],
+  ["Republish User Stories & Product Summary — RTWSA/Demo",
+   "- Project: RTWSA\n- Feature: Demo\n- Artefact: requirements",
+   "publish-requirements"],
+  ["Republish Capability & Process Map — RTWSA",
+   "- Project: RTWSA\n- Artefact: capabilities",
+   "publish-capabilities"],
 ];
 
 let bad = 0;

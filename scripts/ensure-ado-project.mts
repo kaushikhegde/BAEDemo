@@ -95,6 +95,11 @@ const result = await ensureAdoProject({
     ? { processTemplate: String(flags.template ?? recorded?.processTemplate) } : {}),
   ...(flags["work-item-type"] ?? recorded?.workItemType
     ? { workItemType: String(flags["work-item-type"] ?? recorded?.workItemType) } : {}),
+  // A TYPED flag is an assertion; a RECORDED value is only our own note, made
+  // before anyone checked, and it is exactly the thing that needs correcting
+  // when it turns out to be wrong. Treating the record as binding is what
+  // would keep a project blocked on a value this run could simply fix.
+  ...(flags["work-item-type"] ? { requireWorkItemType: true } : {}),
 });
 
 if (!result.ok) {

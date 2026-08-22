@@ -108,6 +108,14 @@ export function workflowFor(title: string, params: Record<string, string>): stri
     if (!stage) throw new Error(`cannot route revision '${title}': no Artefact line in the description`);
     return `revise-${stage}`;
   }
+  // A republish pushes what already exists. Same shape as a revision — the
+  // stage comes from the description 's Artefact line, not from the title,
+  // because the title carries a human label and the label is not the key.
+  if (/^Republish\b/i.test(title)) {
+    const stage = pipeline.stageFor(params.artefact ?? "");
+    if (!stage) throw new Error(`cannot route republish '${title}': no Artefact line in the description`);
+    return `publish-${stage}`;
+  }
   if (/^(Set up project|Generate project baseline)\b/i.test(title)) return "baseline";
   // Longest prefix wins: "Generate solution architecture" and "Generate
   // solution design" share their first two words, and a shorter match first

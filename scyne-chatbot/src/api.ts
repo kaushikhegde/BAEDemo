@@ -546,6 +546,11 @@ export const bootstrapProject = (project: string) =>
 export const reviseArtefact = (project: string, artefact: string, instruction: string, feature?: string) =>
   postJson("/api/revise", "Revise", { project, artefact, instruction, feature });
 
+// Publish what already exists, unchanged. No instruction — the absence of one
+// is the whole difference from a revision.
+export const republishArtefact = (project: string, artefact: string, feature?: string) =>
+  postJson("/api/republish", "Republish", { project, artefact, feature });
+
 export type Chip = { label: string; message: string };
 
 /** The chips above the composer — what is actually possible right now. */

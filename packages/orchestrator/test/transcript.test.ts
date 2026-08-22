@@ -185,4 +185,43 @@ describe("filterRunLog on a codex transcript", () => {
     expect(events).toContainEqual(expect.objectContaining({ kind: "framing" }));
     expect(events.some(e => e.kind === "assistant")).toBe(false);
   });
+
+  // Nothing is elided any more. The transcript used to cut an agent's
+  // reasoning at 600 characters and end it with "…", so a reader could see
+  // that a decision had been made but not what it was.
+  describe("full output", () => {
+    it("keeps a long assistant message whole, with no ellipsis", () => {
+      const long = "x".repeat(5000);
+      const log = wrap({ type: "assistant", message: { content: [{ type: "text", text: long }] } });
+      const [e] = filterRunLog(log).events as any[];
+      expect(e.text).toHaveLength(5000);
+      expect(e.text).not.toContain("…");
+    });
+
+    it("keeps the line breaks in prose, which are its structure", () => {
+      const text = "First paragraph.\n\n1. a step\n2. another step";
+      const log = wrap({ type: "assistant", message: { content: [{ type: "text", text }] } });
+      const [e] = filterRunLog(log).events as any[];
+      expect(e.text).toBe(text);
+    });
+
+    it("keeps a long command preview whole, still on one line", () => {
+      const command = "node scripts/thing.mjs " + "a/very/long/path ".repeat(60);
+      const log = wrap({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command } }] } });
+      const [e] = filterRunLog(log).events as any[];
+      expect(e.preview).not.toContain("…");
+      expect(e.preview).not.toContain("\n");
+      expect(e.preview.length).toBeGreaterThan(600);
+    });
+
+    // Uncapping must not outrun the redaction — a secret 3,000 characters into
+    // a message was previously truncated away by accident rather than design.
+    it("still redacts a token buried deep in a long message", () => {
+      const text = "y".repeat(3000) + " Bearer abcdefghijklmnopqrstuvwxyz012345 " + "z".repeat(3000);
+      const log = wrap({ type: "assistant", message: { content: [{ type: "text", text }] } });
+      const [e] = filterRunLog(log).events as any[];
+      expect(e.text).toContain("Bearer [TOKEN]");
+      expect(e.text).not.toContain("abcdefghijklmnopqrstuvwxyz012345");
+    });
+  });
 });

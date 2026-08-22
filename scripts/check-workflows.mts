@@ -128,7 +128,11 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
     for (const [i, step] of w.steps.entries()) {
       if (step.type !== "exec" || !String(step.cmd ?? "").includes("verify-published")) continue;
       const asks = String(step.cmd).includes("--stories");
-      const should = w.key === "requirements" || w.key === "revise-requirements";
+      // Every variant of the requirements stage publishes the backlog, so
+      // every one of them must have its backlog checked: generate, revise and
+      // republish alike. `variantOf` is the declared link, which is why the
+      // workflows carry it rather than leaving the prefix to be parsed.
+      const should = w.key === "requirements" || (w as any).variantOf === "requirements";
       if (asks !== should) {
         fail(`${w.key} step ${i}: --stories is ${asks ? "present" : "absent"}, expected ${should ? "present" : "absent"}`);
       }
