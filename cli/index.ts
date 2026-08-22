@@ -17,7 +17,7 @@ import { createClient, resolveProject, targetProject, ApiError, type Client } fr
 import { load, patch, machineId, configPath, DEFAULT_API_URL } from "./config.ts";
 import {
   createProject, createFeature, uploadDocument, saveProjectDefinition,
-  deleteDocument, replaceDocument,
+  deleteDocument, replaceDocument, listDiskDocuments,
   CATEGORY_DIR, type DualResult,
 } from "./dual.ts";
 import { fetchStages, fetchWorkflowSteps, callerParams, type Stage } from "./stages.ts";
@@ -361,16 +361,35 @@ async function cmdDoc(client: Client, args: string[]): Promise<void> {
   const feature = flag("feature") ?? load().feature;
 
   switch (verb) {
+    // Read from DISK, which is what every stage reads and what the web UI
+    // shows. This used to read the platform API's ROWS, and the two disagreed:
+    // measured on a live installation, 20 documents on disk against 2 rows, so
+    // this command printed nothing for a project the browser listed nine
+    // documents for. `db` says which rows are missing rather than hiding it.
     case "list": case undefined: {
-      const q = new URLSearchParams();
-      if (has("all")) q.set("all", "true");
-      else if (feature) q.set("feature", feature);
-      if (flag("category")) q.set("category", flag("category")!);
-      const docs = await client.get<any[]>(`/projects/${project.id}/documents?${q}`);
-      if (has("json")) return json(docs);
-      return table(docs.map(d => ({
-        path: d.path, category: d.category, v: d.version, bytes: d.bytes,
-      })), ["path", "category", "v", "bytes"]);
+      const { documents, projectInDb, notInDb } =
+        await listDiskDocuments(project.name, has("all") ? null : feature);
+      const cat = flag("category");
+      const rows = documents.filter(d => !cat || d.subfolder.toLowerCase() === cat.toLowerCase());
+      if (has("json")) return json({ documents: rows, projectInDb, notInDb });
+
+      table(rows.map(d => ({
+        path: d.path,
+        folder: d.subfolder,
+        bytes: String(d.bytes),
+        // The one column that answers "will `scyne` and the browser agree".
+        db: d.inDb === false ? "missing" : "ok",
+      })), ["path", "folder", "bytes", "db"]);
+
+      if (!projectInDb) {
+        out(`\n  note: ${project.name} is not in the database — its documents reach every agent`);
+        out(`        and are invisible to the console and to spend reporting.`);
+        out(`        Reconcile with: npm run sync:docs -- --apply`);
+      } else if (notInDb > 0) {
+        out(`\n  note: ${notInDb} document(s) are on disk with no database row.`);
+        out(`        Reconcile with: npm run sync:docs -- --apply`);
+      }
+      return;
     }
 
     case "upload": {

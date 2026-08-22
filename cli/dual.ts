@@ -587,3 +587,47 @@ export async function replaceDocument(
     };
   }
 }
+
+/** One document as the DISK sees it, with whether the database agrees. */
+export interface DiskDocument {
+  name: string;
+  path: string;
+  subfolder: string;
+  level: "project" | "feature";
+  feature: string | null;
+  bytes: number;
+  kind: string;
+  original: string | null;
+  inDb?: boolean;
+}
+
+/**
+ * What documents a project has, from DISK — the same answer the web UI gives.
+ *
+ * `scyne doc list` used to read the platform API's rows, and the Docs tab reads
+ * the folder tree. That difference IS the mismatch: measured on this
+ * installation, 20 documents sat on disk against 2 rows, so the CLI reported
+ * nothing for a project the browser showed nine documents for.
+ *
+ * Disk is the honest answer to "what documents are there", because disk is what
+ * every stage reads — the 409 gates count `.md` there and the skills read the
+ * folder tree. The database still matters, so each row carries `inDb` and the
+ * caller says which are missing rather than hiding the difference.
+ */
+export async function listDiskDocuments(
+  project: string, feature?: string | null,
+): Promise<{ documents: DiskDocument[]; projectInDb: boolean; notInDb: number }> {
+  const q = new URLSearchParams({ project });
+  if (feature) q.set("feature", feature);
+  const res = await fetch(`${chatUrl()}/api/documents?${q}`, {
+    headers: { accept: "application/json", ...chatAuth() },
+  });
+  const text = await res.text();
+  const parsed = text ? JSON.parse(text) : {};
+  if (!res.ok) throw new ApiError(res.status, parsed?.message ?? parsed?.error ?? res.statusText);
+  return {
+    documents: [...(parsed.documents?.project ?? []), ...(parsed.documents?.feature ?? [])],
+    projectInDb: parsed.db?.projectInDb ?? true,
+    notInDb: parsed.db?.notInDb ?? 0,
+  };
+}

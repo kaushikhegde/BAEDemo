@@ -20,7 +20,10 @@ import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
 import { slugProjectName, isNewProjectName } from "./names.js";
-import { listDocuments, deleteDocument, resolveDocument } from "./services/documents.js";
+import {
+  listDocuments, deleteDocument, resolveDocument, readDocument, excerptOf,
+  type DocumentEntry,
+} from "./services/documents.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
 import { ensureAdoProject } from "./services/adoProject.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
@@ -2082,12 +2085,83 @@ app.get("/api/documents", async (req, res) => {
     // a staleness banner that disagree about what is on disk.
     const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
 
+    // OPT-IN, because it costs one file read per markdown document and only the
+    // grid has anywhere to put the result. The chat assistant's list_documents
+    // and `scyne doc list` ask for names and sizes, and must not start paying
+    // for text nobody will read.
+    if (req.query.excerpts === "true") {
+      const attach = async (entry: DocumentEntry): Promise<DocumentEntry> => {
+        if (entry.kind !== "markdown") return entry;
+        const read = await readDocument(WORKSPACE_PATH, project, entry.feature, entry.path)
+          .catch(() => null);
+        return read ? { ...entry, excerpt: excerptOf(read.content, EXCERPT_CHARS) } : entry;
+      };
+      docs.project = await Promise.all(docs.project.map(attach));
+      docs.feature = await Promise.all(docs.feature.map(attach));
+    }
+
+    // Which of these the DATABASE also knows about.
+    //
+    // Two stores, and only one of them is what the agents read. Disk wins for
+    // "what exists" — every stage counts `.md` there — but `scyne doc list`,
+    // the console and every platform route read rows, so a document with no row
+    // is invisible to all of them. Measured on this installation before the
+    // sync existed: 20 documents on disk, 2 rows. Saying so here is what stops
+    // that from being silent again.
+    const rows = await store.documentRowsFor(tokenFor(req), project);
+    const known = new Set(rows.paths.map((r) => `${r.feature ?? ""}::${r.path}`));
+    const mark = (d: DocumentEntry): DocumentEntry =>
+      ({ ...d, inDb: known.has(`${d.feature ?? ""}::${d.path}`) });
+    docs.project = docs.project.map(mark);
+    docs.feature = docs.feature.map(mark);
+    const notInDb = [...docs.project, ...docs.feature].filter((d) => !d.inDb).length;
+
     res.json({
       project, feature: feature || null,
       documents: docs,
       counts: { project: docs.project.length, feature: docs.feature.length },
+      // `projectInDb: false` is a different problem from a missing document row
+      // and has a different fix — there is no project to attach anything to.
+      db: { projectInDb: rows.projectInDb, notInDb },
       stale,
     });
+  } catch (e: any) {
+    res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/** How much of a document a grid card can show. */
+const EXCERPT_CHARS = 420;
+
+/**
+ * One document's text, for the preview.
+ *
+ * Nothing else served this. `/api/artifacts` reads the GENERATED artefacts —
+ * `outputs/` and `solutions/` — and the orchestrator's document route is keyed
+ * by a database id rather than a path on disk, so neither could show a client
+ * the SOP that a stage is actually reading.
+ */
+app.get("/api/documents/content", async (req, res) => {
+  try {
+    const project = String(req.query.project || "").trim();
+    const feature = String(req.query.feature || "").trim();
+    const docPath = String(req.query.path || "").trim();
+    if (!project || !docPath) {
+      return res.status(400).json({ error: "missing_target", message: "project and path are required" });
+    }
+    if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
+
+    let doc;
+    try {
+      doc = await readDocument(WORKSPACE_PATH, project, feature || null, docPath);
+    } catch (e: any) {
+      // A path outside `documents/`, a climb out of the project, or a binary
+      // file. All three are the caller asking for the wrong thing, not a fault.
+      return res.status(400).json({ error: "bad_path", message: e?.message ?? String(e) });
+    }
+    if (!doc) return res.status(404).json({ error: "no_document", message: `No document at ${docPath}.` });
+
+    res.json({ project, feature: feature || null, ...doc });
   } catch (e: any) {
     res.status(e?.status ?? 500).json({ error: e?.message ?? String(e) });
   }

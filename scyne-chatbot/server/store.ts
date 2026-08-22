@@ -292,11 +292,53 @@ export async function deleteDocumentRow(
 export const listFeatures = (token: string | null, projectId: string): Promise<Feature[]> =>
   get<Feature[]>(token, `/projects/${projectId}/features`, []);
 
+/**
+ * Document rows for a project.
+ *
+ * THREE questions, not two, and the platform route models all three: this
+ * feature's documents (`feature`), the project's OWN (neither flag), and every
+ * document at every level (`all`). Omitting a feature does NOT mean "all" — it
+ * means `feature_id is null`.
+ *
+ * `available()` below got that wrong: it asked with no feature, which returns
+ * project-level rows, and then skipped every project-level row to count the
+ * feature ones. So the loop always fell through and the assistant was told each
+ * feature held zero documents — while nine sat on disk under SAPN.
+ */
 export const listDocuments = (
-  token: string | null, projectId: string, feature?: string,
-): Promise<DocumentRow[]> =>
-  get<DocumentRow[]>(token,
-    `/projects/${projectId}/documents${feature ? `?feature=${encodeURIComponent(feature)}` : ""}`, []);
+  token: string | null, projectId: string,
+  opts: { feature?: string; all?: boolean } = {},
+): Promise<DocumentRow[]> => {
+  const qs = new URLSearchParams();
+  if (opts.all) qs.set("all", "true");
+  else if (opts.feature) qs.set("feature", opts.feature);
+  const q = qs.toString();
+  return get<DocumentRow[]>(token, `/projects/${projectId}/documents${q ? `?${q}` : ""}`, []);
+};
+
+/**
+ * Every document row recorded for a project, by name, at every level.
+ *
+ * Answers "does the database know about this file?" for the Docs tab. A project
+ * with no ROW at all is reported apart from a project whose documents are
+ * missing — they read the same on screen ("nothing recorded") and have
+ * different fixes.
+ */
+export async function documentRowsFor(
+  token: string | null, project: string,
+): Promise<{ projectInDb: boolean; paths: Array<{ path: string; feature: string | null }> }> {
+  if (!token) return { projectInDb: false, paths: [] };
+  try {
+    const row = (await listProjects(token)).find((p) => p.name === project);
+    if (!row) return { projectInDb: false, paths: [] };
+    const docs = await listDocuments(token, row.id, { all: true });
+    return { projectInDb: true, paths: docs.map((d) => ({ path: d.path, feature: d.feature ?? null })) };
+  } catch {
+    // The orchestrator being unreachable must not fail a list that reads disk.
+    // Reported as "nothing recorded", which is what the caller can act on.
+    return { projectInDb: false, paths: [] };
+  }
+}
 
 /** One feature, with how many documents it holds in each category. */
 export interface FeatureSummary { name: string; counts: Record<string, number> }
@@ -316,7 +358,7 @@ export async function available(
   const out: Record<string, FeatureSummary[]> = {};
   for (const project of await listProjects(token)) {
     const features = await listFeatures(token, project.id);
-    const docs = await listDocuments(token, project.id);
+    const docs = await listDocuments(token, project.id, { all: true });
     const byFeature = new Map<string, Record<string, number>>();
     for (const d of docs) {
       if (!d.feature) continue;              // project-level, not a feature's

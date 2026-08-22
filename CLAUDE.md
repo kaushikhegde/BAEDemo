@@ -1010,7 +1010,8 @@ open http://127.0.0.1:5173
 | POST | `/api/solution-design/trigger` | `Generate solution design — …` (optional side stage). `409 no_data_model` |
 | POST | `/api/ui-agent/trigger` | `Build UI — <project>`. **PROJECT level.** `409 no_artefacts` — the page is progressive, so any single artefact is enough |
 | **POST** | **`/api/revise`** | **Revise an existing artefact.** `{project, feature?, artefact, instruction}` → routes to the owner with the instruction verbatim. `409 not_generated`, `400 unknown_artefact` |
-| **GET** | **`/api/documents?project=&feature=`** | **Every document at both levels**, with size, mtime, kind and the archived source each was converted from — plus the same staleness list, from one call |
+| **GET** | **`/api/documents?project=&feature=`** | **Every document at both levels**, with size, mtime, kind and the archived source each was converted from — plus the same staleness list, from one call. **`?excerpts=true`** attaches the opening of each markdown document; opt-in, because it is a file read per document and only the grid has anywhere to put it |
+| **GET** | **`/api/documents/content?project=&feature=&path=`** | **One document's text**, for the preview. Refuses a binary file, a path outside `documents/`, and a climb out of the project — `400 bad_path` |
 | **PUT** | **`/api/documents`** | **Replace one document** (multipart). Removes the old and its archived original FIRST, so the replacement keeps its own name instead of landing beside it as `handling (1).md` |
 | **DELETE** | **`/api/documents`** | **Remove one document** and its archived original, on disk and in the database. `404 no_document`, `400 bad_path` for anything outside `documents/` |
 | **GET** | **`/api/staleness/:project[/:feature]`** | Artefacts generated before one of their inputs last changed, by mtime against the shared pipeline graph |
@@ -1065,6 +1066,22 @@ open http://127.0.0.1:5173
 > reason `adoError` is: the tree, the definition and the branding are real and
 > worth keeping. A failure is reported as `dbError` rather than logged, because
 > everything that resolves a project by name stays empty until the row exists.
+>
+> **"What documents exist" is answered from DISK, by BOTH surfaces.** `scyne doc
+> list` and the session's `/docs` read the same `/api/documents` the Docs tab
+> does, so the two cannot disagree about what is there. They used to read the
+> platform API's ROWS while the tab read the tree, which is precisely how one
+> reported nothing for a project the other showed nine documents for. Each row
+> carries `inDb`, and both surfaces name the count that is missing plus the
+> command that fixes it — the difference is surfaced, never hidden.
+>
+> **`store.listDocuments` asks three questions, not two.** This feature's
+> documents (`feature`), the project's OWN (neither flag), or every document at
+> every level (`all`). Omitting a feature means `feature_id is null`, NOT "all"
+> — and `available()`, which feeds the assistant's per-feature document counts,
+> asked with no feature and then skipped every project-level row to count the
+> feature ones. The loop always fell through, so the assistant was told every
+> feature held zero documents while nine sat on disk under SAPN.
 >
 > **The SERVER writes the document row, and it is the only thing that may.**
 > `cli/dual.ts` used to write its own, from the bytes read off the caller's
@@ -1135,13 +1152,36 @@ The system prompt teaches the dependency chain (requirements → data model → 
   `/spend` and `/actions` for them regardless, and that refusal is the boundary.
   A count badge on Issues tracks `in_review`/`blocked`/`paused` and polls every
   30s from whichever view is open, because its whole job is to interrupt.
-- **Docs** is the document lifecycle: every document at both levels, with
-  **replace** and **delete** per row, and — from the same fetch — the artefacts
-  that now predate their inputs, as a checkbox list with one *Re-run selected*
-  button. Nothing regenerates until it is clicked; a document change can
-  invalidate five artefacts and an hour of agent time. Scoped to the pinned
-  target, unlike Issues: a document belongs to one project and one feature, and
-  a list spanning clients is not one anybody should be deleting from.
+- **Docs** is the document lifecycle: every document **grouped by the folder it
+  lives in** — `Project › documents`, then `<feature> › SOP | Transcripts |
+  Notes | UI` — each collapsible, each a **drop zone**, with **upload**,
+  **replace** and **delete**, a **Table ⇄ Grid** toggle, filters (search,
+  Folder, Type, Level), a **preview** of any document rendered as markdown, and
+  — from the same fetch — the artefacts that now predate their inputs, as a
+  checkbox list with one *Re-run selected* button. Nothing regenerates until it
+  is clicked; a document change can invalidate five artefacts and an hour of
+  agent time. Scoped to the pinned target, unlike Issues, and it carries its own
+  `TargetPicker`: a drop zone for `SOP/` needs a feature, and sending someone
+  back to Chat to choose one is how a working drop zone comes to look broken.
+
+  **Grouped by folder rather than listed flat with a folder column**, because
+  the folder is not a label — it is what the pipeline reads. The BA treats
+  `Transcripts/` (the primary source of stories) differently from `SOP/`
+  (context, explicitly NOT stories), the UX Designer treats `requirements/UI/`
+  as authoritative, and a stage refusing with `no_documents` is nearly always
+  one of these folders being empty. So an **empty folder is shown, not hidden**:
+  its emptiness is the answer.
+
+  **Dropping on a named folder cannot hit `ambiguous_kind`.** `routeFile`
+  returns `ambiguous` only when no hint was supplied, and a folder IS a hint —
+  so a `.docx` the chat attach button refuses uploads cleanly here.
+
+  **The queue does not invent a phase boundary.** Upload and conversion happen
+  in ONE request (the route converts on arrival, because every 409 gate counts
+  `.md` and staging runs after that gate), so there is nothing to observe
+  between them. Files upload SEQUENTIALLY — slower for a big drop, and what
+  makes the queue truthful: one file in flight, the rest waiting, each ending
+  as the name it converted to.
 
   **Disk is authoritative there and the row is reconciled alongside it**, in
   that order, because disk is what every stage reads. A delete takes the
@@ -1932,6 +1972,29 @@ npm run orch -- log <runId> --raw   # the raw JSONL, byte for byte
   > placeholder.
   > **Writes the created ids back** into `stories.json`, so a re-run updates
   > rather than duplicating a client's backlog.
+- **`scripts/sync-documents.mjs`** (`npm run sync:docs`) — **reconcile the folder
+  tree into the database.** A PLAN by default; `--apply` writes; `--project P`
+  narrows. Creates missing project, feature and document rows, and RETIRES a row
+  whose file is gone (never a hard delete — bytes are shared by every path
+  holding the same content). Idempotent: `put()` is content-addressed and
+  answers `changed: false` for bytes it already holds.
+  > **Disk wins, and only ever lifts one way.** It is what every stage reads —
+  > the 409 gates count `.md` there, the skills read the folder tree — so this
+  > records disk into the database and never the reverse.
+  >
+  > It exists because dual-write only governs what is created THROUGH those
+  > paths. `npm run convert`, `stage.mjs`, an agent, or a person copying a file
+  > into `documents/` all land on disk alone. Measured before it existed: **20
+  > documents on disk against 2 rows, and three of four projects unknown to the
+  > database entirely** — so `scyne doc list` printed nothing for a project the
+  > browser listed nine documents for.
+  >
+  > **Count the two real shapes only** — `projects/<p>/documents/` and
+  > `projects/<p>/<f>/requirements/{SOP,Transcripts,Notes,UI}/`. A glob like
+  > `*/documents/*.md` also sweeps `solutions/<Stage>/documents/`, which is 41
+  > staged working copies here: material `stage.mjs` writes before an agent run,
+  > not documents anybody uploaded. Counting those is how "20" becomes a
+  > confident, wrong "63".
 - `scripts/extract-brand.mjs <url> <project>` — see *Brand the companion app*.
 - **`scripts/build-cli.mjs`** (`npm run build:cli` / `npm run pack:cli`) — bundles
   `cli/` into `dist/cli/`: one readable, dependency-free `scyne.mjs` plus a

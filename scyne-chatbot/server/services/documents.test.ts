@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { listDocuments, deleteDocument, resolveDocument } from "./documents.js";
+import { listDocuments, deleteDocument, resolveDocument, readDocument, excerptOf } from "./documents.js";
 
 let ws: string;
 const P = "SAPN", F = "MVP";
@@ -205,5 +205,133 @@ describe("deleteDocument", () => {
     await write(`projects/${P}/${F}/outputs/product-summary.md`);
     await expect(deleteDocument(ws, P, F, "outputs/product-summary.md")).rejects.toThrow(/not a document/i);
     expect(await there(`projects/${P}/${F}/outputs/product-summary.md`)).toBe(true);
+  });
+});
+
+describe("readDocument", () => {
+  it("returns the bytes of a document, with what a header needs to label it", async () => {
+    await write(`projects/${P}/${F}/requirements/SOP/handling.md`, "# Handling\n\nStep one.");
+    const r = await readDocument(ws, P, F, "requirements/SOP/handling.md");
+
+    expect(r).not.toBeNull();
+    expect(r!.content).toBe("# Handling\n\nStep one.");
+    expect(r!.name).toBe("handling.md");
+    expect(r!.path).toBe("requirements/SOP/handling.md");
+    expect(r!.bytes).toBe(21);
+  });
+
+  it("reports the converter's banner, which is exact provenance", async () => {
+    // `original` is the ARCHIVED file, which exists for anything uploaded —
+    // including a .md that was never converted at all. The banner is written by
+    // convert-to-md.mjs and by nothing else, so it is the only signal that says
+    // "this markdown was MACHINE-GENERATED from another format", which is what
+    // decides whether the preview has to preserve its line structure.
+    await write(`projects/${P}/${F}/requirements/Notes/report.md`,
+      "<!-- Converted from report.pdf by markitdown-ts. Regenerate with scripts/convert-to-md.mjs. -->\n\nBody.");
+
+    const r = await readDocument(ws, P, F, "requirements/Notes/report.md");
+    expect(r!.convertedFrom).toBe("report.pdf");
+  });
+
+  it("reports no banner as no conversion", async () => {
+    await write(`projects/${P}/documents/handwritten.md`, "# Written by a person");
+    expect((await readDocument(ws, P, null, "documents/handwritten.md"))!.convertedFrom).toBeNull();
+  });
+
+  it("keeps the banner in the content, so a raw view can show the whole file", async () => {
+    // Hiding it here would make `Source` a lie. The PREVIEW strips it for the
+    // rendered view; the file is the file.
+    await write(`projects/${P}/documents/x.md`, "<!-- Converted from x.pdf by markitdown-ts. -->\n\nBody.");
+    expect((await readDocument(ws, P, null, "documents/x.md"))!.content).toMatch(/^<!-- Converted from/);
+  });
+
+  it("names the archived source, so a preview says what it was converted from", async () => {
+    await write(`projects/${P}/${F}/requirements/SOP/handling.md`, "# H");
+    await write(`projects/${P}/${F}/original-files/requirements/SOP/handling.docx`, "x");
+
+    const r = await readDocument(ws, P, F, "requirements/SOP/handling.md");
+    expect(r!.original).toBe("original-files/requirements/SOP/handling.docx");
+  });
+
+  it("reads a project-level document", async () => {
+    await write(`projects/${P}/documents/policy.md`, "# Policy");
+    expect((await readDocument(ws, P, null, "documents/policy.md"))!.content).toBe("# Policy");
+  });
+
+  it("is null for a path that is not there", async () => {
+    expect(await readDocument(ws, P, F, "requirements/SOP/ghost.md")).toBeNull();
+  });
+
+  it("refuses to read something that is not a document", async () => {
+    // The route behind this is reachable with any path a caller invents. A
+    // generated product summary is not a document, and `.published.json` holds
+    // the wiki identity of every artefact.
+    await write(`projects/${P}/${F}/outputs/product-summary.md`, "secret");
+    await expect(readDocument(ws, P, F, "outputs/product-summary.md")).rejects.toThrow(/not a document/i);
+    await expect(readDocument(ws, P, null, "../.env")).rejects.toThrow(/outside|invalid/i);
+  });
+
+  it("refuses a binary file rather than returning mojibake", async () => {
+    // requirements/UI holds screenshots. Decoding a PNG as utf8 produces
+    // gibberish that renders as a document, which is worse than a refusal.
+    await write(`projects/${P}/${F}/requirements/UI/screen.png`, "\x89PNG\r\n");
+    await expect(readDocument(ws, P, F, "requirements/UI/screen.png")).rejects.toThrow(/not text/i);
+  });
+
+  it("reads a source that never converted, because that is what you want to look at", async () => {
+    // A .txt sitting unconverted is exactly the file somebody opens to work out
+    // why a stage says it has no documents.
+    await write(`projects/${P}/${F}/requirements/Notes/raw.txt`, "plain notes");
+    expect((await readDocument(ws, P, F, "requirements/Notes/raw.txt"))!.content).toBe("plain notes");
+  });
+});
+
+describe("excerptOf", () => {
+  it("returns the opening of the document", () => {
+    expect(excerptOf("# Title\n\nFirst line of prose.", 200)).toBe("# Title\n\nFirst line of prose.");
+  });
+
+  it("cuts at a word boundary and marks the cut", () => {
+    const r = excerptOf("alpha beta gamma delta epsilon", 14);
+    expect(r).toBe("alpha beta…");
+    expect(r.length).toBeLessThanOrEqual(15);
+  });
+
+  it("drops YAML front matter, which is metadata and not the document", () => {
+    expect(excerptOf("---\ntitle: X\nauthor: Y\n---\n# Real Title\n\nBody.", 200))
+      .toBe("# Real Title\n\nBody.");
+  });
+
+  it("drops the converter's own banner, which is provenance and not the document", () => {
+    // `convert-to-md.mjs` prepends `<!-- Converted from X.pdf by markitdown-ts.
+    // Regenerate with scripts/convert-to-md.mjs. -->` to everything it writes —
+    // and that is MOST documents here. Measured on SA-Demo: two of three cards
+    // showed a build note and no document.
+    const banner = "<!-- Converted from Introduction.pdf by markitdown-ts. Regenerate with scripts/convert-to-md.mjs. -->\n\n";
+    expect(excerptOf(banner + "# Real Title\n\nBody.", 200)).toBe("# Real Title\n\nBody.");
+  });
+
+  it("keeps a comment that is not at the top, which is part of the prose", () => {
+    expect(excerptOf("# Title\n\n<!-- a note -->\n\nBody.", 200))
+      .toBe("# Title\n\n<!-- a note -->\n\nBody.");
+  });
+
+  it("drops front matter and a banner together", () => {
+    expect(excerptOf("---\ntitle: X\n---\n<!-- Converted from a.pdf -->\n\n# T", 200)).toBe("# T");
+  });
+
+  it("collapses long runs of blank lines, which would spend the whole card", () => {
+    expect(excerptOf("# A\n\n\n\n\nB", 200)).toBe("# A\n\nB");
+  });
+
+  it("is empty for an empty document rather than throwing", () => {
+    expect(excerptOf("", 200)).toBe("");
+    expect(excerptOf("   \n\n  ", 200)).toBe("");
+  });
+
+  it("does not cut mid-word when there is no space to cut at", () => {
+    // A single long token — a URL, a base64 blob — has no boundary. Cutting
+    // hard is right; returning nothing is not.
+    expect(excerptOf("a".repeat(50), 10)).toBe("aaaaaaaaaa…");
   });
 });

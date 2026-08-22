@@ -18,7 +18,7 @@ import { load, patch, DEFAULT_API_URL } from "./config.ts";
 import { createClient, ApiError, type Client } from "./client.ts";
 import {
   createProject, createFeature, uploadDocument, saveProjectDefinition, extractBrand,
-  deleteDocument, replaceDocument,
+  deleteDocument, replaceDocument, listDiskDocuments,
   chatAuth, CATEGORY_DIR, PROJECT_NAME, suggestProjectName, type DualResult,
 } from "./dual.ts";
 import { c, out, markdown, spinner, banner, promptLabel, tick, cross, dot } from "./ui.ts";
@@ -697,16 +697,28 @@ export async function repl(): Promise<void> {
           return false;
         }
 
+        // From DISK, which is what every stage reads and what the web UI shows.
+        // This read the platform API's ROWS, and the two disagreed — 63
+        // documents on disk against 2 rows on this installation — so `/docs`
+        // printed nothing for a project the browser listed nine documents for.
         case "docs": {
           if (!project) { out(`  ${cross} pin a project first: /use <project>`); return false; }
-          const projects = await client.get<{ id: string; name: string }[]>("/projects");
-          const hit = projects.find(x => x.name === project)!;
-          const q = feature ? `?feature=${encodeURIComponent(feature)}` : "";
-          const docs = await client.get<{ path: string; category: string; version: number }[]>(
-            `/projects/${hit.id}/documents${q}`);
-          out();
-          if (!docs.length) out(`  ${c.grey("(no documents)")}`);
-          for (const d of docs) out(`  ${c.grey(String(d.category ?? "—").padEnd(12))} ${d.path} ${c.grey("v" + d.version)}`);
+          try {
+            const { documents, projectInDb, notInDb } = await listDiskDocuments(project, feature);
+            out();
+            if (!documents.length) out(`  ${c.grey("(no documents)")}`);
+            for (const d of documents) {
+              out(`  ${c.grey(d.subfolder.padEnd(12))} ${d.path}`
+                + (d.inDb === false ? ` ${c.yellow("· not in the database")}` : ""));
+            }
+            if (!projectInDb) {
+              out(`  ${c.grey(`${project} is not in the database — reconcile with`)} ${c.cyan("npm run sync:docs -- --apply")}`);
+            } else if (notInDb > 0) {
+              out(`  ${c.grey(`${notInDb} not in the database — reconcile with`)} ${c.cyan("npm run sync:docs -- --apply")}`);
+            }
+          } catch (err) {
+            out(`  ${cross} ${(err as Error).message.split("\n")[0]}`);
+          }
           return false;
         }
 

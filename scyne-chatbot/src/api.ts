@@ -210,6 +210,21 @@ export interface DocumentEntry {
   kind: DocumentKind;
   /** The archived source this markdown was converted from, if there is one. */
   original: string | null;
+  /** The opening of the document. Present only when asked for — see listDocuments. */
+  excerpt?: string;
+  /** Whether the database also has a row for this file. */
+  inDb?: boolean;
+}
+
+export interface DocumentContent {
+  name: string;
+  path: string;
+  bytes: number;
+  modifiedAt: string;
+  original: string | null;
+  /** The file this markdown was machine-generated from, per the converter's banner. */
+  convertedFrom: string | null;
+  content: string;
 }
 
 export interface DocumentsResult {
@@ -219,15 +234,38 @@ export interface DocumentsResult {
   counts: { project: number; feature: number };
   /** Returned by the SAME call, so the list and the banner cannot disagree. */
   stale: StaleArtefact[];
+  /** How much of what is on disk the database does not know about. */
+  db?: { projectInDb: boolean; notInDb: number };
 }
 
-export async function listDocuments(project: string, feature?: string | null): Promise<DocumentsResult> {
+/**
+ * `excerpts` costs one file read per markdown document server-side, so it is
+ * opt-in: only the grid has anywhere to put the text.
+ */
+export async function listDocuments(
+  project: string, feature?: string | null, opts: { excerpts?: boolean } = {},
+): Promise<DocumentsResult> {
   const qs = new URLSearchParams({ project });
   if (feature) qs.set("feature", feature);
+  if (opts.excerpts) qs.set("excerpts", "true");
   const r = await apiFetch(`/api/documents?${qs}`);
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new OpsError(r.status, body?.error ?? "error", body?.message ?? `Could not read documents (${r.status})`);
+  }
+  return r.json();
+}
+
+/** One document's text, for the preview. */
+export async function readDocument(
+  project: string, feature: string | null, docPath: string,
+): Promise<DocumentContent> {
+  const qs = new URLSearchParams({ project, path: docPath });
+  if (feature) qs.set("feature", feature);
+  const r = await apiFetch(`/api/documents/content?${qs}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || body?.error || `Could not read that document (${r.status})`);
   }
   return r.json();
 }

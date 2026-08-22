@@ -76,8 +76,11 @@ scyne-chatbot/
         ├── RecordMeetingPanel.tsx (browser audio capture → Gemini Live transcription)
         ├── PreviewPane.tsx     (iframes the generated app from /api/preview/:project; polls the registry and AUTO-RELOADS the iframe when `generatedAt` changes. The iframe src is made RELATIVE — see Gotchas)
         ├── Rail.tsx            (left rail: Chat · Docs · Issues · Spend · Actions; hides the admin two by role, badges Issues with what is waiting)
-        ├── DocumentsView.tsx   (every document at both levels, with replace + delete per row, and
-        │                        the staleness banner as a checkbox list with one Re-run button)
+        ├── DocumentsView.tsx   (the Docs tab: target picker, filters, Table/Grid toggle, upload
+        │                        queue, folder list, staleness banner with one Re-run button)
+        ├── DocumentFolder.tsx  (ONE folder — header, count, collapse, drop zone, and its documents
+        │                        as a table or a grid of excerpt cards)
+        ├── DocumentPreview.tsx (one document, read — dialog + lazy Markdown)
         ├── IssuesView.tsx      (every issue in the company; selecting one sets the active issue and returns to Chat)
         ├── SpendView.tsx       (GROUP BY chips + Period/Project/Feature/User filters; reported and estimated in SEPARATE columns, unpriced runs called out)
         ├── ActionsView.tsx     (the organisation's audit feed — who did what)
@@ -417,6 +420,41 @@ Click "New session" in the right-pane header. This clears `localStorage`, drops 
   allowed) while the server refused with the WRITE one, so Next lit up on a
   name the server was about to reject — and the hyphenated suggestion it sent
   back was never shown.
+- **An excerpt strips what is not the document.** YAML front matter, and
+  `convert-to-md.mjs`'s own `<!-- Converted from X.pdf by markitdown-ts… -->`
+  banner — which is on MOST documents here and is 100 characters, a quarter of
+  a card. Measured on SA-Demo before the strip: two of three cards showed the
+  build note and no document. The comment strip is ANCHORED to the start, so a
+  comment further down is prose and survives.
+- **The Docs grid shows RAW markdown, not rendered.** At card size a heading
+  and two lines of prose read perfectly well as text, while a rendered fragment
+  of a document whose first block is a 40-column table reads as nothing. The
+  full `Markdown` render is behind the preview dialog, `lazy()` as
+  `ArtifactsPreview` loads it — it pulls in react-markdown, remark-gfm and
+  mermaid, which is most of a megabyte nobody browsing a file list has asked
+  for yet.
+- **`readDocument` refuses binary.** A PNG decoded as utf8 renders as screens
+  of mojibake that LOOK like a document. Images and audio are refused by kind;
+  an unconverted `.pdf`/`.docx` is caught by a NUL byte in the first 8 KB. An
+  unconverted `.txt` is read happily — it is exactly the file somebody opens to
+  work out why a stage says it has no documents.
+- **A converted document needs its line structure preserved.** markitdown-ts
+  flattens a PDF table to one field per line with no blank lines, and CommonMark
+  joins consecutive lines into one paragraph — so `Connection Point (NMI) / PK /
+  NMI / Attr Metering_Type` rendered as a single run-on sentence. `Markdown`
+  takes `preserveLineBreaks`, **default off**, and only the document preview
+  turns it on, only for a file carrying the converter's banner. The default is
+  load-bearing: the same component renders the artefacts behind the APPROVAL
+  GATE, and hard-breaking their soft-wrapped prose would damage documents that
+  read correctly today. `renderSource()` in `src/lib/markdown.ts` is that
+  decision as a pure function so a test can hold it — rendering React needs a
+  DOM this package does not carry.
+- **`convertedFrom` is not `original`.** `original` is the archived upload and
+  exists for a hand-written `.md` too; the `<!-- Converted from X by Y -->`
+  banner is written by `convert-to-md.mjs` and by nothing else, so it is the
+  only signal that says the markdown was MACHINE-GENERATED. The banner stays in
+  `content` — stripping it server-side would make the preview's **Source** view
+  a lie about what is on disk — and the preview hides it from the rendered view.
 - **`server/` is typechecked now** (`npm run typecheck`, `tsconfig.server.json`),
   and `pipeline.mjs` is typed by the ambient `server/pipeline.d.ts`. That
   declaration must stay COMPLETE — a partial one silences the implicit-any and

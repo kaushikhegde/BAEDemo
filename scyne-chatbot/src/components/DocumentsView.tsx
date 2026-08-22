@@ -1,74 +1,229 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileText, Image as ImageIcon, AlertTriangle, RefreshCw, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, RefreshCw, LayoutGrid, Rows3, Search, Check, X, Loader2 } from "lucide-react";
 import {
-  listDocuments, deleteDocument, replaceDocument, rerunStage, canRerun,
-  type DocumentEntry, type DocumentsResult, type StaleArtefact,
+  listDocuments, deleteDocument, replaceDocument, uploadFile, uploadProjectFile,
+  rerunStage, canRerun,
+  type DocumentEntry, type DocumentsResult, type StaleArtefact, type UploadHint,
 } from "../api";
-import { OpsState, ago } from "./OpsState";
+import { OpsState, FilterSelect, ClearFilters } from "./OpsState";
+import { TargetPicker } from "./TargetPicker";
+import { DocumentFolder, type FolderSpec } from "./DocumentFolder";
+import { DocumentPreview } from "./DocumentPreview";
 
 /**
- * Every document the pipeline will read, and what removing or replacing one
- * makes out of date.
+ * Every document the pipeline will read, in the folders it reads them from.
  *
  * Until this existed there was upload and nothing else: no way to see what a
- * project actually held, no way to correct a document that went to the wrong
- * feature, and no way to remove one — so a superseded policy stayed an input to
- * every stage for good, and the only remedy was the filesystem.
+ * project held, no way to correct a document that went to the wrong feature,
+ * and no way to remove one — so a superseded policy stayed an input to every
+ * stage for good, and the only remedy was the filesystem.
  *
- * The staleness banner is the other half, and it is deliberately INERT until
- * clicked. A document change can invalidate five artefacts and an hour of agent
- * time; the tab says which, and a person decides.
+ * Three things this screen has to get right, and they are all about the folder:
+ * the BA treats Transcripts/ (the primary source of stories) differently from
+ * SOP/ (context, explicitly not stories), the UX Designer treats
+ * requirements/UI/ as authoritative, and a stage refusing with "no documents"
+ * is nearly always one of these folders being empty. So documents are grouped
+ * by folder rather than listed flat with a folder column, empty folders are
+ * shown, and a drop targets a folder by name.
+ *
+ * Dropping on a NAMED folder also sidesteps the one refusal the chat attach
+ * button cannot: `routeFile` returns `ambiguous` only when no hint was
+ * supplied, and a folder is a hint.
  */
 
-const KIND_LABEL: Record<DocumentEntry["kind"], string> = {
-  markdown: "markdown",
-  image: "image",
-  audio: "audio",
-  unconverted: "not converted",
-  other: "other",
-};
+const ALL = "";
+const VIEW_KEY = "scyne_docs_view";
 
-const bytes = (n: number) =>
-  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+/** What each folder accepts, matching AttachmentButton's zones. */
+const DOC_ACCEPT = ".docx,.pdf,.doc,.txt,.md,.xlsx,.xls,.pptx,.csv";
+const AUDIO_ACCEPT = ".mp3,.wav,.m4a,.webm,.ogg,.flac";
+const IMAGE_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp";
+
+/** The four discovery folders, in the order stage.mjs reports them. */
+const FEATURE_FOLDERS: Array<{ dir: string; hint: UploadHint & FolderSpec["hint"]; accept: string; blurb: string }> = [
+  { dir: "SOP", hint: "sop", accept: DOC_ACCEPT, blurb: "SOP & policy documents" },
+  { dir: "Transcripts", hint: "transcripts", accept: `${DOC_ACCEPT},${AUDIO_ACCEPT}`, blurb: "meetings — documents or audio" },
+  { dir: "Notes", hint: "notes", accept: DOC_ACCEPT, blurb: "anything else" },
+  { dir: "UI", hint: "ui", accept: IMAGE_ACCEPT, blurb: "client-supplied screens" },
+];
+
+/** One file's trip through upload and conversion. */
+interface QueueItem {
+  id: string;
+  name: string;
+  folder: string;
+  state: "queued" | "working" | "done" | "failed";
+  detail?: string;
+}
 
 export function DocumentsView({
-  project, feature, onRunStarted,
+  project, feature, onTargetChange, onRunStarted, refreshKey,
 }: {
   project: string | null;
   feature: string | null;
+  /** The tab pins its own target — you cannot upload to SOP/ without a feature. */
+  onTargetChange: (project: string | null, feature: string | null) => void;
   /** A re-run creates an issue; Chat is where its Activity panel lives. */
   onRunStarted: (issueId: string) => void;
+  refreshKey?: number;
 }) {
   const [data, setData] = useState<DocumentsResult | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [preview, setPreview] = useState<DocumentEntry | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const [view, setViewRaw] = useState<"table" | "grid">(() => {
+    if (typeof window === "undefined") return "table";
+    return window.localStorage.getItem(VIEW_KEY) === "grid" ? "grid" : "table";
+  });
+  const setView = (v: "table" | "grid") => {
+    setViewRaw(v);
+    try { window.localStorage.setItem(VIEW_KEY, v); } catch { /* private mode */ }
+  };
+
+  const [search, setSearch] = useState("");
+  const [folder, setFolder] = useState(ALL);
+  const [kind, setKind] = useState(ALL);
+  const [level, setLevel] = useState(ALL);
+
   // Which document a chosen file is meant to replace. One hidden input for the
-  // whole table, retargeted per row — a file input per row would be dozens.
+  // whole page, retargeted per row — one per document would be dozens.
   const replacing = useRef<DocumentEntry | null>(null);
   const filePicker = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     if (!project) { setData(null); return; }
     try {
-      const r = await listDocuments(project, feature);
+      // Excerpts are one file read per markdown document server-side, so they
+      // are asked for only when there is a card to put them on.
+      const r = await listDocuments(project, feature, { excerpts: view === "grid" });
       setData(r);
       setError(null);
-      // Everything stale is checked by default. The person opened this because
-      // they changed a document; the question is which refreshes to SKIP.
-      setSelected(new Set(r.stale.filter(s => canRerun(s.key)).map(s => s.key)));
+      setSelected(new Set(r.stale.filter((s) => canRerun(s.key)).map((s) => s.key)));
     } catch (e) {
       setError(e);
       setData(null);
     }
-  }, [project, feature]);
+  }, [project, feature, view]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  const folders: FolderSpec[] = useMemo(() => {
+    const out: FolderSpec[] = [{
+      id: "project:documents",
+      label: "Project › documents",
+      feature: null,
+      hint: null,
+      accept: DOC_ACCEPT,
+      blurb: "client-wide policy, legislation, standards",
+    }];
+    if (feature) {
+      for (const f of FEATURE_FOLDERS) {
+        out.push({
+          id: `${feature}:${f.dir}`,
+          label: `${feature} › ${f.dir}`,
+          feature,
+          hint: f.hint,
+          accept: f.accept,
+          blurb: f.blurb,
+        });
+      }
+    }
+    return out;
+  }, [feature]);
 
   const all = useMemo(
     () => [...(data?.documents.project ?? []), ...(data?.documents.feature ?? [])],
     [data]);
+
+  // Options come from the rows actually loaded, as the Issues view does, so a
+  // filter can never offer a value that returns nothing.
+  const options = useMemo(() => ({
+    folders: [...new Set(all.map((d) => d.subfolder))].sort(),
+    kinds: [...new Set(all.map((d) => d.kind))].sort(),
+    levels: [...new Set(all.map((d) => d.level))].sort(),
+  }), [all]);
+
+  const matches = useCallback((d: DocumentEntry) => {
+    const q = search.trim().toLowerCase();
+    return (!q || d.name.toLowerCase().includes(q) || (d.original ?? "").toLowerCase().includes(q))
+      && (!folder || d.subfolder === folder)
+      && (!kind || d.kind === kind)
+      && (!level || d.level === level);
+  }, [search, folder, kind, level]);
+
+  const shown = useMemo(() => all.filter(matches), [all, matches]);
+  const activeFilters = [search.trim(), folder, kind, level].filter(Boolean).length;
+
+  const clear = () => { setSearch(""); setFolder(ALL); setKind(ALL); setLevel(ALL); };
+
+  /**
+   * Which documents belong to a folder.
+   *
+   * Matched on the LOWERCASED folder name against the hint, because the two
+   * vocabularies differ in case and only in case: `DISK_SUBFOLDER` maps
+   * `sop → SOP` and `transcripts → Transcripts`, so upper-casing the hint would
+   * match SOP and UI and quietly miss the other two.
+   */
+  const inFolder = (d: DocumentEntry, spec: FolderSpec) =>
+    d.feature === spec.feature && (spec.hint === null || d.subfolder.toLowerCase() === spec.hint);
+
+  // ---------------------------------------------------------------- uploads
+
+  async function upload(spec: FolderSpec, files: File[]) {
+    if (!project) return;
+    const items: QueueItem[] = files.map((f, i) => ({
+      id: `${Date.now()}-${i}-${f.name}`,
+      name: f.name,
+      folder: spec.label,
+      state: "queued",
+    }));
+    setQueue(items);
+    setBusy("upload");
+    setNote(null);
+
+    const mark = (id: string, patch: Partial<QueueItem>) =>
+      setQueue((q) => q.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+
+    // SEQUENTIAL, as AttachmentButton is. It is slower for a big drop and it is
+    // what makes the queue honest: one file is in flight, the rest are waiting,
+    // and the screen can say so truthfully.
+    for (let i = 0; i < files.length; i++) {
+      const item = items[i];
+      mark(item.id, { state: "working" });
+      try {
+        // Upload and conversion happen in ONE request — the route converts on
+        // arrival, because every stage's 409 gate counts `.md` and staging runs
+        // after that gate. There is no observable boundary between the two, so
+        // the queue does not invent one.
+        const r = spec.hint === null
+          ? await uploadProjectFile(project, files[i])
+          : await uploadFile(project, spec.feature!, files[i], spec.hint);
+
+        if ("ambiguous" in r && r.ambiguous) {
+          // Unreachable from here — a folder always supplies a hint — but a
+          // silent success would be the worst way to find out otherwise.
+          mark(item.id, { state: "failed", detail: r.message });
+          continue;
+        }
+        const ok = r as { filename: string; converted: boolean };
+        mark(item.id, {
+          state: "done",
+          detail: ok.converted ? `converted to ${ok.filename}` : ok.filename,
+        });
+      } catch (e) {
+        mark(item.id, { state: "failed", detail: (e as Error).message });
+      }
+    }
+
+    setBusy(null);
+    await load();
+  }
+
+  // ------------------------------------------------------- replace / delete
 
   async function remove(doc: DocumentEntry) {
     const where = doc.level === "feature" ? `${project} / ${doc.feature}` : project;
@@ -94,11 +249,11 @@ export function DocumentsView({
     filePicker.current?.click();
   }
 
-  async function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onReplacementChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     const doc = replacing.current;
-    // Reset immediately: choosing the same file twice in a row fires no change
-    // event otherwise, so a failed replace could not be retried.
+    // Reset immediately: choosing the same file twice fires no change event
+    // otherwise, so a failed replace could not be retried.
     e.target.value = "";
     replacing.current = null;
     if (!file || !doc || !project) return;
@@ -106,9 +261,7 @@ export function DocumentsView({
     setBusy(doc.path); setNote(null);
     try {
       const r = await replaceDocument(project, doc.feature, doc.path, file);
-      setNote(
-        `Replaced ${doc.name} with ${r.filename}` +
-        (r.converted ? " (converted to markdown)." : "."));
+      setNote(`Replaced ${doc.name} with ${r.filename}${r.converted ? " (converted to markdown)." : "."}`);
       await load();
     } catch (err) {
       setNote((err as Error).message);
@@ -117,8 +270,10 @@ export function DocumentsView({
     }
   }
 
-  const runnable = (data?.stale ?? []).filter(s => canRerun(s.key));
-  const chosen = runnable.filter(s => selected.has(s.key));
+  // ---------------------------------------------------------------- re-runs
+
+  const runnable = (data?.stale ?? []).filter((s) => canRerun(s.key));
+  const chosen = runnable.filter((s) => selected.has(s.key));
 
   async function rerunSelected() {
     if (!project || !chosen.length) return;
@@ -144,14 +299,7 @@ export function DocumentsView({
     await load();
   }
 
-  if (!project) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-lg font-semibold text-scyne-ink">Documents</h1>
-        <p className="text-sm text-scyne-ink/60">Pick a project in Chat to see its documents.</p>
-      </div>
-    );
-  }
+  // ------------------------------------------------------------------- view
 
   return (
     <div className="space-y-4">
@@ -159,27 +307,80 @@ export function DocumentsView({
         ref={filePicker}
         type="file"
         className="sr-only"
-        onChange={onFileChosen}
+        onChange={onReplacementChosen}
         aria-hidden
         tabIndex={-1}
       />
 
-      <header className="flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-scyne-ink">Documents</h1>
-          <p className="text-sm text-scyne-ink/60">
-            {data
-              ? `${project}${feature ? ` › ${feature}` : ""} · ${all.length} ${all.length === 1 ? "document" : "documents"}`
-              : " "}
-          </p>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold text-scyne-ink">Documents</h1>
+            <p className="text-sm text-scyne-ink/60">
+              {data
+                ? activeFilters
+                  // Say what was hidden. A count with no denominator is how
+                  // somebody concludes an upload never landed.
+                  ? `${shown.length} of ${all.length}`
+                  : `${all.length} ${all.length === 1 ? "document" : "documents"}`
+                : " "}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Pinned here as well as in Chat: you cannot upload to SOP/ without
+                a feature, and sending someone back to another screen to choose
+                one is how a drop zone comes to look broken. */}
+            <TargetPicker project={project} feature={feature} onChange={onTargetChange} />
+
+            <span className="inline-flex overflow-hidden rounded-full border border-scyne-line" role="group" aria-label="Layout">
+              {([["table", Rows3, "Table"], ["grid", LayoutGrid, "Grid"]] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  aria-pressed={view === v}
+                  className={[
+                    "flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium transition-colors",
+                    view === v ? "bg-scyne-ink text-white" : "text-scyne-ink/70 hover:bg-scyne-line/60",
+                  ].join(" ")}
+                >
+                  <Icon className="size-3.5" aria-hidden />
+                  {label}
+                </button>
+              ))}
+            </span>
+
+            <button
+              type="button"
+              onClick={load}
+              className="rounded-full border border-scyne-line px-3 py-1 text-xs font-medium text-scyne-ink/70 hover:border-scyne-ink hover:text-scyne-ink"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={load}
-          className="rounded-full border border-scyne-line px-3 py-1 text-xs font-medium text-scyne-ink/70 hover:border-scyne-ink hover:text-scyne-ink"
-        >
-          Refresh
-        </button>
+
+        {project && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="relative inline-flex items-center">
+              <Search className="pointer-events-none absolute left-2.5 size-3.5 text-scyne-ink/40" aria-hidden />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search documents"
+                aria-label="Search documents by name"
+                className="rounded-full border border-scyne-line py-1 pl-8 pr-3 text-xs outline-none placeholder:text-scyne-ink/40 focus:border-scyne-ink"
+              />
+            </span>
+            <FilterSelect label="Folder" value={folder} onChange={setFolder} options={options.folders} />
+            <FilterSelect label="Type" value={kind} onChange={setKind} options={options.kinds}
+              render={(k) => (k === "unconverted" ? "not converted" : k)} />
+            <FilterSelect label="Level" value={level} onChange={setLevel} options={options.levels} />
+            <ClearFilters count={activeFilters} onClear={clear} />
+          </div>
+        )}
       </header>
 
       {note && (
@@ -188,150 +389,169 @@ export function DocumentsView({
         </p>
       )}
 
-      <OpsState
-        error={error}
-        loading={data === null && !error}
-        empty={data !== null && all.length === 0}
-        emptyLabel={
-          feature
-            ? `Nothing uploaded to ${project} or ${feature} yet — add documents from Chat.`
-            : `Nothing uploaded to ${project} yet — add documents from Chat.`
-        }
-      />
+      {queue.length > 0 && <UploadQueue queue={queue} onDismiss={() => setQueue([])} />}
 
-      {data && data.documents.project.length > 0 && (
-        <DocumentTable
-          title="Project"
-          caption={`Client-wide material. Every feature and every skill reads these.`}
-          docs={data.documents.project}
-          busy={busy}
-          onReplace={pickReplacement}
-          onDelete={remove}
-        />
+      {data?.db && (!data.db.projectInDb || data.db.notInDb > 0) && (
+        <DriftNotice projectInDb={data.db.projectInDb} notInDb={data.db.notInDb} project={project!} />
       )}
 
-      {data && feature && (
-        <DocumentTable
-          title={`Feature · ${feature}`}
-          caption="Discovery material for this slice of work only."
-          docs={data.documents.feature}
-          busy={busy}
-          onReplace={pickReplacement}
-          onDelete={remove}
-          emptyLabel={`No discovery documents under ${feature} yet.`}
-        />
+      {!project ? (
+        <p className="rounded-lg border border-dashed border-scyne-line px-3 py-6 text-center text-sm text-scyne-ink/60">
+          Pick a project to see its documents.
+        </p>
+      ) : (
+        <>
+          <OpsState
+            error={error}
+            loading={data === null && !error}
+            empty={false}
+            emptyLabel=""
+          />
+
+          {data && (
+            <div className="space-y-3">
+              {folders.map((spec) => {
+                const mine = shown.filter((d) => inFolder(d, spec));
+                const total = all.filter((d) => inFolder(d, spec)).length;
+                return (
+                  <DocumentFolder
+                    key={spec.id}
+                    spec={spec}
+                    docs={mine}
+                    hiddenByFilter={total - mine.length}
+                    view={view}
+                    busy={busy}
+                    onUpload={upload}
+                    onPreview={setPreview}
+                    onReplace={pickReplacement}
+                    onDelete={remove}
+                  />
+                );
+              })}
+
+              {!feature && (
+                <p className="rounded-lg border border-dashed border-scyne-line px-3 py-4 text-center text-sm text-scyne-ink/60">
+                  Pick a feature to see and add its discovery documents — SOP, Transcripts, Notes and UI.
+                </p>
+              )}
+            </div>
+          )}
+
+          {data && data.stale.length > 0 && (
+            <StalenessPanel
+              stale={data.stale}
+              selected={selected}
+              onToggle={(key) => setSelected((prev) => {
+                const next = new Set(prev);
+                if (next.has(key)) next.delete(key); else next.add(key);
+                return next;
+              })}
+              onRun={rerunSelected}
+              running={busy === "rerun"}
+              chosenCount={chosen.length}
+            />
+          )}
+        </>
       )}
 
-      {data && data.stale.length > 0 && (
-        <StalenessPanel
-          stale={data.stale}
-          selected={selected}
-          onToggle={(key) => setSelected(prev => {
-            const next = new Set(prev);
-            next.has(key) ? next.delete(key) : next.add(key);
-            return next;
-          })}
-          onRun={rerunSelected}
-          running={busy === "rerun"}
-          chosenCount={chosen.length}
-        />
-      )}
+      <DocumentPreview doc={preview} project={project ?? ""} onClose={() => setPreview(null)} />
     </div>
   );
 }
 
-function DocumentTable({
-  title, caption, docs, busy, onReplace, onDelete, emptyLabel,
+/**
+ * What the database does not know about.
+ *
+ * Disk is what the agents read, so this screen is right either way — but
+ * `scyne doc list`, the console and every platform route read ROWS, and spend
+ * is attributed through them. A document with no row is invisible to all of
+ * that. Measured on this installation when the tab was built: 20 documents on
+ * disk, 2 rows, three of four projects unknown to the database entirely.
+ *
+ * Said here rather than fixed here: writing 63 rows is not something a screen
+ * should do because somebody opened it. It names the one command that does.
+ */
+function DriftNotice({
+  projectInDb, notInDb, project,
 }: {
-  title: string;
-  caption: string;
-  docs: DocumentEntry[];
-  busy: string | null;
-  onReplace: (d: DocumentEntry) => void;
-  onDelete: (d: DocumentEntry) => void;
-  emptyLabel?: string;
+  projectInDb: boolean; notInDb: number; project: string;
 }) {
   return (
-    <section className="space-y-2">
-      <div className="flex items-baseline gap-2">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-scyne-ink/50">{title}</h2>
-        <span className="text-xs text-scyne-ink/50">{docs.length}</span>
+    <section className="rounded-lg border border-sky-300 bg-sky-50/60 p-3">
+      <h2 className="text-sm font-semibold text-sky-900">
+        {projectInDb
+          ? `${notInDb} document${notInDb === 1 ? "" : "s"} not recorded in the database`
+          : `${project} is not in the database`}
+      </h2>
+      <p className="mt-0.5 text-xs text-sky-900/80">
+        {projectInDb
+          ? "Every stage still reads them — disk is what the agents use. But they are invisible to "
+          : "Its documents still reach every agent. But the project is invisible to "}
+        <code className="rounded bg-white/70 px-1">scyne doc list</code>, the console and spend
+        reporting. Reconcile with{" "}
+        <code className="rounded bg-white/70 px-1">npm run sync:docs -- --apply</code>.
+      </p>
+    </section>
+  );
+}
+
+/**
+ * What is landing, and what happened to it.
+ *
+ * One in-flight state rather than separate "uploading" and "converting" steps:
+ * the route does both in a single request, and a progress bar that claimed to
+ * know when one ended and the other began would be describing something this
+ * screen cannot see. What it CAN say truthfully is which file is in flight,
+ * which are waiting, and what each one became.
+ */
+function UploadQueue({ queue, onDismiss }: { queue: QueueItem[]; onDismiss: () => void }) {
+  const done = queue.filter((q) => q.state === "done").length;
+  const failed = queue.filter((q) => q.state === "failed").length;
+  const finished = done + failed === queue.length;
+
+  return (
+    <section
+      aria-live="polite"
+      className="rounded-lg border border-scyne-line bg-white p-3"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-scyne-ink/60">
+          {finished
+            ? `${done} added${failed ? `, ${failed} failed` : ""}`
+            : `Adding ${queue.length} file${queue.length === 1 ? "" : "s"} to ${queue[0].folder}`}
+        </h2>
+        {finished && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded p-1 text-scyne-ink/50 hover:bg-scyne-line/60 hover:text-scyne-ink"
+            aria-label="Dismiss upload summary"
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        )}
       </div>
 
-      {docs.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-scyne-line px-3 py-4 text-sm text-scyne-ink/50">
-          {emptyLabel ?? "Nothing here."}
-        </p>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border border-scyne-line bg-white">
-          <table className="w-full text-sm">
-            <caption className="sr-only">{caption}</caption>
-            <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wider text-scyne-ink/50">
-                <th scope="col" className="px-3 py-2 font-semibold">Document</th>
-                <th scope="col" className="px-3 py-2 font-semibold">Folder</th>
-                <th scope="col" className="px-3 py-2 font-semibold">Size</th>
-                <th scope="col" className="px-3 py-2 font-semibold">Changed</th>
-                <th scope="col" className="px-3 py-2 font-semibold text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {docs.map((d) => (
-                <tr key={d.path} className="border-t border-scyne-line">
-                  <td className="px-3 py-2">
-                    <span className="flex items-center gap-2">
-                      {d.kind === "image"
-                        ? <ImageIcon className="size-4 shrink-0 text-scyne-ink/40" aria-hidden />
-                        : <FileText className="size-4 shrink-0 text-scyne-ink/40" aria-hidden />}
-                      <span className="font-medium text-scyne-ink">{d.name}</span>
-                    </span>
-                    {/* What a person recognises is the file they uploaded. The
-                        converter replaced it, so the row would otherwise name
-                        something they have never seen. */}
-                    {d.original && (
-                      <span className="ml-6 block text-[11px] text-scyne-ink/50">
-                        from {d.original.split("/").pop()}
-                      </span>
-                    )}
-                    {d.kind === "unconverted" && (
-                      <span className="ml-6 flex items-center gap-1 text-[11px] text-amber-700">
-                        <AlertTriangle className="size-3" aria-hidden />
-                        not converted — no stage can read this yet
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap text-scyne-ink/70">{d.subfolder}</td>
-                  <td className="px-3 py-2 whitespace-nowrap text-scyne-ink/60">{bytes(d.bytes)}</td>
-                  <td className="px-3 py-2 whitespace-nowrap text-scyne-ink/60">{ago(d.modifiedAt)}</td>
-                  <td className="px-3 py-2 whitespace-nowrap text-right">
-                    <button
-                      type="button"
-                      onClick={() => onReplace(d)}
-                      disabled={busy !== null}
-                      aria-label={`Replace ${d.name}`}
-                      title="Replace with a new file"
-                      className="rounded p-1.5 text-scyne-ink/60 hover:bg-scyne-line/60 hover:text-scyne-ink disabled:opacity-40"
-                    >
-                      <Upload className="size-4" aria-hidden />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onDelete(d)}
-                      disabled={busy !== null}
-                      aria-label={`Delete ${d.name}`}
-                      title="Delete, with its archived original"
-                      className="rounded p-1.5 text-scyne-ink/60 hover:bg-red-50 hover:text-red-700 disabled:opacity-40"
-                    >
-                      <Trash2 className="size-4" aria-hidden />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <span className="sr-only">{caption}</span>
+      <ul className="mt-2 space-y-1">
+        {queue.map((q) => (
+          <li key={q.id} className="flex items-start gap-2 text-sm">
+            <span className="mt-0.5 shrink-0">
+              {q.state === "done" && <Check className="size-3.5 text-emerald-600" aria-hidden />}
+              {q.state === "failed" && <X className="size-3.5 text-red-600" aria-hidden />}
+              {q.state === "working" && <Loader2 className="size-3.5 animate-spin text-scyne-ink/60" aria-hidden />}
+              {q.state === "queued" && <span className="block size-3.5 rounded-full border border-scyne-line" aria-hidden />}
+            </span>
+            <span className="min-w-0 flex-1 break-words">
+              <span className="text-scyne-ink">{q.name}</span>
+              <span className={`ml-2 text-[11px] ${q.state === "failed" ? "text-red-700" : "text-scyne-ink/55"}`}>
+                {q.state === "queued" && "queued"}
+                {q.state === "working" && "uploading & converting…"}
+                {(q.state === "done" || q.state === "failed") && q.detail}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -347,7 +567,7 @@ function StalenessPanel({
   chosenCount: number;
 }) {
   return (
-    <section className="rounded-lg border border-amber-300 bg-amber-50/60 p-4 space-y-3">
+    <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50/60 p-4">
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700" aria-hidden />
         <div>
@@ -363,23 +583,23 @@ function StalenessPanel({
 
       <ul className="space-y-1.5">
         {stale.map((s) => {
-          const runnable = canRerun(s.key);
+          const ok = canRerun(s.key);
           return (
             <li key={s.key}>
-              <label className={`flex items-start gap-2 text-sm ${runnable ? "" : "opacity-60"}`}>
+              <label className={`flex items-start gap-2 text-sm ${ok ? "" : "opacity-60"}`}>
                 <input
                   type="checkbox"
                   checked={selected.has(s.key)}
                   onChange={() => onToggle(s.key)}
-                  disabled={!runnable || running}
+                  disabled={!ok || running}
                   className="mt-1 size-3.5 accent-amber-700"
                 />
                 <span>
                   <span className="font-medium text-amber-950">{s.label ?? s.key}</span>
                   <span className="text-amber-900/70">
-                    {" "}— superseded by {s.supersededBy.map(b => b.label).join(", ")}
+                    {" "}— superseded by {s.supersededBy.map((b) => b.label).join(", ")}
                   </span>
-                  {!runnable && (
+                  {!ok && (
                     <span className="block text-[11px] text-amber-900/60">
                       no trigger for this stage — run it from Chat
                     </span>

@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Mermaid } from "./Mermaid";
+import { renderSource } from "@/lib/markdown";
 
 /**
  * Full CommonMark + GFM renderer for the ARTEFACT documents.
@@ -14,7 +15,21 @@ import { Mermaid } from "./Mermaid";
  * Raw HTML is deliberately NOT enabled (no rehype-raw) — the documents are
  * markdown, and parsing embedded HTML would be an injection surface for no gain.
  */
-export function Markdown({ source }: { source: string }) {
+export function Markdown({ source, preserveLineBreaks = false }: {
+  source: string;
+  /**
+   * Keep the source's line structure instead of letting CommonMark join
+   * consecutive lines into a paragraph.
+   *
+   * OFF by default, and that default is load-bearing: this component renders
+   * the artefacts behind the approval gate, which are proper markdown with
+   * blank lines and real tables, and hard-breaking their soft-wrapped prose
+   * would damage documents that read correctly today. Only the document
+   * preview turns it on, and only for a file `convert-to-md.mjs` produced.
+   */
+  preserveLineBreaks?: boolean;
+}) {
+  const body = renderSource(source, preserveLineBreaks);
   return (
     <div className="text-[13.5px] leading-relaxed text-slate-700">
       <ReactMarkdown
@@ -91,7 +106,7 @@ export function Markdown({ source }: { source: string }) {
             ),
         }}
       >
-        {source}
+        {body}
       </ReactMarkdown>
     </div>
   );

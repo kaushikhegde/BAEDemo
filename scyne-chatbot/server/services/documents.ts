@@ -48,6 +48,13 @@ export interface DocumentEntry {
    * that is no longer where they put it.
    */
   original: string | null;
+  /**
+   * Whether the DATABASE also has a row for this file. Attached by the route,
+   * not read from disk — disk cannot know.
+   */
+  inDb?: boolean;
+  /** The opening of the document. Attached by the route, on request. */
+  excerpt?: string;
 }
 
 export interface DocumentList {
@@ -180,6 +187,110 @@ export function resolveDocument(
       (feature ? `expected requirements/{${DISCOVERY_SUBFOLDERS.join(",")}}/…` : "expected documents/…"));
   }
   return full;
+}
+
+/** One document's bytes, plus what a preview header needs to label it. */
+export interface DocumentContent {
+  name: string;
+  path: string;
+  bytes: number;
+  modifiedAt: string;
+  /** The archived source it was converted from, when there is one. */
+  original: string | null;
+  /**
+   * The file this markdown was MACHINE-GENERATED from, per the converter's own
+   * banner — or null when a person wrote it.
+   *
+   * Distinct from `original`, which is merely the archived upload and exists
+   * for a hand-written `.md` too. Only the banner says the content was produced
+   * by a tool, which is what decides whether a reader needs its line structure
+   * preserved: markitdown-ts flattens a PDF table to one field per line, and
+   * CommonMark joins those into a single run-on paragraph.
+   */
+  convertedFrom: string | null;
+  content: string;
+}
+
+/** `<!-- Converted from X.pdf by markitdown-ts. … -->`, written as line 1. */
+const CONVERTED_BANNER = /^\s*<!--\s*Converted from\s+(.+?)\s+by\s+[\s\S]*?-->/;
+
+/**
+ * Read one document as text.
+ *
+ * Refuses a binary file rather than decoding it: `requirements/UI/` holds
+ * screenshots, and a PNG read as utf8 renders as several screens of mojibake
+ * that LOOKS like a document — worse than saying no. An UNCONVERTED source is
+ * read happily, because a `.txt` still sitting there is exactly the file
+ * somebody opens to work out why a stage reports no documents.
+ */
+export async function readDocument(
+  workspace: string, project: string, feature: string | null, relPath: string,
+): Promise<DocumentContent | null> {
+  const full = resolveDocument(workspace, project, feature, relPath);
+  const levelDir = levelRoot(workspace, project, feature);
+  const rel = path.relative(levelDir, full);
+  const name = path.basename(rel);
+
+  const kind = kindOf(name);
+  if (kind === "image" || kind === "audio") {
+    throw new Error(`not text: ${rel} is ${kind === "image" ? "an image" : "audio"}`);
+  }
+
+  const st = await fs.stat(full).catch(() => null);
+  if (!st || !st.isFile()) return null;
+
+  const buf = await fs.readFile(full);
+  // A `.pdf` or `.docx` that never converted reaches here as a convertible
+  // kind and is still binary. One NUL byte in the first few KB is the cheap,
+  // reliable tell, and no text document this pipeline handles contains one.
+  if (buf.subarray(0, 8192).includes(0)) {
+    throw new Error(`not text: ${rel} is a binary file that has not been converted`);
+  }
+
+  const text = buf.toString("utf8");
+  return {
+    name,
+    path: rel,
+    bytes: st.size,
+    modifiedAt: new Date(st.mtimeMs).toISOString(),
+    original: await findOriginal(levelDir, path.dirname(rel), name),
+    convertedFrom: CONVERTED_BANNER.exec(text)?.[1] ?? null,
+    // The banner stays IN the content. Stripping it here would make a raw view
+    // a lie about what is on disk; the preview hides it for the rendered view.
+    content: text,
+  };
+}
+
+/**
+ * The opening of a document, for a card that has to fit on a grid.
+ *
+ * Raw markdown rather than rendered: at this size a heading and two lines of
+ * prose read perfectly well as text, while a rendered fragment of a document
+ * whose first block happens to be a 40-column table reads as nothing at all.
+ */
+export function excerptOf(markdown: string, max: number): string {
+  const body = String(markdown ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/^\uFEFF/, "")
+    // Front matter is metadata, and it is the first thing in the file — an
+    // excerpt of it says the author's name and nothing about the document.
+    .replace(/^---\n[\s\S]*?\n---\n/, "")
+    // So is `convert-to-md.mjs`'s banner, and that one is on MOST documents
+    // here: `<!-- Converted from X.pdf by markitdown-ts. Regenerate with … -->`
+    // is 100 characters of build note, which is a quarter of a card. Measured
+    // on SA-Demo, two of three cards showed the banner and no document.
+    // ANCHORED, so a comment further down is prose and survives.
+    .replace(/^\s*<!--[\s\S]*?-->\n?/, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (body.length <= max) return body;
+
+  const cut = body.slice(0, max);
+  const boundary = cut.lastIndexOf(" ");
+  // No space to cut at — a URL, a base64 blob — so cut hard. Returning nothing
+  // because one token was long is worse than an abrupt edge.
+  return (boundary > max * 0.5 ? cut.slice(0, boundary) : cut).trimEnd() + "\u2026";
 }
 
 export interface DeleteResult {

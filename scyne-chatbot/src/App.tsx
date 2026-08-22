@@ -1143,7 +1143,14 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           <DocumentsView
             project={targetProject}
             feature={targetFeature}
+            // The tab pins its own target: a drop zone for SOP/ needs a feature,
+            // and sending someone back to Chat to choose one is how a working
+            // drop zone comes to look broken.
+            onTargetChange={(p, f) => { setTargetProject(p); setTargetFeature(f); }}
             onRunStarted={(id) => { setParentIssueId(id); setView("workspace"); }}
+            // Bumped after an upload elsewhere, so the list is not stale when
+            // you switch to this tab.
+            refreshKey={featuresRefreshKey}
           />
         </main>
       ) : view === "issues" ? (
