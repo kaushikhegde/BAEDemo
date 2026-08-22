@@ -166,6 +166,28 @@ assumption and design forward. Don't block.
 
 ## Step 3 — Map Requirements to Platform Capability
 
+**Read the data model's platform choice before this ladder — don't re-derive
+it.** If `DataModel/salesforce-data-model.md` already models an entity using an
+Industries Cloud standard object (Energy & Utilities Cloud's `ServicePoint`,
+for instance), that decision has already been made — cite it and design around
+it. Do not raise it again as an open question of your own; a data model that
+says "confirmed: `ServicePoint`" and an architecture that says "open question:
+is `ServicePoint` licensed?" is two documents disagreeing about a fact that was
+already settled, which is exactly the failure this note exists to prevent (it
+happened on SA-Power-Networks-Transformation/CRM-Management, 22 August 2026 —
+the architecture re-asked a question the data model had already flagged, and
+then both had to be corrected separately once it resolved). If the data model's
+own record is genuinely still open (its own Assumptions/Open Questions section
+says so), reflect that same uncertainty here — don't resolve it independently
+either.
+
+This also means Appendix A is the baseline, not the ceiling: a utility client
+whose data model draws on Energy & Utilities Cloud objects has NFR, licensing
+and component-selection consequences beyond core Service Cloud (e.g. `Location`
+and `ServicePoint` sharing/search design, Field Service Lightning objects if
+meters are modelled as `Asset` with `FieldServiceClass`). Design around what the
+data model actually used, not around Appendix A alone.
+
 For each requirement, work down this ladder and **stop at the first rung that
 satisfies it**. Read **Appendix A — Service Cloud Capability Reference** for what
 each capability actually covers.
@@ -265,9 +287,9 @@ save it to the output path in Step 10, after the quality check).
 
 ````markdown
 # Solution Architecture — [Client / Programme Name]
-## Salesforce Service Cloud
+## [Name every cloud this architecture actually draws on — "Salesforce Service Cloud" alone, or "Salesforce Service Cloud + Energy & Utilities Cloud", matching whatever the data model used in Step 3. Do not default this to "Salesforce Service Cloud" regardless of content.]
 
-**Version:** 0.1 (Draft) · **Date:** [date] · **Scope:** [phases/releases] · **Status:** For review
+**Version:** 0.1 (Draft) · **Date:** [date] · **Platform:** [same platform list as the subtitle, plus its confirmation status if the data model records one as still open] · **Scope:** [phases/releases] · **Status:** For review
 
 ---
 
