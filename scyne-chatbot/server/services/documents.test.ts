@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { listDocuments, deleteDocument, resolveDocument, readDocument, excerptOf } from "./documents.js";
+import { CONVERTIBLE, PLAIN_TEXT } from "../../../scripts/convert-to-md.mjs";
 
 let ws: string;
 const P = "SAPN", F = "MVP";
@@ -102,6 +103,33 @@ describe("listDocuments", () => {
     await write(`projects/${P}/${F}/requirements/SOP/handling.docx`);
     const [doc] = (await listDocuments(ws, P, F)).feature;
     expect(doc.kind).toBe("unconverted");
+  });
+
+  // A PowerPoint used to be classified from a hand-copied list that included
+  // .pptx while the converter could not read one — so the deck sat in SA-PN
+  // badged "not converted … yet", waiting for a conversion nothing would ever
+  // perform. It converts now, through anydoc, and the badge is finally true.
+  it("reports a PowerPoint deck as a source awaiting conversion", async () => {
+    await write(`projects/${P}/documents/slides.pptx`);
+    const [doc] = (await listDocuments(ws, P, F)).project;
+    expect(doc.kind).toBe("unconverted");
+  });
+
+  // The classification is the converter's own list, not a copy of it. Asserted
+  // in BOTH directions, because the copy that was here had drifted both ways:
+  // it claimed formats the converter could not read, and missed ones it could.
+  it("classifies exactly what the converter can read, and nothing else", async () => {
+    for (const ext of [...CONVERTIBLE, ...PLAIN_TEXT]) {
+      await write(`projects/${P}/documents/sample${ext}`);
+      const doc = (await listDocuments(ws, P, F)).project.find(d => d.name === `sample${ext}`)!;
+      const expected = ext === ".md" || ext === ".markdown" ? "markdown" : "unconverted";
+      expect([ext, doc.kind]).toEqual([ext, expected]);
+    }
+    for (const ext of [".key", ".pages", ".zip", ".exe"]) {
+      await write(`projects/${P}/documents/other${ext}`);
+      const doc = (await listDocuments(ws, P, F)).project.find(d => d.name === `other${ext}`)!;
+      expect([ext, doc.kind]).toEqual([ext, "other"]);
+    }
   });
 
   it("is empty, not an error, for a project with nothing in it", async () => {

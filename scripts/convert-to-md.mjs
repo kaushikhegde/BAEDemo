@@ -15,14 +15,21 @@
 //   requirements/Notes/Conceptual Data Model.md                  ← what agents read
 //   original-files/requirements/Notes/Conceptual Data Model.pdf  ← archived source
 //
-// Conversion is pure JS (markitdown-ts → mammoth / pdf-parse / xlsx / turndown),
-// so it needs no Python and no native binaries.
+// Two engines, both plain npm packages: markitdown-ts (pure JS — mammoth /
+// pdf-parse / xlsx / turndown) for Word, PDF, Excel, HTML and notebooks, and
+// @firecrawl/anydoc (a prebuilt native addon) for everything it cannot read —
+// PowerPoint above all. Neither needs Python, and neither sends a document
+// anywhere: both parse in-process.
 //
 // --keep-originals leaves the source beside its markdown instead of archiving.
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+// pathToFileURL rather than a `file://${entry}` template: it is the correct
+// encoding for a path with spaces in it, and a bundler statically analysing
+// this file can see a call it cannot see through a template literal.
+import { pathToFileURL } from "node:url";
 import { INSTALL_ROOT, WORK_ROOT } from "./lib/roots.mjs";
 
 // The project tree this run operates on. See scripts/lib/roots.mjs for why
@@ -48,20 +55,63 @@ async function loadMarkItDown() {
       "  cd scyne-chatbot && npm install markitdown-ts@^0.0.10",
     );
   }
-  const mod = await import(`file://${entry}`);
+  const mod = await import(pathToFileURL(entry).href);
   const MarkItDown = mod.MarkItDown ?? mod.default?.MarkItDown;
   if (!MarkItDown) throw new Error(`markitdown-ts loaded from ${entry} but exports no MarkItDown`);
   return MarkItDown;
 }
 
+// anydoc is a NAPI-RS addon: one prebuilt binary per platform and no runtime
+// dependencies of its own. Resolved from the chatbot's node_modules for exactly
+// the reasons given above loadMarkItDown — same install, same INSTALL_ROOT.
+async function loadAnydoc() {
+  const require = createRequire(path.join(INSTALL_ROOT, "scyne-chatbot", "package.json"));
+  let entry;
+  try {
+    entry = require.resolve("@firecrawl/anydoc");
+  } catch {
+    throw new Error(
+      "@firecrawl/anydoc is not installed.\n" +
+      "  cd scyne-chatbot && npm install --save-exact @firecrawl/anydoc@0.2.3",
+    );
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  const toMarkdown = mod.toMarkdown ?? mod.default?.toMarkdown;
+  if (!toMarkdown) throw new Error(`@firecrawl/anydoc loaded from ${entry} but exports no toMarkdown`);
+  return toMarkdown;
+}
+
 /**
- * Extensions worth converting. Deliberately EXCLUDED even though the library
- * handles some of them:
+ * Formats markitdown-ts cannot read, routed to @firecrawl/anydoc instead.
+ *
+ * PowerPoint is what prompted this: markitdown-ts lists it unchecked and
+ * carries no pptx dependency, so a deck uploaded to a project converted to
+ * nothing, counted as neither readable nor convertible, and every stage read
+ * straight past it — while the Docs tab said "not converted … yet".
+ *
+ * Taken as anydoc's own documented table rather than a hand-picked subset, so
+ * which engine owns what cannot drift by judgement call. The formats BOTH can
+ * read stay with markitdown-ts: moving them would change the output of every
+ * conversion this repo has already done.
+ */
+const NATIVE_FORMATS = new Set([
+  ".pptx", ".ppt", ".pptm", ".ppsx", ".pps", ".pot", ".ppsm",   // PowerPoint
+  ".odt", ".ods", ".odp",                                       // OpenDocument
+  ".xls", ".xlsm", ".xlsb", ".docm",                            // older Office
+  ".rtf", ".epub", ".csv",
+]);
+
+/**
+ * Extensions worth converting. Deliberately EXCLUDED even though the libraries
+ * handle some of them:
  *   - .png/.jpg/.jpeg — UI mockups. Agents read screens as images; a markdown
  *     rendering of a screenshot loses the whole point.
  *   - .mp3/.wav — audio has a better path (Gemini transcription).
  */
-export const CONVERTIBLE = new Set([".docx", ".doc", ".pdf", ".xlsx", ".html", ".htm", ".xml", ".ipynb"]);
+export const CONVERTIBLE = new Set([
+  ".docx", ".doc", ".pdf", ".xlsx", ".html", ".htm", ".xml", ".ipynb",   // markitdown-ts
+  ...NATIVE_FORMATS,                                                     // anydoc
+]);
 /** Already text, but not `.md` — copied across verbatim under a `.md` name. */
 export const PLAIN_TEXT = new Set([".txt"]);
 export const ALREADY_MD = new Set([".md", ".markdown"]);
@@ -105,6 +155,7 @@ export async function convertTree(root, opts = {}) {
   const { force = false, archiveRoot = null, onProgress = () => {} } = opts;
   const results = [];
   let MarkItDown = null;
+  let toMarkdownNative = null;
 
   const walk = async (dir) => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -163,6 +214,14 @@ export async function convertTree(root, opts = {}) {
           markdown = (await fs.readFile(full, "utf8")).trim();
           if (!markdown) throw new Error("file is empty");
           markdown = header(entry.name, "verbatim copy") + markdown + "\n";
+        } else if (NATIVE_FORMATS.has(ext)) {
+          if (!toMarkdownNative) toMarkdownNative = await loadAnydoc();
+          // The PATH form rather than the buffer one, because a signature-less
+          // format (.csv) is identified by its extension — which the buffer
+          // call would have to be told separately.
+          const body = ((await toMarkdownNative(full)) || "").trim();
+          if (!body) throw new Error("converter produced no text");
+          markdown = header(entry.name, "anydoc") + body + "\n";
         } else {
           if (!MarkItDown) MarkItDown = await loadMarkItDown();
           const buffer = await fs.readFile(full);

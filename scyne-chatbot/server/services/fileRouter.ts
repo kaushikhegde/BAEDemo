@@ -1,4 +1,5 @@
 import path from "node:path";
+import { CONVERTIBLE } from "../../../scripts/convert-to-md.mjs";
 
 export type Subfolder = "sop" | "transcripts" | "notes" | "ui" | "template";
 export type Hint = Subfolder | "audio" | undefined;
@@ -26,7 +27,19 @@ export interface RouteResult {
 
 const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".webm", ".ogg", ".flac"]);
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const DOC_EXT = new Set([".docx", ".pdf", ".doc"]);
+/**
+ * Every document format the converter can read, so the name heuristics below
+ * apply to all of them equally.
+ *
+ * This was `.docx/.pdf/.doc` written out by hand, which meant a PowerPoint
+ * matched no branch at all and fell through to the catch-all as ambiguous —
+ * even when its name said "SOP" in as many words. Taken from the converter so
+ * a format becomes routable the moment it becomes readable.
+ *
+ * `.txt` and `.md` are deliberately NOT here: they are matched by NOTE_EXT
+ * below, which is checked after this and files them without asking.
+ */
+const DOC_EXT: Set<string> = CONVERTIBLE;
 const NOTE_EXT = new Set([".txt", ".md"]);
 
 const SOP_HINT_RE = /(sop|policy|spec|requirement|domain)/i;
@@ -39,10 +52,11 @@ const UI_HINT_RE = /(ui|screen|mock|wireframe|figma)/i;
  * Rules (deterministic, no LLM):
  *   - .png/.jpg/.jpeg/.gif/.webp           → ui/
  *   - .mp3/.wav/.m4a/.webm/.ogg/.flac      → audio (transcribe → transcripts/)
- *   - .docx/.pdf/.doc containing "sop"     → sop/
- *   - .docx/.pdf/.doc containing
+ *   - any convertible document containing
+ *       "sop"|"policy"|"spec"|…            → sop/
+ *   - any convertible document containing
  *       "transcript"|"meeting"|"call"      → transcripts/
- *   - .docx/.pdf/.doc otherwise            → ambiguous (caller asks)
+ *   - any convertible document otherwise   → ambiguous (caller asks)
  *   - .txt/.md                              → notes/
  *
  * `hint` lets the caller force a subfolder when the user has already disambiguated.

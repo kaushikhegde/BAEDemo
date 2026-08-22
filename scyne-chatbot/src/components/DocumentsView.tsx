@@ -9,6 +9,7 @@ import { OpsState, FilterSelect, ClearFilters } from "./OpsState";
 import { TargetPicker } from "./TargetPicker";
 import { DocumentFolder, type FolderSpec } from "./DocumentFolder";
 import { DocumentPreview } from "./DocumentPreview";
+import { DOC_ACCEPT, AUDIO_ACCEPT, IMAGE_ACCEPT } from "../lib/uploadFormats";
 
 /**
  * Every document the pipeline will read, in the folders it reads them from.
@@ -34,10 +35,7 @@ import { DocumentPreview } from "./DocumentPreview";
 const ALL = "";
 const VIEW_KEY = "scyne_docs_view";
 
-/** What each folder accepts, matching AttachmentButton's zones. */
-const DOC_ACCEPT = ".docx,.pdf,.doc,.txt,.md,.xlsx,.xls,.pptx,.csv";
-const AUDIO_ACCEPT = ".mp3,.wav,.m4a,.webm,.ogg,.flac";
-const IMAGE_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp";
+/** What each folder accepts — the same list the chat attach button uses. */
 
 /** The four discovery folders, in the order stage.mjs reports them. */
 const FEATURE_FOLDERS: Array<{ dir: string; hint: UploadHint & FolderSpec["hint"]; accept: string; blurb: string }> = [

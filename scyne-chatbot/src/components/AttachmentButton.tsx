@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { uploadFile, type UploadFileSuccess, type UploadHint } from "../api";
+import { DOC_ACCEPT, AUDIO_ACCEPT, IMAGE_ACCEPT } from "../lib/uploadFormats";
 
 interface Props {
   project: string | null;
@@ -31,28 +32,28 @@ const ZONES: Zone[] = [
     hint: "ui",
     label: "UI screens",
     blurb: "Mockups & screenshots",
-    accept: ".png,.jpg,.jpeg,.gif,.webp",
+    accept: IMAGE_ACCEPT,
     icon: <ImageIcon className="size-5" />,
   },
   {
     hint: "transcripts",
     label: "Transcripts",
     blurb: "Meetings — docs or audio",
-    accept: ".docx,.pdf,.doc,.txt,.md,.mp3,.wav,.m4a,.webm,.ogg,.flac",
+    accept: `${DOC_ACCEPT},${AUDIO_ACCEPT}`,
     icon: <Mic className="size-5" />,
   },
   {
     hint: "sop",
     label: "SOP / policy",
     blurb: "SOP & policy docs",
-    accept: ".docx,.pdf,.doc,.txt,.md",
+    accept: DOC_ACCEPT,
     icon: <FileText className="size-5" />,
   },
   {
     hint: "notes",
     label: "Notes",
     blurb: "Anything else",
-    accept: ".docx,.pdf,.doc,.txt,.md",
+    accept: DOC_ACCEPT,
     icon: <StickyNote className="size-5" />,
   },
   // Templates land under projects/<p>/<f>/requirements/templates/. The BA prefers
@@ -62,7 +63,7 @@ const ZONES: Zone[] = [
     hint: "template",
     label: "Templates",
     blurb: "House style — overrides examples/",
-    accept: ".docx,.pdf,.doc,.txt,.md",
+    accept: DOC_ACCEPT,
     icon: <LayoutTemplate className="size-5" />,
   },
   // Design uploads land under projects/<p>/<f>/design/. The Developer (UI agent)
@@ -72,14 +73,14 @@ const ZONES: Zone[] = [
     hint: "style-guide",
     label: "Style guide",
     blurb: "Palette, typography, brand tokens",
-    accept: ".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.doc,.txt,.md",
+    accept: `${IMAGE_ACCEPT},${DOC_ACCEPT}`,
     icon: <Palette className="size-5" />,
   },
   {
     hint: "example-screen",
     label: "Example screen",
     blurb: "Visual reference for the UI agent",
-    accept: ".png,.jpg,.jpeg,.gif,.webp",
+    accept: IMAGE_ACCEPT,
     icon: <Layout className="size-5" />,
   },
 ];

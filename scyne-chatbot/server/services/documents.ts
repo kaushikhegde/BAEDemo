@@ -18,12 +18,24 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { CONVERTIBLE, PLAIN_TEXT } from "../../../scripts/convert-to-md.mjs";
 
 /** The subfolders a feature's discovery material lands in. Mirrors stage.mjs. */
 export const DISCOVERY_SUBFOLDERS = ["SOP", "Transcripts", "Notes", "UI"] as const;
 
-/** What the converter can turn into markdown. Mirrors convert-to-md.mjs. */
-const CONVERTIBLE = new Set([".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls", ".pptx", ".csv", ".html", ".htm"]);
+/**
+ * What the converter can turn into markdown — IMPORTED, never copied.
+ *
+ * This was a hand-written set with a comment claiming it mirrored
+ * convert-to-md.mjs, and it had drifted in both directions: it listed .pptx,
+ * .xls and .csv, which the converter could not read, and omitted .xml and
+ * .ipynb, which it could. So a PowerPoint was badged "not converted — no stage
+ * can read this yet", promising a conversion that was never going to happen,
+ * while a genuinely convertible notebook was filed as "other".
+ *
+ * A copy of somebody else's list is a copy that drifts. There is one list.
+ */
+const READABLE_SOURCES = new Set([...CONVERTIBLE, ...PLAIN_TEXT]);
 const IMAGE = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 const AUDIO = new Set([".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"]);
 
@@ -75,7 +87,7 @@ function kindOf(name: string): DocumentKind {
   if (AUDIO.has(ext)) return "audio";
   // A source still sitting here means the conversion did not happen — which is
   // precisely why a stage that looks readable is refused with `no_documents`.
-  if (CONVERTIBLE.has(ext)) return "unconverted";
+  if (READABLE_SOURCES.has(ext)) return "unconverted";
   return "other";
 }
 
