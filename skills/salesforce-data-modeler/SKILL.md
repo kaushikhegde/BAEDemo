@@ -264,9 +264,9 @@ review.
 ---
 
 ````markdown
-# Salesforce Service Cloud Data Model — [Client / Product Name]
+# Salesforce Data Model — [Client / Product Name]
 
-**Version:** 0.1 (Draft) · **Date:** [date] · **Scope:** [releases / phases covered]
+**Version:** 0.1 (Draft) · **Date:** [date] · **Platform:** [name the cloud(s) this design actually draws from — Service Cloud alone, or Service Cloud + Energy & Utilities Cloud, etc. Do not default this to "Service Cloud" — say what Step 3 actually decided, including when that decision was "not confirmed, defaulted to standard-object-first Service Cloud pending confirmation."] · **Scope:** [releases / phases covered]
 
 ## 1. Executive Summary
 
