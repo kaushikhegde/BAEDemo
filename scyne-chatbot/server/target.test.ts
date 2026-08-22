@@ -34,6 +34,15 @@ describe("the target block", () => {
     expect(p).toContain("DO NOT re-ask");
   });
 
+  // The mirror of the case above: a pinned FEATURE is a complete target for a
+  // project-level stage too, and no reason to ask whether to change scope.
+  it("tells the model a project-level stage ignores a pinned feature", () => {
+    const p = prompt({ project: "SA Demo", feature: "Demo Feature" });
+    expect(p).toContain("trigger_capability_map");
+    expect(p).toContain("trigger_personas");
+    expect(p).toContain("take NO feature");
+  });
+
   it("is absent when nothing is pinned", () => {
     expect(prompt(null)).not.toContain("Currently selected target");
     expect(prompt({ project: null, feature: null })).not.toContain("Currently selected target");

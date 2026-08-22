@@ -227,10 +227,18 @@ If the user names a feature that is NOT listed under a project that IS listed, t
   // and "create capabilities & process map", so it asked "Which project is that
   // for?" directly under a prompt reading `SA Demo ›`. The compact prompt below
   // already handled project-only; only the full one did not.
+  //
+  // The feature branch states the same rule for the mirror case. Everything
+  // below the model already handles a pinned feature — the two tools declare
+  // no `feature` property at all, `stageTrigger` drops one if it arrives, and
+  // both the gate and the staging read every feature's documents — so a pin
+  // could never narrow the run. What it could cost is a turn: this branch says
+  // "call the relevant tool with project AND feature", and that is the only
+  // sentence in the prompt pulling towards asking about scope first.
   const targetBlock = !target?.project
     ? ""
     : target.feature
-      ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n`
+      ? `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked **${target.project} / ${target.feature}** in the target picker. Treat this as the active project + feature and DO NOT re-ask for them. When the user says "build the UI", "yes use that", "go", "fire it", etc., immediately call the relevant tool with \`project="${target.project}"\` and \`feature="${target.feature}"\`. Only ask again if the user explicitly names a different project or feature.\n\n- The PROJECT-level stages — \`trigger_capability_map\`, \`trigger_personas\`, \`trigger_ui_build\` — take NO feature. A pinned feature does not narrow them and is no reason to ask anything: they read every document the project has, across all of its features, including this one. Fire them straight away with \`project="${target.project}"\` alone.\n`
       : `\n## Currently selected target (from the UI's target picker)\n\nThe user has already picked the project **${target.project}**. No feature is selected yet.\n\n- **Never ask which project they mean.** It is ${target.project}. Pass \`project="${target.project}"\` to every tool.\n- The PROJECT-level stages — \`trigger_capability_map\`, \`trigger_personas\`, \`trigger_ui_build\` — take NO feature. This target is already complete for them, so fire them straight away rather than asking anything.\n- Only a FEATURE-level stage (requirements, UI mockups, data model, solution architecture, test cases, solution design) still needs a feature. Ask for that one thing, listing the features under ${target.project}, and do not re-ask for the project alongside it.\n`;
   return `You are the Scyne Requirements Assistant. The user is a Scyne consultant.${defBlock}${brandBlock}
 
