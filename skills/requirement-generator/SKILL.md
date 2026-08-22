@@ -127,7 +127,13 @@ Schema fields:
 - out_of_scope: array of strings
 - personas: array of {name, permission_set_group, permission_set, sharing_rules}
 - process: {l3_number, l3_name, l4_number, l4_name}
-- stories: array of {number, role, want, so_that, acceptance_criteria[]}
+- stories: array of {number, role, want, so_that, acceptance_criteria[], priority, screen_ref}
+  - `priority`: the source's own Must/Should/Could (or equivalent) where the
+    requirement states one — read it, don't invent it. Absent if the source is
+    silent.
+  - `screen_ref`: the mockup screen id this story is realised by, e.g. `SCR-004`
+    — only fillable once `solutions/UI/outputs/mockups.json` exists for this
+    feature (usually not on a first pass; see Revision mode). Absent otherwise.
 - key_design_decisions: array of {decision, detail, source}
 - validation_rules: array of {scenario, rule, outcome, notes}
 - test_cases: array of {id, scenario, steps[], expected}
@@ -183,9 +189,15 @@ Array of Jira-create payloads using Atlassian Cloud REST v3 format. Each item:
 - fields.project.key, fields.issuetype.name = "Story", fields.parent.key (epic)
 - fields.summary: "<L4.N.M> As an <role>, I want <want>, So that <so_that>"
 - fields.description: wiki-format body (template below)
-- fields.priority.name = "Medium"
+- fields.priority.name: from the source's own Must/Should/Could where it states
+  one — Must → "Highest", Should → "Medium", Could → "Low". Default to
+  "Medium" only when the source is genuinely silent on priority; don't collapse
+  a real Must down to "Medium" because that's easier to write once for every
+  story. A backlog that can't tell mandatory from nice-to-have isn't useful for
+  sequencing work.
 - fields.labels = ["ai-generated"]
-- _meta: {story_number, attach_images[], confluence_anchor}
+- _meta: {story_number, attach_images[], confluence_anchor, screen_ref}
+  - `screen_ref`: this story's `screen_ref` from extraction.json, when set.
 
 **Description body template (Atlassian wiki markup):**
 
@@ -196,6 +208,8 @@ h3. Detail Description
 *User Group:* <persona>
 
 *Process:* <L4 number> <L4 name>.
+
+*Screen:* <screen_ref, e.g. "SCR-004 — see the feature's UI mockups"> (omit this line entirely if screen_ref is not set — don't write "N/A")
 
 *Acceptance Criteria (AC):*
 * <criterion 1>
@@ -212,6 +226,7 @@ Same content as stories.json but rendered as a readable markdown checklist for B
 - Story summary always: `<L4.N.M> As an <role>, I want <verb-phrase>, So that <outcome-phrase>.`
 - Personas always written as full name + abbreviation, e.g. "Eligibility Officer (EO)".
 - AC bullets are declarative sentences, not Gherkin. Group related ACs into 2-4 bullets per story.
+- **Each AC bullet must be narrower and more testable than the requirement it cites, not a restatement of it.** "The landing page allows filtering of case work by status/stage" (a paraphrase of the source requirement) fails this — a developer can build against a paraphrase but can't verify against one. Say what's actually checkable: which values the filter takes, what the default is, what's shown when the result is empty. If the source doesn't say, that's a gap — name it in `gaps.md` rather than writing a vaguer bullet to cover for it. This applies most where the source itself is one broad line (a single RFT requirement covering several behaviours) — decompose it into what THIS story specifically does, don't just echo the line back three times across three stories.
 - Australian English spelling (Behaviour, Authorise, Organisation).
 - Preserve the **exact** placeholder string `Placeholder – Maintained manually. Do not populate via automation.` in sections 3.3.1, 7, 8, 10, 11. Section 9 ("Links") is **not** a placeholder — see the push step below.
 - If a section has no content, use a single-row table with N/A values and a Notes column explaining why.
@@ -293,3 +308,20 @@ Specific to this skill:
   they are, even if the instruction is about a nearby section.
 - Update `extraction.json` so the source mapping still explains where the changed
   content came from.
+- **A refresh once the data model, architecture and UI mockups exist is the
+  other common revision here — and it's the one that actually makes these
+  stories build-ready.** On a first pass this skill runs with none of those
+  available, so a story can only describe behaviour in the client's own words.
+  Once they exist:
+  - Ground each AC bullet in the data model's real object/field names, types
+    and picklist values where they cover what the bullet describes — replace
+    "the landing page allows filtering by status" with "filtered by
+    `Case.Status`" once that's what the field is actually called.
+  - Set `screen_ref` from `solutions/UI/outputs/mockups.json`'s `realises.stories`
+    (it already maps screen → story; this is just reading it in the other
+    direction) and add the `*Screen:*` line to the description.
+  - Set `priority` from the source if it wasn't available on the first pass.
+  - Do **not** rewrite the story's intent or renumber it — this is grounding
+    existing stories in what downstream stages discovered, not regenerating
+    them. Keep the change small enough that a reviewer can see exactly what got
+    more specific and why.
