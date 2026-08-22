@@ -117,6 +117,68 @@ describe("console", () => {
     expect(html).not.toMatch(/<table[^>]*class="[^"]*\bgrid\b/);
   });
 
+  // A link to something that is not there any more.
+  //
+  // The reported symptom: a `#run/<id>` tab left open across a database reset.
+  // Signing back in routed straight to it, `GET /runs/<id>` answered 404, and
+  // `route()`'s catch rendered the red "Something went wrong" fault card with
+  // the raw server message in it. Nothing was wrong — the run had been deleted,
+  // by the person reading the error. A fault card for a dead link sends someone
+  // hunting a broken engine, and it offers no way back: the hash stays, so
+  // every reload repeats it.
+  describe("a hash pointing at a deleted record", () => {
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+
+    it("carries the HTTP status on the error api() throws", async () => {
+      // Without this the catch cannot tell 404 from 500, because the only thing
+      // it had was a message string written by whichever route failed.
+      const src = script.slice(script.indexOf("let ACTING_ORG"), script.indexOf("const esc ="));
+      const api = new Function("fetch", src + "; return api;")(
+        async () => ({ ok: false, status: 404, json: async () => ({ error: "run 'x' not found" }) }));
+      await expect(api("/runs/x")).rejects.toMatchObject({ status: 404, message: "run 'x' not found" });
+    });
+
+    it("still throws a plain error for a real fault", async () => {
+      const src = script.slice(script.indexOf("let ACTING_ORG"), script.indexOf("const esc ="));
+      const api = new Function("fetch", src + "; return api;")(
+        async () => ({ ok: false, status: 500, json: async () => ({ error: "boom" }) }));
+      await expect(api("/runs/x")).rejects.toMatchObject({ status: 500 });
+    });
+
+    it("says what is gone and where to go instead", () => {
+      const src = script.slice(script.indexOf("const esc ="), script.indexOf("const mdlite ="));
+      const goneCard = new Function(src + "; return goneCard;")();
+
+      const run = goneCard("run/9f3c-dead");
+      expect(run).toContain("run");
+      expect(run).toContain("9f3c-dead");
+      expect(run).toContain("#runs");
+      // The whole point: this is not the fault card.
+      expect(run).not.toContain("Something went wrong");
+
+      // Each kind points back at its OWN list, not at a generic home.
+      expect(goneCard("issue/SCY-7")).toContain("#issues");
+      expect(goneCard("agent/dataModeler")).toContain("#org");
+      expect(goneCard("skill/salesforce-data-modeler")).toContain("#skills");
+    });
+
+    it("escapes the id, which comes from the URL bar", () => {
+      const src = script.slice(script.indexOf("const esc ="), script.indexOf("const mdlite ="));
+      const goneCard = new Function(src + "; return goneCard;")();
+      expect(goneCard('run/<img src=x onerror=alert(1)>')).not.toContain("<img");
+    });
+
+    it("is what route() reaches for on a 404", () => {
+      // Structural, because route() needs a live DOM. The branch has to come
+      // BEFORE the generic fault card or the fault card swallows it.
+      const catchBlock = script.slice(script.indexOf("} catch (e) {", script.indexOf("async function route()")));
+      const gone = catchBlock.indexOf("goneCard");
+      const fault = catchBlock.indexOf("Something went wrong");
+      expect(gone, "route() should render goneCard").toBeGreaterThan(-1);
+      expect(gone).toBeLessThan(fault);
+    });
+  });
+
   it("the browser script actually parses", () => {
     // The real guard. Grepping the HTML for `id="hire"` proves a string is
     // present, not that the page RUNS — a stray apostrophe inside a

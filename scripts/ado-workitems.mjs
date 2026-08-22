@@ -28,10 +28,17 @@
  *        [--type "User Story"]        override the discovered type
  *        [--parent <id>]              link each item under this work item
  *        [--summary-url <url>]        substituted for {{PRODUCT_SUMMARY_URL}}
- *        [--artefact-key <key>]       e.g. "CRM-Management/requirements" — with
- *                                     --published-json, adds a real Links-tab
- *                                     Wiki relation to each item, on top of the
- *                                     inline hyperlink --summary-url gives you
+ *        [--published-json <file>]    projects/<project>/.published.json
+ *        [--artefact-key <key>]       e.g. "CRM-Management/requirements".
+ *                                     With --published-json it does two things
+ *                                     from the one record: adds a real
+ *                                     Links-tab Wiki relation to each item,
+ *                                     and supplies --summary-url when none was
+ *                                     passed — which is what lets the
+ *                                     requirements workflow run this as a
+ *                                     plain `exec` step, since the page URL
+ *                                     does not exist when that command is
+ *                                     compiled.
  *        [--dry-run] [--json]
  *
  * Re-running UPDATES rather than duplicating: the created id is written back
@@ -53,19 +60,25 @@
 
 import fs from "node:fs/promises";
 import process from "node:process";
-import { API, adoFetch, fail, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished } from "./lib/ado.mjs";
+import { API, adoFetch, fail, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished }
+  from "./lib/ado.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const json = Boolean(flags.json);
 const say = (s) => { if (!json) console.log(s); };
 
 const storiesFile = positional[0];
-if (!storiesFile) fail(`usage: node scripts/ado-workitems.mjs <stories.json> [--parent <id>] [--summary-url <url>]`);
+if (!storiesFile) fail(`usage: node scripts/ado-workitems.mjs <stories.json> [--parent <id>]\n  [--summary-url <url> | --published-json <file> --artefact-key <key>]`);
 
 // Same target resolution as ado-publish.mjs: the Scyne project's own
 // .published.json, never an installation-wide environment default.
-const target = await readAdoTarget(
-  typeof flags["published-json"] === "string" ? flags["published-json"] : null);
+const publishedJson = typeof flags["published-json"] === "string" ? flags["published-json"] : null;
+// Read once, here, because BOTH of the things this file does with a published
+// page need it: resolving the summary URL when --summary-url is absent, and
+// building the Links-tab wiki relation. Two consts reading one flag is how the
+// two quietly stop agreeing about which page an item points at.
+const artefactKey = typeof flags["artefact-key"] === "string" ? flags["artefact-key"] : null;
+const target = await readAdoTarget(publishedJson);
 
 const ado = await loadAdo({
   org: flags.org || target?.org,
@@ -114,18 +127,69 @@ const raw = JSON.parse(await fs.readFile(storiesFile, "utf8").catch(() => fail(`
 const stories = Array.isArray(raw) ? raw : (raw.stories ?? raw.items ?? []);
 if (!stories.length) fail(`${storiesFile} contains no stories.`);
 
-const summaryUrl = typeof flags["summary-url"] === "string" ? flags["summary-url"] : null;
+/**
+ * The wiki URL substituted for `{{PRODUCT_SUMMARY_URL}}` in every description.
+ *
+ * `--summary-url` still wins, but it no longer has to be supplied. The page
+ * was published moments before this runs, and `ado-publish.mjs` recorded its
+ * URL under `ado.<artefact-key>` in the same `.published.json` this script
+ * already reads its target from — so the URL is on disk by the time it is
+ * needed.
+ *
+ * That is what lets the backlog half of the requirements stage be an ordinary
+ * `exec` step. A workflow command is a fixed string compiled before the run;
+ * it cannot name a URL that will not exist until the step before it has
+ * finished. Reading it back from the record the publish just wrote can.
+ */
+async function resolveSummaryUrl() {
+  const explicit = flags["summary-url"];
+  if (typeof explicit === "string" && explicit) return explicit;
+
+  if (!publishedJson || !artefactKey) return null;
+
+  const record = (await readPublished(publishedJson))?.ado?.[artefactKey] ?? null;
+  if (!record) return null;
+
+  if (record.url) {
+    say(`Summary URL read from ${publishedJson} -> ado.${artefactKey}`);
+    return record.url;
+  }
+
+  // `ado-publish.mjs` records `url` alongside `wikiPath`; a record written by
+  // hand after a `wiki_upsert_page` tool call may carry only the path. Rebuild
+  // it from the same parts that script uses rather than failing the whole
+  // backlog over a missing convenience field — the page identity is the path,
+  // and that is what is actually recorded.
+  const pagePath = record.wikiPath ?? record.path ?? null;
+  const wikiName = record.wiki ?? null;
+  if (pagePath && wikiName) {
+    const built = `${projectPath(ado)}/_wiki/wikis/${encodeURIComponent(wikiName)}` +
+      `?pagePath=${encodeURIComponent(pagePath)}`;
+    say(`Summary URL rebuilt from ado.${artefactKey}.wikiPath (no url recorded)`);
+    return built;
+  }
+  return null;
+}
+const summaryUrl = await resolveSummaryUrl();
+
+/**
+ * The work item every story is linked under, when there is one.
+ *
+ * `--parent` wins. The fallback is the workflow param, which reaches an exec
+ * step through the environment rather than through a `{placeholder}` in its
+ * command: the engine's interpolator THROWS on a placeholder the issue does
+ * not carry, and `adoParentEpicId` is optional on every run.
+ */
+const parentId = flags.parent ?? process.env.SCYNE_PARAM_ADOPARENTEPICID ?? null;
+if (parentId) say(`Linking each new item under work item #${parentId}`);
 
 // A real Links-tab relation, not just the inline hyperlink --summary-url
 // gives the description. Optional: needs --published-json AND --artefact-key
 // to name which published page to link, so an invocation without them just
 // skips this — the inline hyperlink still happens regardless.
-const publishedJsonPath = typeof flags["published-json"] === "string" ? flags["published-json"] : null;
-const artefactKey = typeof flags["artefact-key"] === "string" ? flags["artefact-key"] : null;
-
 async function resolveWikiArtifactUri() {
-  if (!publishedJsonPath || !artefactKey) return null;
-  const record = (await readPublished(publishedJsonPath))?.ado?.[artefactKey];
+  if (!publishedJson || !artefactKey) return null;
+  const record = (await readPublished(publishedJson))?.ado?.[artefactKey];
   if (!record?.wikiId || !record?.wikiPath) return null;
 
   const project = await adoFetch(ado, `${orgUrl(ado)}/_apis/projects/${encodeURIComponent(ado.project)}?api-version=${API}`);
@@ -256,14 +320,14 @@ for (const story of stories) {
       `${projectPath(ado)}/_apis/wit/workitems/${existingId}?api-version=${API}`,
       { method: "PATCH", headers: { "Content-Type": "application/json-patch+json" }, body: JSON.stringify(ops) });
   } else {
-    if (flags.parent) {
+    if (parentId) {
       // Hierarchy-Reverse points from the CHILD to its parent, which is the
       // direction this link has to be created in.
       ops.push({
         op: "add", path: "/relations/-",
         value: {
           rel: "System.LinkTypes.Hierarchy-Reverse",
-          url: `${projectPath(ado)}/_apis/wit/workItems/${flags.parent}`,
+          url: `${projectPath(ado)}/_apis/wit/workItems/${parentId}`,
         },
       });
     }

@@ -109,7 +109,15 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
         fail(`${w.key} step ${i}: publish is not preceded by the ensure-ado-project step`);
       } else ensured++;
 
-      const verifier = w.steps[i + 1] as any;
+      // The verifier sits at i+1, or at i+2 with the work-item step between
+      // them — and nothing else. Deliberately still position-dependent rather
+      // than "somewhere after": the point of this check is that a refactor
+      // cannot quietly move the judge away from the thing it judges, and a
+      // search-forward would accept a verifier six steps and a gate later.
+      const between = w.steps[i + 1] as any;
+      const gap = between?.type === "exec" &&
+        String(between.cmd ?? "").includes("ado-workitems") ? 1 : 0;
+      const verifier = w.steps[i + 1 + gap] as any;
       if (verifier?.type !== "exec" || !String(verifier.cmd ?? "").includes("verify-published")) {
         fail(`${w.key} step ${i}: publish is not followed by its verifier`);
       } else if (verifier.rewindOnFailure !== i) {
@@ -138,6 +146,44 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
       }
     }
   }
+
+// The backlog is created by a step, and by NOTHING ELSE.
+//
+// These two have to agree or a client's backlog is written twice, and a
+// duplicated backlog is the one failure in this pipeline that re-running
+// cannot undo. So: every workflow that publishes the requirements stage
+// carries exactly one `ado-workitems` step, and no publish prompt anywhere
+// still tells an agent to create work items itself.
+//
+// SA-Power-Networks is why the step exists — 45 stories, page published, zero
+// work items, agent exit 0 — and why the prompt half was deleted rather than
+// left as a fallback: an instruction a model may or may not follow, running
+// beside a script that always does, is how you get 90 items instead of 45.
+{
+  for (const w of buildWorkflows()) {
+    const backlog = w.steps.filter(st =>
+      st.type === "exec" && String((st as any).cmd ?? "").includes("ado-workitems"));
+    const should = w.key === "requirements" || (w as any).variantOf === "requirements";
+    if (should && backlog.length !== 1) {
+      fail(`${w.key}: expected exactly 1 ado-workitems step, found ${backlog.length}`);
+    }
+    if (!should && backlog.length) {
+      fail(`${w.key}: has an ado-workitems step but does not publish the requirements stage`);
+    }
+
+    for (const [i, st] of w.steps.entries()) {
+      if (st.type !== "agent" || st.phase !== "publish") continue;
+      // The prompt may still NAME the tool — telling the publisher "do not
+      // call `wit_work_item_write`" is worth more than silence, because the
+      // stage's deliverable obviously includes a backlog and an agent left to
+      // infer will help. What it may not do is name it as an instruction.
+      const prompt = String((st as any).prompt ?? "");
+      if (prompt.includes("wit_work_item_write") && !prompt.includes("do not call")) {
+        fail(`${w.key} step ${i}: the publish prompt still tells the agent to create work items`);
+      }
+    }
+  }
+}
 }
 
 console.log(bad

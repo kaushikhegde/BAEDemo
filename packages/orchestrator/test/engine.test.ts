@@ -96,6 +96,32 @@ describe("engine", () => {
     expect(timeline).toContain("running");
   });
 
+  /**
+   * An exec step's command can only name a param every run carries:
+   * `interpolate` throws on one the issue does not have, so
+   * `--parent {adoParentEpicId}` would block every run that omits it. Optional
+   * params reach the command's environment instead — which is how
+   * `ado-workitems.mjs` receives a parent epic without the requirements
+   * workflow breaking for the runs (all of them, today) that set none.
+   */
+  it("passes the workflow's params to an exec step as SCYNE_PARAM_*", async () => {
+    let seen: NodeJS.ProcessEnv | undefined;
+    const capturing = async (_c: string, _w: string, _t?: number, env?: NodeJS.ProcessEnv) => {
+      seen = env; return { code: 0, stdout: "", stderr: "" };
+    };
+    const engine = createEngine({ repo, config: config(dir), exec: capturing });
+    const issue = await engine.start("requirements", { project: "P", feature: "F", adoParentEpicId: "4242" });
+    await engine.advance(issue.id);
+
+    expect(seen?.SCYNE_PARAM_PROJECT).toBe("P");
+    expect(seen?.SCYNE_PARAM_FEATURE).toBe("F");
+    // Upper-cased whole, not snake_cased: the reader is a shell, and the
+    // script looks the name up literally.
+    expect(seen?.SCYNE_PARAM_ADOPARENTEPICID).toBe("4242");
+    // The existing contract is untouched.
+    expect(seen?.WORKSPACE_PATH).toBe(dir);
+  });
+
   it("narrates an exec step's label when it has one", async () => {
     const cfg = config(dir);
     cfg.workflows[0].steps[0] = { type: "exec", cmd: "stage {project}", label: "Gathering the inputs" };

@@ -155,11 +155,20 @@ export function createEngine(deps: {
    * scripts already read. Agent steps are the other way round (cwd = workRoot),
    * because their prompts name `projects/{project}/…` relatively.
    */
-  const execEnv = (): NodeJS.ProcessEnv => ({
+  const execEnv = (vars: Record<string, string> = {}): NodeJS.ProcessEnv => ({
     ...process.env,
     WORKSPACE_PATH: workRoot,
     SCYNE_WORK_ROOT: workRoot,
     SCYNE_INSTALL_ROOT: installRoot,
+    // How an exec step reaches an OPTIONAL param. It cannot name one in its
+    // command: `interpolate` throws on a placeholder the issue does not carry,
+    // so `--parent {adoParentEpicId}` would block every run that omits it —
+    // which is exactly how the requirements publish broke once, and why
+    // `ensureAdoProjectStep` restricts itself to `{project}`. The agent side
+    // has had this escape all along: `buildPrompt` appends every param as a
+    // `Parameters:` block for precisely the same reason.
+    ...Object.fromEntries(
+      Object.entries(vars).map(([k, v]) => [`SCYNE_PARAM_${k.toUpperCase()}`, v])),
   });
 
   // Per-issue in-memory lock. advance() must be safe to call twice
@@ -341,7 +350,7 @@ export function createEngine(deps: {
         // installRoot: the command says `node scripts/stage.mjs …`, and that
         // path is relative to where the scripts live. The project tree reaches
         // it through WORKSPACE_PATH in execEnv() instead.
-        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv());
+        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars));
         if (r.code !== 0) {
           // The label in the headline, the command inside the fence with the
           // stderr. A failure is the one moment the exact command is worth

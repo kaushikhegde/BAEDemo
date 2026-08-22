@@ -26,6 +26,7 @@ import {
 } from "./services/documents.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
 import { ensureAdoProject } from "./services/adoProject.js";
+import { publishedLinks, mergeLinks } from "./publishedLinks.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
 // rather than kept as a second local copy. This chatbot previously carried a
 // stale, Claude-vocabulary-only fork (services/runTranscript.ts) that had
@@ -876,8 +877,10 @@ app.get("/api/status/:issueId", async (req, res) => {
     // Sort comments by createdAt ascending so they read like a timeline
     flatComments.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 
-    // Extract Confluence + Jira URLs from all comments
-    const links = extractLinks(flatComments.map((c) => String(c.body)));
+    // Extract Confluence + Jira URLs from all comments. This is only HALF the
+    // answer and used to be all of it — see `commentLinks` merged with the
+    // disk-derived set below.
+    const commentLinks = extractLinks(flatComments.map((c) => String(c.body)));
 
     // Derive a coarse current "stage" from the state of the tree. The stage KEYS
     // stay stable across flows (the frontend StagePill maps keys → tones); only
@@ -920,7 +923,42 @@ app.get("/api/status/:issueId", async (req, res) => {
       // The UI-build description annotates its feature line with a parenthetical.
       return m ? m[1].replace(/\s{2,}\(.*$/, "").trim() || null : null;
     };
-    const target = { project: pick("project"), feature: pick("feature") };
+    // `params` is what the ENGINE was actually given, so it beats re-reading
+    // the prose we wrote for a human. The description parse stays as the
+    // fallback: the UI-build flow and anything created before params were
+    // recorded have only the text.
+    const rootParams = ((tree as any)?.params ?? {}) as Record<string, unknown>;
+    // A blank param is an ABSENT one. `?? pick(...)` alone would take an empty
+    // string as an answer and stop reading the description.
+    const fromParams = (key: string) => {
+      const v = rootParams[key];
+      return typeof v === "string" && v.trim() ? v.trim() : null;
+    };
+    const target = {
+      project: fromParams("project") ?? pick("project"),
+      feature: fromParams("feature") ?? pick("feature"),
+    };
+
+    // The other half of the links, and the half that was missing entirely.
+    //
+    // Nothing writes a published URL into a comment — the engine narrates a
+    // step's label and an agent's duration, deliberately, and the publish
+    // agent's URL goes to its own stdout and nowhere else. So `extractLinks`
+    // over the comments found nothing on a run that had published perfectly,
+    // and the chat announced nothing after an approval. These come from the
+    // records `verify-published.mjs` refuses to let an issue past without, so
+    // they exist for every run that reached `done` — including ones that
+    // finished before this code did.
+    //
+    // Merged rather than replacing: a URL genuinely written into a comment (a
+    // person pasting one, a future step that posts one) should still show.
+    const diskLinks = await publishedLinks(WORKSPACE_PATH, {
+      project: String(target.project ?? ""),
+      feature: target.feature,
+      workflowKey: String((tree as any)?.workflow_key ?? ""),
+    }).catch(() => ({ confluence: [], jira: [] }));
+
+    const links = mergeLinks(commentLinks, diskLinks);
 
     res.json({
       tree,
@@ -1137,6 +1175,10 @@ app.get("/api/history", async (_req, res) => {
     const entries = await Promise.all(
       runs.map(async (run) => {
         let bodies: string[] = [];
+        // The same two halves as /api/status: comments carry no published URL,
+        // so a history built from them alone listed every completed run with an
+        // empty links column. See server/publishedLinks.ts.
+        let disk = { confluence: [] as string[], jira: [] as string[] };
         try {
           const tree = await paperclip.getIssueTree(run.id);
           const collect = (node: any) => {
@@ -1145,6 +1187,12 @@ app.get("/api/history", async (_req, res) => {
             for (const ch of node.children ?? []) collect(ch);
           };
           collect(tree);
+          const params = (tree?.params ?? {}) as Record<string, string>;
+          disk = await publishedLinks(WORKSPACE_PATH, {
+            project: String(params.project ?? ""),
+            feature: params.feature ?? null,
+            workflowKey: String(tree?.workflow_key ?? ""),
+          });
         } catch { /* skip unreadable run */ }
         return {
           id: run.id,
@@ -1152,7 +1200,7 @@ app.get("/api/history", async (_req, res) => {
           title: run.title,
           status: run.status,
           completedAt: run.updatedAt ?? run.createdAt ?? null,
-          links: extractLinks(bodies),
+          links: mergeLinks(extractLinks(bodies), disk),
         };
       }),
     );

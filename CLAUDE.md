@@ -113,10 +113,37 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot does not
 > so a wiki call failing beside a working project call means a scope, not a bad
 > token. `node scripts/ado-publish.mjs --verify` says which.
 >
-> **Publishing runs on the MCP.** The wiki page goes through
-> `wiki_upsert_page`; the stories go through `wit_work_item_write`
-> (`create` / `update` / `add_child`, with `parentId`). Confirmed against the
-> live server, which exposes 40 tools.
+> **The PAGE goes through the MCP; the BACKLOG does not.** The publishing
+> agent calls `wiki_upsert_page` and stops there. The work items are created by
+> the step after it — an `exec` running `scripts/ado-workitems.mjs` — and the
+> publish prompt now says, in as many words, not to call `wit_work_item_write`.
+>
+> That split is the whole lesson of SA-Power-Networks / CRM-Management: 45
+> stories, the wiki page published cleanly, **zero** work items, and the agent's
+> turn finished normally, so the run recorded `succeeded`. Only
+> `verify-published.mjs` caught it, one step later, with the stage already paid
+> for. An exit code says a model stopped talking; it has never said the work
+> happened, and 45 sequential tool calls in one turn is where it stops.
+>
+> A step cannot half-finish quietly (non-zero exit blocks the issue with the
+> real stderr), it is idempotent (`adoId` is written back per story, so a re-run
+> UPDATES rather than duplicating a client's backlog — the one failure here that
+> re-running cannot undo), and it discovers the work item type itself. The
+> prompt half was deleted rather than kept as a fallback: an instruction a model
+> may or may not follow, running beside a script that always does, is how you
+> get 90 work items instead of 45. `check-workflows.mts` asserts both halves.
+>
+> It needs no `--summary-url`: that URL does not exist when the command is
+> compiled, so the script reads it back out of the `ado.<artefact>` record the
+> publish step wrote moments earlier — which is why the publish prompt now
+> insists on the `url` field and not the path alone.
+>
+> **An optional param reaches an `exec` step through the environment**, as
+> `SCYNE_PARAM_<NAME>`, never as a `{placeholder}`: `interpolate` THROWS on a
+> placeholder the issue does not carry, so `--parent {adoParentEpicId}` would
+> block every run that sets none. That is the same trap that broke every
+> requirements publish once already, and why `ensureAdoProjectStep` restricts
+> itself to `{project}`.
 >
 > **The work item type is a PARAMETER, because no MCP tool lists them.** None of
 > those 40 can enumerate a project's work item types, and the name depends

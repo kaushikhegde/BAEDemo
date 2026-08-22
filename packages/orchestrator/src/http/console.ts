@@ -616,7 +616,13 @@ const api = async (p, opts) => {
   if (!r.ok) {
     let detail = "";
     try { detail = (await r.json()).error || ""; } catch (e) { detail = ""; }
-    throw new Error(detail || (p + " responded " + r.status));
+    const err = new Error(detail || (p + " responded " + r.status));
+    /* Carried so a caller can tell "that record is gone" from "the engine is
+       broken". route() rendered both as the same red fault card, which is how
+       a tab left open on #run/<id> across a database reset greeted the next
+       sign-in with an error about a run the reader had deleted themselves. */
+    err.status = r.status;
+    throw err;
   }
   return r.json();
 };
@@ -628,12 +634,38 @@ const send = async (p, method, body) => {
   });
   let out = null;
   try { out = await r.json(); } catch (e) { out = null; }
-  if (!r.ok) throw new Error((out && out.error) || (p + " responded " + r.status));
+  if (!r.ok) {
+    const err = new Error((out && out.error) || (p + " responded " + r.status));
+    err.status = r.status;
+    throw err;
+  }
   return out;
 };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* A deep link whose record is not there any more.
+   Each kind goes back to its OWN list rather than to a generic home, because
+   the thing you wanted is one of those and the list is where the survivors
+   are. Kept separate from the "No such view" card above it: that one means
+   the console has no such SCREEN, this one means the screen is fine and the
+   record has been deleted — usually by whoever is reading this, with a reset. */
+const GONE = {
+  run:      ["run", "#runs", "Runs"],
+  issue:    ["issue", "#issues", "Issues"],
+  agent:    ["agent", "#org", "Org"],
+  bundle:   ["agent", "#org", "Org"],
+  skill:    ["skill", "#skills", "Skills"],
+  workflow: ["workflow", "#config", "Config"],
+};
+const goneCard = (hash) => {
+  const g = GONE[String(hash).split("/")[0]] || ["page", "#runs", "Runs"];
+  return '<div class="empty"><b>That ' + g[0] + ' is not here any more</b>' +
+    'Nothing answers for <span class="mono">' + esc(hash) + '</span>. It was deleted, ' +
+    'or the database has been reset since this link was opened.<br>' +
+    '<a href="' + g[1] + '">Back to ' + g[2] + '</a></div>';
+};
 
 // State as a dot plus its word: the colour is never the only carrier.
 const st = (s) => '<span class="st ' + esc(s) + '">' + esc(String(s).replace(/_/g, " ")) + '</span>';
@@ -2223,6 +2255,13 @@ async function route() {
     }
     await fn();
   } catch (e) {
+    /* A 404 is not a fault. Checked FIRST, or the fault card below swallows it
+       and sends the reader hunting a broken orchestrator. */
+    if (e && e.status === 404) {
+      setHead("Not here", "");
+      view.innerHTML = goneCard(hash);
+      return;
+    }
     setHead("Error", "");
     view.innerHTML = '<div class="card fault"><h3>Something went wrong</h3>' +
       '<p class="hint" style="margin:0">' + esc(e.message) + '</p></div>';

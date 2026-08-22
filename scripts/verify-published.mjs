@@ -222,13 +222,17 @@ if (storiesFile) {
       `The wiki page published, which is why this step got this far. The work`,
       `items are the other half of this stage and they are missing.`,
       ``,
-      `Read the publish run's transcript. If every MCP call was refused, the`,
-      `credential in .mcp.json is the place to look — the server is handed`,
-      `\`PERSONAL_ACCESS_TOKEN\` from the root .env, and a variable name that does`,
-      `not resolve produces a 401 that reads exactly like a bad token.`,
+      `The step BEFORE this one creates them — an exec running`,
+      `scripts/ado-workitems.mjs, which writes each new id straight back into the`,
+      `file above. So reaching this message means that step did not run at all,`,
+      `or something rewrote stories.json after it did. Check the timeline for a`,
+      `"Creating the work items" step; if there is none, this issue was started`,
+      `on a workflow compiled before that step existed and needs restarting`,
+      `rather than resuming.`,
       ``,
-      `The deterministic path does all of this and writes the ids back itself:`,
-      `  node scripts/ado-workitems.mjs ${storiesFile} --summary-url "<the wiki page URL>"`,
+      `To do it by hand — it is idempotent, and updates rather than duplicating:`,
+      `  node scripts/ado-workitems.mjs ${storiesFile} \\`,
+      `    --published-json projects/${project}/.published.json --artefact-key "${artefact}"`,
     ].join("\n"));
   }
 

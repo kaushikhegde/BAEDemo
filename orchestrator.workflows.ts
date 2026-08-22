@@ -221,65 +221,33 @@ function publishPrompt(key: string, s: Stage): string {
     `you use it.)`,
     ...(stories ? [
       ``,
-      `## Then push the stories as work items`,
+      `## The backlog is not yours to create`,
       ``,
-      `Read \`projects/{project}/{feature}/outputs/stories.json\`. For each story,`,
-      `use the MCP's \`wit_work_item_write\` tool:`,
+      `This stage delivers two things — this page, and one work item per story.`,
+      `You publish the page. You do NOT create the work items: the step`,
+      `immediately after this one runs \`scripts/ado-workitems.mjs\`, which reads`,
+      `\`projects/{project}/{feature}/outputs/stories.json\`, discovers the`,
+      `project's work item type, substitutes the wiki URL, creates or UPDATES`,
+      `each item, and writes every new id back into that file.`,
       ``,
-      `- \`action\`: \`create\` — or \`update\`, when the story already carries an`,
-      `  \`adoId\` from a previous run. Check that FIRST. Creating a second work`,
-      `  item for a story that already has one duplicates a client's backlog,`,
-      `  and nothing re-running can undo it.`,
-      `- \`workItemType\`: the \`adoWorkItemType\` parameter below. **Use it exactly`,
-      `  as given and do not substitute a familiar-sounding name.** "User Story"`,
-      `  exists only in the Agile process template; a Basic project has`,
-      `  Epic → Issue → Task and no User Story at all, so guessing fails every`,
-      `  story at once. There is no MCP tool that lists a project's types, which`,
-      `  is why this arrives as a parameter rather than something to look up.`,
-      `- \`fields\`: an **array** of \`{name, value, format}\`, NOT an object keyed`,
-      `  by field name — the server validates this and rejects the object form:`,
+      `That used to be your job, described here as a loop of`,
+      `\`wit_work_item_write\` calls, and it is not one any more because of how it`,
+      `failed. Measured on SA-Power-Networks: 45 stories, the page published,`,
+      `**zero** work items created, and the turn finished normally — exit 0. An`,
+      `exit code says a model stopped talking; it has never said the work`,
+      `happened. Forty-five sequential tool calls in one turn is not a reasoning`,
+      `task, and the one part of it that cannot be undone — a duplicated backlog`,
+      `in a client's project — is the part a retry makes worse.`,
       ``,
-      `      "fields": [`,
-      `        { "name": "System.Title", "value": "<the story summary>" },`,
-      `        { "name": "System.Description", "format": "Markdown",`,
-      `          "value": "<the story description>" },`,
-      `        { "name": "Microsoft.VSTS.Common.AcceptanceCriteria", "format": "Markdown",`,
-      `          "value": "<the acceptance criteria, as a list>" }`,
-      `      ]`,
-      ``,
-      `  \`format\` accepts \`Markdown\` or \`Html\`. Use **Markdown** — the story text`,
-      `  is already markdown, and converting it to HTML only creates escaping`,
-      `  mistakes.`,
-      `- \`parentId\`: the \`adoParentEpicId\` parameter as a NUMBER, ONLY if one is`,
-      `  listed. Omit the key entirely otherwise.`,
-      `- to UPDATE, pass \`updates\`: an array of \`{op, path, value}\` with paths`,
-      `  like \`/fields/System.Title\` — a different shape from \`fields\` above.`,
-      ``,
-      `**Replace \`{{PRODUCT_SUMMARY_URL}}\` in every description** with the wiki`,
-      `URL you published above, before you create anything. A story that reaches`,
-      `a client's backlog still carrying the placeholder is worse than one that`,
-      `never got there.`,
-      ``,
-      `Then write each new work item id back into \`stories.json\` as \`adoId\`, so a`,
-      `later revision updates these items instead of creating a second set.`,
-      ``,
-      `**If any of that goes wrong** — the type is rejected, the ids will not`,
-      `write back, or there are more stories than is comfortable to do one at a`,
-      `time — run this instead, which does all of the above deterministically:`,
-      ``,
-      `    node scripts/ado-workitems.mjs projects/{project}/{feature}/outputs/stories.json \\`,
-      `      --summary-url "<the wiki page URL>" \\`,
-      `      --parent <adoParentEpicId>          # only if that parameter is listed`,
-      ``,
-      `It discovers the work item type from the project, substitutes the URL and`,
-      `refuses to write a description that still contains the placeholder, and`,
-      `writes the ids back itself.`,
+      `So do not call \`wit_work_item_write\` at all. What the next step needs`,
+      `from you is the record described under **Record where it went** above: it`,
+      `reads the page URL back out of \`.published.json\`, so **write the \`url\``,
+      `field**, not only the path.`,
     ] : []),
     ``,
     `## Finish`,
     ``,
-    `Print the wiki page URL on a line of its own as the last thing you`,
-    `output${stories ? ", preceded by a table of story number | work item id | url" : ""}.`,
+    `Print the wiki page URL on a line of its own as the last thing you output.`,
     `Do not change any issue status — the orchestrator moves the issue on when`,
     `you exit cleanly.`,
   ].join("\n");
@@ -333,6 +301,50 @@ function ensureAdoProjectStep(): Step {
     label: "Making sure the Azure DevOps project exists",
     cmd: `node --import tsx scripts/ensure-ado-project.mts "{project}"`,
     timeoutMs: 5 * MINUTES,
+  };
+}
+
+/**
+ * Create the client's backlog, deterministically.
+ *
+ * The requirements stage is the only one whose deliverable is a page AND a set
+ * of work items, and the second half used to be a paragraph in `publishPrompt`
+ * asking the publishing agent to call `wit_work_item_write` once per story.
+ *
+ * SA-Power-Networks / CRM-Management is why it is a step instead. 45 stories,
+ * the wiki page published cleanly, **zero** work items, and the agent's turn
+ * finished normally — so the run recorded `succeeded`, and only
+ * `verify-published.mjs` caught it, one step later, with the stage already
+ * paid for.
+ *
+ * Three things make this the right shape rather than a better prompt:
+ *
+ * - **It cannot half-finish quietly.** A non-zero exit blocks the issue with
+ *   the real stderr. A model that stops after 20 of 45 items exits 0.
+ * - **It is idempotent.** The created id is written back into `stories.json`
+ *   per story, so a re-run UPDATES instead of creating a second backlog — the
+ *   one failure here that no amount of re-running can undo.
+ * - **It discovers the work item type.** "User Story" exists only under Agile;
+ *   a Basic project has Epic -> Issue -> Task and no User Story at all, and no
+ *   MCP tool can enumerate a project's types.
+ *
+ * `--summary-url` is deliberately not passed: that URL does not exist when
+ * this command is compiled. The script reads it back out of the
+ * `ado.<artefact>` record the publish step wrote moments earlier — which is
+ * why the publish prompt now insists on the `url` field, not the path alone.
+ *
+ * No `rewindOnFailure`: this step does the work rather than judging somebody
+ * else's, so a Resume re-runs THIS step, cheaply and idempotently, instead of
+ * spending another publish agent.
+ */
+function createWorkItemsStep(key: string, s: Stage): Step {
+  return {
+    type: "exec",
+    label: "Creating the work items",
+    cmd: `node scripts/ado-workitems.mjs "projects/{project}/{feature}/outputs/stories.json"` +
+         ` --published-json "projects/{project}/.published.json"` +
+         ` --artefact-key "${artefactKeyTpl(key, s)}"`,
+    timeoutMs: 15 * MINUTES,
   };
 }
 
@@ -403,6 +415,10 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
     // every stage and needs none of the domain brief that produced the
     // artefact; being handed one is what turned a publish into a rewrite.
     steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    // Requirements is the only stage delivering a backlog as well as a page.
+    // Same condition as `stories` in publishPrompt, which now tells the
+    // agent NOT to create them — the two must agree or they are made twice.
+    if (key === "requirements") steps.push(createWorkItemsStep(key, s));
     steps.push(verifyPublishStep(key, s, publishAt));
   }
 
@@ -491,6 +507,10 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     // every stage and needs none of the domain brief that produced the
     // artefact; being handed one is what turned a publish into a rewrite.
     steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+    // Requirements is the only stage delivering a backlog as well as a page.
+    // Same condition as `stories` in publishPrompt, which now tells the
+    // agent NOT to create them — the two must agree or they are made twice.
+    if (key === "requirements") steps.push(createWorkItemsStep(key, s));
     steps.push(verifyPublishStep(key, s, publishAt));
   }
   steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
@@ -541,6 +561,10 @@ export function publishWorkflow(key: string, s: Stage): WorkflowDef {
   steps.push(ensureAdoProjectStep());
   const publishAt = steps.length;
   steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
+  // Requirements is the only stage delivering a backlog as well as a page.
+  // Same condition as `stories` in publishPrompt, which now tells the
+  // agent NOT to create them — the two must agree or they are made twice.
+  if (key === "requirements") steps.push(createWorkItemsStep(key, s));
   steps.push(verifyPublishStep(key, s, publishAt));
 
   return {
