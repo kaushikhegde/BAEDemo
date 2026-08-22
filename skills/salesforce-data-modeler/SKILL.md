@@ -79,7 +79,9 @@ this folder before invoking the skill.
 - **Reference catalogue (optional input):** `solutions/DataModel/datamodel-reference/`
   — an org-specific object catalogue, existing schema export, or managed-package
   inventory, where the feature carries one. This is *additional* to the Service
-  Cloud catalogue in **Appendix A**, which is always the baseline.
+  Cloud catalogue in **Appendix A**, which is always the baseline — plus
+  **Appendix D** when the client is a utility (electricity, gas, water) and
+  Energy & Utilities Cloud is in scope; see Step 3.
 - **Project context (input, optional):** `solutions/DataModel/project/` — what the
   parent PROJECT knows, staged down so this feature is designed in the client's
   terms rather than in isolation:
@@ -166,6 +168,18 @@ Read **Appendix A — Service Cloud Standard Object Catalogue** and match each
 extracted entity to a standard object before considering anything custom. Most
 service requirements land on Account, Contact, Case, Asset, Product2,
 Entitlement, Knowledge, and the activity objects.
+
+**If the client is a utility** (the product summary or discovery documents use
+language like NMI, service point, meter, feeder, transformer, premises,
+connection point, tariff, or "utility/energy provider") **and Energy &
+Utilities Cloud is in scope, check Appendix D before falling through to
+custom.** A surprising share of what reads as bespoke utility data — the
+service point itself, the premises, the meter and transformer as devices — is a
+relabelled standard object there, not a genuine gap. Appendix D's own "what is
+genuinely still custom" section names the parts (interval usage volumes,
+network/outage events, notification/compliance records) that correctly remain
+custom even with E&U Cloud licensed — don't skip proposing those just because
+the client is a utility.
 
 Apply this test in order. Go custom only when all four fail:
 
@@ -796,6 +810,75 @@ erDiagram
 
 Verify the diagram parses before delivering — an ERD that fails to render is
 worse than a table.
+
+---
+
+# Appendix D — Energy & Utilities Cloud Standard Object Catalogue
+
+**Licensed add-on, not core.** Everything in Appendix A ships on every Salesforce
+org. Energy & Utilities Cloud (E&U Cloud) is a separate Salesforce Industries
+product the client or platform vendor must license — confirm it's actually in
+scope (check the product summary, the platform vendor's proposal, or ask) before
+proposing its objects. When it isn't licensed, fall back to Appendix A and model
+the utility concepts as custom, same as any other client.
+
+**When to reach for this appendix instead of Appendix A.** If the product
+summary or source documents use language like NMI / National Metering
+Identifier, service point, meter, feeder, transformer, premises, connection
+point, tariff, or "utility provider" — check here before Appendix A's
+`Meter_Reading__c`-style "no standard analogue" fallback. A surprising amount of
+what looks like a bespoke utility data model is a relabelled standard object.
+
+## Core service delivery model
+
+| Object | API name | Use for | Notes |
+|---|---|---|---|
+| Service Point | `ServicePoint` | The metered/measured entry point for a service — this is what a NMI (electricity), MIRN (gas) or equivalent identifier represents. | Fields include `ExternalIdentifier` and `MarketIdentifier` (map NMI here), `ServiceType` (picklist: Electricity/Gas/Water), `Status` (Abolished/Active/Disconnected), `InstallationType` (High Voltage/Multi Meter/Smart Meter), `LoadProfile`, `VoltageLevel`, `Distributor`, `UtilityProvider`. Looks up to `PremisesId`. |
+| Location | `Location` (core platform object, reused here as Premise) | The physical premises/property a Service Point sits at. | `ServicePoint.PremisesId` references this. Do not invent `Premise__c` — `Location` is the standard object across Salesforce, not E&U-specific. |
+| Asset | `Asset` (core platform object) | The meter, transformer, or other physical device at a Service Point. | `ServicePoint.FieldServiceClass` (picklist: Lines/Meter/Transformer) is how E&U Cloud differentiates device types on the standard object rather than via separate `Meter__c`/`Transformer__c` objects — model SAPN's Meter and Transformer the same way, distinguished by Asset Record Type or a classification field, with `Asset.ParentId`/`AssetRelationship` for the meter-under-transformer-under-feeder hierarchy. |
+| Billing Account | `BillingAccount` | Customer's billing controls — bill frequency, format, autopay. | Junction to Account via `AccountBillingAccount`; to Contact via `BillingAccountContact`. |
+| Energy Service Agreement | `EnergyServiceAgreement` / `EnergyServiceAgreementItem` | The commercial agreement for services/commodities purchased by a customer for a specified product, time, location and pricing. | Parented by Account/Contact; Item child carries the detail. This is the E&U analogue of Appendix A's `Contract`/`ServiceContract` for a utility retail relationship. |
+
+## Field service and work management
+
+| Object | API name | Use for | Notes |
+|---|---|---|---|
+| Work Order / Work Order Line Item | `WorkOrder`, `WorkOrderLineItem` | Field work performed for a customer (connections, meter exchange, fault response). | Parented by Account; same object family as Appendix A's Field Service section — E&U Cloud extends it rather than replacing it. |
+| Work Type | `worktype` | Template for the kind of work a Work Order represents. | |
+| Location (again) | `Location` | Also used for warehouses, service vehicles and work sites, not only premises. | Same object as the Premise mapping above — don't create a second custom object for "depot" or "work site". |
+
+## What is genuinely still custom
+
+Verified against the standard object catalogue — these are **not** covered by
+core Energy & Utilities Cloud objects, so a custom object here is the
+standard-object-first discipline being correctly applied, not skipped:
+
+- **High-volume interval meter reads / usage data.** No standard object holds
+  raw interval reads at production volume — and for SAPN specifically, the real
+  Conceptual Data Model already masters this in SAP IS-U (`Register_Meter_Read`),
+  consumed into ADA/Snowflake. The correct answer is usually "reference, don't
+  replicate" rather than a custom Salesforce object at all — see Appendix B's
+  Large Data Volume guidance before proposing `Meter_Reading__c`.
+- **Network/outage events** (planned or unplanned interruptions, switching
+  plans). E&U Cloud's standard catalogue is customer- and asset-centric, not
+  grid-event-centric — this genuinely has no standard analogue and a custom
+  object (or an integration record referencing the system of record, e.g. ADMS)
+  is correct.
+- **Notification/compliance record-keeping** (the CNS-style notification record,
+  per-NMI outcome tracking, evidence and consent capture) — no standard object
+  models this; custom is correct, same conclusion Appendix A would reach.
+
+## Common mis-mappings (E&U-specific)
+
+| Seen in requirements | Wrong instinct | Use instead |
+|---|---|---|
+| "NMI" / National Metering Identifier | `NMI__c` custom field on a custom object | `ServicePoint.ExternalIdentifier` or `MarketIdentifier` |
+| "Premise" / "Property" / "Connection address" | `Premise__c` | `Location`, referenced via `ServicePoint.PremisesId` |
+| "Meter" as its own object | `Meter__c` | `Asset`, Record Type or `ServicePoint.FieldServiceClass = Meter` |
+| "Transformer" as its own object | `Transformer__c` | `Asset`, Record Type or `ServicePoint.FieldServiceClass = Transformer`, related via `AssetRelationship`/`ParentId` |
+| Customer's retail/network service agreement | `Service_Agreement__c` | `EnergyServiceAgreement` / `EnergyServiceAgreementItem` |
+
+*Source: [Energy and Utilities Cloud Standard Objects](https://developer.salesforce.com/docs/atlas.en-us.eu_developer_guide.meta/eu_developer_guide/eu_objects_overview.htm), [ServicePoint object reference](https://developer.salesforce.com/docs/atlas.en-us.eu_developer_guide.meta/eu_developer_guide/sforce_api_objects_servicepoint.htm), [Energy & Utilities Customer Model](https://developer.salesforce.com/docs/platform/data-models/guide/customer-model.html). Verify field-level detail and package availability against the specific org/release before publishing to a client — Industries Cloud packaging changes across releases more than core platform objects do.*
 
 ---
 
