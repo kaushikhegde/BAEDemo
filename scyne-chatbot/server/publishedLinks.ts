@@ -122,14 +122,6 @@ async function readJson(file: string): Promise<any> {
 }
 
 /**
- * Everything above, off disk, in the shape `/api/status` already returns.
- *
- * The keys stay `confluence` / `jira`: what they hold is an Azure DevOps wiki
- * page and its work items, but the frontend's LinksPanel and `/api/history`
- * both read them by those names, and renaming the wire format at the same time
- * as fixing what fills it is how a links panel goes quietly empty twice.
- */
-/**
  * Two link sets into one, order preserved, duplicates dropped.
  *
  * Both sources are kept rather than one replacing the other: a URL genuinely
@@ -137,20 +129,30 @@ async function readJson(file: string): Promise<any> {
  * should still show, and the disk-derived set is the half that was missing.
  */
 export function mergeLinks(
-  a: { confluence: string[]; jira: string[] },
-  b: { confluence: string[]; jira: string[] },
-): { confluence: string[]; jira: string[] } {
+  a: { wiki: string[]; workItems: string[] },
+  b: { wiki: string[]; workItems: string[] },
+): { wiki: string[]; workItems: string[] } {
   return {
-    confluence: [...new Set([...a.confluence, ...b.confluence])],
-    jira: [...new Set([...a.jira, ...b.jira])],
+    wiki: [...new Set([...a.wiki, ...b.wiki])],
+    workItems: [...new Set([...a.workItems, ...b.workItems])],
   };
 }
 
+/**
+ * Everything above, off disk, in the shape `/api/status` already returns.
+ *
+ * The keys are `wiki` / `workItems`, naming what they hold: an Azure DevOps
+ * wiki page and its work items. They were `confluence` / `jira` for as long as
+ * it took the destination change to settle — renaming the wire format in the
+ * same change as moving what fills it is how a links panel goes quietly empty
+ * twice. The one consumer that outlives a deploy is the chat transcript in
+ * localStorage, so `loadMessages` in App.tsx migrates a stored card on read.
+ */
 export async function publishedLinks(
   workspace: string,
   opts: { project: string; feature?: string | null; workflowKey: string },
-): Promise<{ confluence: string[]; jira: string[] }> {
-  const empty = { confluence: [] as string[], jira: [] as string[] };
+): Promise<{ wiki: string[]; workItems: string[] }> {
+  const empty = { wiki: [] as string[], workItems: [] as string[] };
   const keys = artefactKeysFor(opts.workflowKey, opts.feature);
   if (!opts.project || !keys.length) return empty;
 
@@ -159,24 +161,24 @@ export async function publishedLinks(
   if (!published) return empty;
 
   const target: AdoTarget = published.adoTarget ?? {};
-  const confluence: string[] = [];
+  const wiki: string[] = [];
   for (const key of keys) {
     const url = wikiUrl(published?.ado?.[key], target);
-    if (url && !confluence.includes(url)) confluence.push(url);
+    if (url && !wiki.includes(url)) wiki.push(url);
   }
 
   // The requirements stage is the only one whose deliverable is a page AND a
   // backlog — the same condition `publishPrompt` and `verifyPublishStep` use.
-  const jira: string[] = [];
+  const workItems: string[] = [];
   if (opts.feature && keys.some((k) => k.endsWith("requirements"))) {
     const stories = await readJson(path.join(projectDir, opts.feature, "outputs", "stories.json"));
     if (Array.isArray(stories)) {
       for (const s of stories) {
         const url = workItemUrl(s?.adoId ?? s?.fields?.adoId, target);
-        if (url && !jira.includes(url)) jira.push(url);
+        if (url && !workItems.includes(url)) workItems.push(url);
       }
     }
   }
 
-  return { confluence, jira };
+  return { wiki, workItems };
 }

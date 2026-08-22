@@ -2,9 +2,10 @@ import { ArrowUpRight, CheckCircle2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { prettyWikiPage, workItemId } from "@/lib/links";
 
-export function LinksPanel({ links }: { links: { confluence: string[]; jira: string[] } }) {
-  if (!links.confluence.length && !links.jira.length) return null;
+export function LinksPanel({ links }: { links: { wiki: string[]; workItems: string[] } }) {
+  if (!links.wiki.length && !links.workItems.length) return null;
   return (
     <Card elevation={1} className="ring-1 ring-success-500/15 bg-success-50/30">
       <CardHeader>
@@ -12,18 +13,18 @@ export function LinksPanel({ links }: { links: { confluence: string[]; jira: str
           <CheckCircle2 className="size-3.5 text-success-600" />
           Published
           <Badge tone="success" size="sm" className="ml-auto normal-case tracking-normal">
-            {links.confluence.length + links.jira.length}
+            {links.wiki.length + links.workItems.length}
           </Badge>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {links.confluence.length > 0 && (
+        {links.wiki.length > 0 && (
           <div className="space-y-1.5">
             <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
-              Confluence
+              Wiki
             </div>
             <div className="flex flex-col gap-1.5">
-              {links.confluence.map((u) => (
+              {links.wiki.map((u) => (
                 <Button
                   key={u}
                   asChild
@@ -32,7 +33,7 @@ export function LinksPanel({ links }: { links: { confluence: string[]; jira: str
                   className="justify-between w-full"
                 >
                   <a href={u} target="_blank" rel="noreferrer">
-                    <span className="truncate text-left">{prettyConfluence(u)}</span>
+                    <span className="truncate text-left">{prettyWikiPage(u)}</span>
                     <ArrowUpRight className="shrink-0" />
                   </a>
                 </Button>
@@ -40,14 +41,14 @@ export function LinksPanel({ links }: { links: { confluence: string[]; jira: str
             </div>
           </div>
         )}
-        {links.jira.length > 0 && (
+        {links.workItems.length > 0 && (
           <div className="space-y-1.5">
             <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
-              Jira issues
+              Work Items
             </div>
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
-              {links.jira.map((u) => {
-                const key = u.split("/").pop() ?? u;
+              {links.workItems.map((u) => {
+                const key = workItemId(u);
                 return (
                   <a
                     key={u}
@@ -68,14 +69,4 @@ export function LinksPanel({ links }: { links: { confluence: string[]; jira: str
       </CardContent>
     </Card>
   );
-}
-
-function prettyConfluence(u: string) {
-  try {
-    const url = new URL(u);
-    const last = url.pathname.split("/").filter(Boolean).pop() ?? url.hostname;
-    return decodeURIComponent(last).replace(/[+]/g, " ");
-  } catch {
-    return u;
-  }
 }

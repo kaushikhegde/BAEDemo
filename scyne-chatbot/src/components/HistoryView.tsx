@@ -4,14 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getHistory, type HistoryEntry } from "../api";
-
-function prettyConfluence(u: string) {
-  try {
-    const url = new URL(u);
-    const last = url.pathname.split("/").filter(Boolean).pop() ?? url.hostname;
-    return decodeURIComponent(last).replace(/[+]/g, " ");
-  } catch { return u; }
-}
+import { prettyWikiPage, workItemId } from "@/lib/links";
 
 function prettyDate(iso: string | null) {
   if (!iso) return "";
@@ -66,12 +59,12 @@ export function HistoryView() {
           <Card elevation={0} className="p-10 text-center text-sm text-muted-foreground border-dashed bg-white/40">
             <Sparkles className="size-5 mx-auto mb-2 text-scyne-ink-500/60" />
             <div className="font-medium text-foreground mb-1">No completed tasks yet</div>
-            <div>Once a requirements run finishes and publishes to Confluence + Jira, it’ll show up here.</div>
+            <div>Once a requirements run finishes and publishes to the wiki and work items, it’ll show up here.</div>
           </Card>
         )}
 
         {entries?.map((e) => {
-          const total = e.links.confluence.length + e.links.jira.length;
+          const total = e.links.wiki.length + e.links.workItems.length;
           return (
             <Card key={e.id} elevation={1} className="bg-white/70">
               <CardHeader>
@@ -90,14 +83,14 @@ export function HistoryView() {
                   <div className="text-sm text-muted-foreground">No published links for this run yet.</div>
                 ) : (
                   <>
-                    {e.links.confluence.length > 0 && (
+                    {e.links.wiki.length > 0 && (
                       <div className="space-y-1.5">
-                        <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">Confluence</div>
+                        <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">Wiki</div>
                         <div className="flex flex-col gap-1.5">
-                          {e.links.confluence.map((u) => (
+                          {e.links.wiki.map((u) => (
                             <Button key={u} asChild variant="outline" size="sm" className="justify-between w-full">
                               <a href={u} target="_blank" rel="noreferrer">
-                                <span className="truncate text-left">{prettyConfluence(u)}</span>
+                                <span className="truncate text-left">{prettyWikiPage(u)}</span>
                                 <ArrowUpRight className="shrink-0" />
                               </a>
                             </Button>
@@ -105,14 +98,14 @@ export function HistoryView() {
                         </div>
                       </div>
                     )}
-                    {e.links.jira.length > 0 && (
+                    {e.links.workItems.length > 0 && (
                       <div className="space-y-1.5">
                         <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
-                          Jira issues ({e.links.jira.length})
+                          Work Items ({e.links.workItems.length})
                         </div>
                         <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-                          {e.links.jira.map((u) => {
-                            const key = u.split("/").pop() ?? u;
+                          {e.links.workItems.map((u) => {
+                            const key = workItemId(u);
                             return (
                               <a key={u} href={u} target="_blank" rel="noreferrer"
                                  className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-full">

@@ -384,7 +384,7 @@ export interface HistoryEntry {
   title: string;
   status: string;
   completedAt: string | null;
-  links: { confluence: string[]; jira: string[] };
+  links: { wiki: string[]; workItems: string[] };
 }
 
 export async function getHistory(): Promise<HistoryEntry[]> {

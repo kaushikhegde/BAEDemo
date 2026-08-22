@@ -70,15 +70,15 @@ function dedupeLinkMessages(list: UIMessage[]): UIMessage[] {
   const out: UIMessage[] = [];
   for (const m of list) {
     if (m.kind === "links" && m.links) {
-      const urls = [...(m.links.confluence ?? []), ...(m.links.jira ?? [])];
+      const urls = [...(m.links.wiki ?? []), ...(m.links.workItems ?? [])];
       const fresh = urls.filter((u) => !seen.has(u));
       if (fresh.length === 0) continue;          // wholly duplicate card — drop it
       urls.forEach((u) => seen.add(u));
       out.push(fresh.length === urls.length ? m : {
         ...m,
         links: {
-          confluence: (m.links.confluence ?? []).filter((u) => fresh.includes(u)),
-          jira: (m.links.jira ?? []).filter((u) => fresh.includes(u)),
+          wiki: (m.links.wiki ?? []).filter((u) => fresh.includes(u)),
+          workItems: (m.links.workItems ?? []).filter((u) => fresh.includes(u)),
         },
       });
       continue;
@@ -88,6 +88,34 @@ function dedupeLinkMessages(list: UIMessage[]): UIMessage[] {
   return out;
 }
 
+/**
+ * Bring a stored transcript's "Published" cards onto the current link shape.
+ *
+ * `UIMessage.links` was `{confluence, jira}` and is now `{wiki, workItems}`,
+ * naming what it actually holds. The transcript is the one consumer that
+ * outlives a deploy — it sits in localStorage — so without this a card written
+ * before the rename reads `links.wiki` as undefined and renders as an empty
+ * Published box, which is precisely the "goes quietly empty" failure the note
+ * on `publishedLinks` warns about.
+ *
+ * Read-side and idempotent: a card already on the new shape is returned
+ * untouched, so this costs one pass and can stay until the old keys are
+ * certainly gone from every browser.
+ */
+function migrateLinkKeys(list: UIMessage[]): UIMessage[] {
+  return list.map((m) => {
+    const legacy = m.links as unknown as { confluence?: string[]; jira?: string[] } | undefined;
+    if (!legacy || (!legacy.confluence && !legacy.jira)) return m;
+    return {
+      ...m,
+      links: {
+        wiki: m.links?.wiki ?? legacy.confluence ?? [],
+        workItems: m.links?.workItems ?? legacy.jira ?? [],
+      },
+    };
+  });
+}
+
 function loadMessages(): UIMessage[] {
   if (typeof window === "undefined") return [buildGreeting(false)];
   const resuming = !!window.localStorage.getItem("scyne_parent_issue_id");
@@ -95,7 +123,7 @@ function loadMessages(): UIMessage[] {
     const raw = window.localStorage.getItem(MESSAGES_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return dedupeLinkMessages(parsed as UIMessage[]);
+      if (Array.isArray(parsed) && parsed.length > 0) return dedupeLinkMessages(migrateLinkKeys(parsed as UIMessage[]));
     }
   } catch { /* corrupt store — fall back to a fresh greeting */ }
   return [buildGreeting(resuming)];
@@ -360,7 +388,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const seenLinkUrls = useRef<Set<string>>(
     new Set(
       messages.flatMap((m) =>
-        m.kind === "links" && m.links ? [...(m.links.confluence ?? []), ...(m.links.jira ?? [])] : []
+        m.kind === "links" && m.links ? [...(m.links.wiki ?? []), ...(m.links.workItems ?? [])] : []
       )
     )
   );
@@ -374,8 +402,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   };
 
   // Surface a one-shot "build the UI?" CTA in the chat scroll at the two natural
-  // entry points: right after the REQUIREMENTS run completes (Confluence + Jira
-  // live), and again after the SOLUTION DESIGN run completes if the UI was
+  // entry points: right after the REQUIREMENTS run completes (the wiki page and
+  // work items live), and again after the SOLUTION DESIGN run completes if the UI was
   // skipped earlier — so the user can do requirements → data model → solution
   // design and still come back to the UI from the chat. Each entry point has its
   // own localStorage dedupe key so declining the first offer doesn't suppress
@@ -387,8 +415,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     const isSolutionDesignRun = rootTitle.startsWith("Generate solution design");
     if (!isRequirementsRun && !isSolutionDesignRun) return;
     const rootDone = status.flatIssues.length > 0 && status.flatIssues.every((i) => i.status === "done");
-    const hasConfluence = (status.links?.confluence?.length ?? 0) > 0;
-    if (!rootDone || !hasConfluence) return;
+    const hasWikiPage = (status.links?.wiki?.length ?? 0) > 0;
+    if (!rootDone || !hasWikiPage) return;
     // After the solution design, only re-offer if no UI app exists yet.
     if (isSolutionDesignRun && previewAvailable) return;
     // Dedupe per project/feature, not per parent issue, so clicking "Yes, build the UI"
@@ -401,7 +429,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setPendingUiPrompt({
       project: targetProject,
       feature: targetFeature,
-      headline: isRequirementsRun ? "Confluence + Jira are live." : "Solution design is published — the pipeline is complete.",
+      headline: isRequirementsRun ? "The wiki page and work items are live." : "Solution design is published — the pipeline is complete.",
       dedupeKey,
     });
   }, [status, targetProject, targetFeature, parentIssueId, previewAvailable]);
@@ -479,13 +507,13 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         // Announce published links WHERE they happened. They used to render in
         // a panel pinned under the whole transcript, which detached them from
         // the run that produced them and left them stranded at the bottom.
-        const conf = (s.links?.confluence ?? []).filter((u) => !seenLinkUrls.current.has(u));
-        const jira = (s.links?.jira ?? []).filter((u) => !seenLinkUrls.current.has(u));
-        if (conf.length || jira.length) {
-          [...conf, ...jira].forEach((u) => seenLinkUrls.current.add(u));
+        const wiki = (s.links?.wiki ?? []).filter((u) => !seenLinkUrls.current.has(u));
+        const workItems = (s.links?.workItems ?? []).filter((u) => !seenLinkUrls.current.has(u));
+        if (wiki.length || workItems.length) {
+          [...wiki, ...workItems].forEach((u) => seenLinkUrls.current.add(u));
           setMessages((m) => [...m, {
             id: crypto.randomUUID(), role: "assistant", kind: "links",
-            text: "Published", links: { confluence: conf, jira },
+            text: "Published", links: { wiki, workItems },
           }]);
         }
         // Best-effort: refresh the compact agent run summaries alongside status.
@@ -985,8 +1013,10 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
 
   async function handleApprove(id: string, meta?: { title: string; issueIdentifier: string }) {
     try {
-      // Pass the parent issue so the server can auto-create the Jira project +
-      // Confluence space (if configured) before resolving the gate.
+      // Pass the parent issue so the server can verify the Azure DevOps target —
+      // the project, its wiki and the token scopes — before resolving the gate.
+      // It verifies and never creates: a half-created project is worse to hand a
+      // client than a clear refusal.
       await approve(id, parentIssueId ?? undefined);
       // Only after the server accepts it — a failed approval must not leave a
       // record saying it was approved.
@@ -1006,8 +1036,12 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       setMessages((m) => [...m, {
         id: crypto.randomUUID(),
         role: "assistant",
-        text: e?.code === "provision_failed"
-          ? `I held off approving — couldn't prepare the Atlassian targets:\n\n> ${e.message}\n\nFix the project/space (or its permissions) and approve again.`
+        // The server answers a failed pre-flight with `ado_target_unavailable`
+        // (index.ts). This used to test for `provision_failed`, a code from the
+        // Atlassian module that was replaced — so the branch never fired and a
+        // held approval showed the bare "Approval failed" instead of the reason.
+        text: e?.code === "ado_target_unavailable"
+          ? `I held off approving — the Azure DevOps target isn't ready:\n\n> ${e.message}\n\nFix the project, its wiki or the token scopes, then approve again.`
           : `Approval failed: ${e?.message ?? e}`,
       }]);
     }

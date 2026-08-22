@@ -68,7 +68,7 @@ scyne-chatbot/
         ├── ActivityTimeline.tsx(comments, autoscrolling, markdown-rendered)
         ├── ApprovalCard.tsx    (inline approve/reject with collapsible artefact preview)
         ├── ArtifactsPreview.tsx(tabs: Stories | Product Summary | Gaps | Data Model | Solution Design | Solution Architecture | Test Cases | Personas & Journeys | Capability Map — reads /api/artifacts; the Capability Map tab also links to the interactive HTML)
-        ├── LinksPanel.tsx      (Confluence + Jira links extracted from comments)
+        ├── LinksPanel.tsx      (wiki page + work item links; `links.wiki` / `links.workItems`)
         ├── TargetPicker.tsx    (chip-style project + feature selector at top of chat)
         ├── SuggestionChips.tsx (server-computed next-step chips above the composer)
         ├── NewProjectWizard.tsx(3-step project creation; takes over the whole view)
@@ -130,7 +130,12 @@ The Paperclip client (`server/paperclip.ts`) wraps just the calls the chatbot ne
 - `getIssueTree(rootId)` — recursive; folds in comments, approvals, work-products at each node.
 - `approveGate(id, note)` / `rejectGate(id, note)`.
 
-`/api/status` then walks the tree, flattens, extracts URLs (Confluence + Jira regex), and computes a coarse `stage` label.
+`/api/status` then walks the tree, flattens, extracts URLs (an ADO `_wiki/` and an ADO `_workitems/edit/` regex, into `links.wiki` / `links.workItems`), and computes a coarse `stage` label.
+
+> Those keys were `confluence` / `jira` until this rename. The chat transcript in
+> `localStorage` is the one consumer that survives a deploy holding the old
+> shape, so `migrateLinkKeys` in `App.tsx` maps a stored "Published" card on
+> read — without it the card renders as an empty box rather than an error.
 
 ## Frontend state model
 
@@ -185,7 +190,7 @@ The prompt instructs a discovery flow:
 | `create_feature` | project | "Add a feature". Scaffolds it; the personas and capability map are inherited, not re-run. |
 | `trigger_capability_map` | project | Capability map / process model / operating model. No feature parameter. |
 | `trigger_personas` | project | Personas / journeys / service blueprint. No feature parameter. `409 no_capability_map`. |
-| `trigger_requirement_generation` | feature | Product Summary + Jira stories. |
+| `trigger_requirement_generation` | feature | Product Summary + work items. |
 | `trigger_ui_mockups` | feature | Wireframes. **Not `trigger_ui_build`** — the prompt tells the bot to ask which when ambiguous. |
 | `trigger_data_model` | feature | Data model / ERD / objects. `409 no_product_summary`. |
 | `trigger_solution_architecture` | feature | SAD / HLD / target architecture. **Not `trigger_solution_design`.** |

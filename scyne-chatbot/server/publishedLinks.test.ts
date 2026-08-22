@@ -112,9 +112,9 @@ describe("mergeLinks", () => {
     // Not "disk wins": a URL someone pasted into a comment is still a link
     // worth showing, and the comment set was the only one there was until now.
     const merged = mergeLinks(
-      { confluence: ["a"], jira: ["1"] },
-      { confluence: ["a", "b"], jira: ["2"] });
-    expect(merged).toEqual({ confluence: ["a", "b"], jira: ["1", "2"] });
+      { wiki: ["a"], workItems: ["1"] },
+      { wiki: ["a", "b"], workItems: ["2"] });
+    expect(merged).toEqual({ wiki: ["a", "b"], workItems: ["1", "2"] });
   });
 });
 
@@ -144,11 +144,11 @@ describe("publishedLinks", () => {
 
   it("returns the wiki page for the stage that just ran", async () => {
     const links = await publishedLinks(ws, { project: "RTWSA", feature: "Appeals", workflowKey: "datamodel" });
-    expect(links.confluence).toEqual([
+    expect(links.wiki).toEqual([
       "https://dev.azure.com/Scyne-AI-Lab/Scyne%20AI%20Project/_wiki/wikis/Scyne-AI-Project-Wiki" +
       "?pagePath=%2FAppeals%2FSalesforce%20Data%20Model",
     ]);
-    expect(links.jira).toEqual([]);
+    expect(links.workItems).toEqual([]);
   });
 
   it("does not announce another stage's page", async () => {
@@ -156,32 +156,32 @@ describe("publishedLinks", () => {
     // artefact the project has ever published would dump the whole back
     // catalogue into the transcript on the first poll of any run.
     const links = await publishedLinks(ws, { project: "RTWSA", feature: "Appeals", workflowKey: "datamodel" });
-    expect(links.confluence.join(" ")).not.toContain("Capability");
+    expect(links.wiki.join(" ")).not.toContain("Capability");
   });
 
   it("adds the work items for the requirements stage, and only that stage", async () => {
     const links = await publishedLinks(ws, { project: "RTWSA", feature: "Appeals", workflowKey: "requirements" });
-    expect(links.jira).toEqual([
+    expect(links.workItems).toEqual([
       "https://dev.azure.com/Scyne-AI-Lab/Scyne%20AI%20Project/_workitems/edit/41",
       "https://dev.azure.com/Scyne-AI-Lab/Scyne%20AI%20Project/_workitems/edit/42",
     ]);
-    expect(links.confluence).toHaveLength(1);
+    expect(links.wiki).toHaveLength(1);
   });
 
   it("reads a project-level stage with no feature", async () => {
     const links = await publishedLinks(ws, { project: "RTWSA", workflowKey: "capabilities" });
-    expect(links.confluence).toEqual(["https://dev.azure.com/cap"]);
+    expect(links.wiki).toEqual(["https://dev.azure.com/cap"]);
   });
 
   it("is empty, never throwing, for a stage that has not published", async () => {
     const links = await publishedLinks(ws, { project: "RTWSA", feature: "Appeals", workflowKey: "qa" });
-    expect(links).toEqual({ confluence: [], jira: [] });
+    expect(links).toEqual({ wiki: [], workItems: [] });
   });
 
   it("is empty for a project that has no .published.json at all", async () => {
     // A run in flight, or a project whose Azure DevOps step failed in the
     // wizard. Neither is an error worth failing a status poll over.
     const links = await publishedLinks(ws, { project: "Nope", workflowKey: "capabilities" });
-    expect(links).toEqual({ confluence: [], jira: [] });
+    expect(links).toEqual({ wiki: [], workItems: [] });
   });
 });

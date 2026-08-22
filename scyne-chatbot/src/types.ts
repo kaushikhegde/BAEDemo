@@ -20,11 +20,11 @@ export interface UIMessage {
     at: string;       // ISO timestamp
   };
   /**
-   * Set on `kind: "links"` — Confluence/Jira URLs announced at the point in the
+   * Set on `kind: "links"` — wiki page and work item URLs announced at the point in the
    * conversation where they were published, rather than pinned under the whole
    * transcript where they lose their connection to the run that produced them.
    */
-  links?: { confluence: string[]; jira: string[] };
+  links?: { wiki: string[]; workItems: string[] };
 }
 
 export interface IssueProgress {
@@ -56,7 +56,7 @@ export interface StatusSnapshot {
   flatIssues: IssueProgress[];
   activity: ActivityItem[];
   approvals: ApprovalCardData[];
-  links: { confluence: string[]; jira: string[] };
+  links: { wiki: string[]; workItems: string[] };
 }
 
 export interface ArtifactStory {

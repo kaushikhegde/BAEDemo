@@ -265,7 +265,7 @@ ${targetBlock}${uiBlock}
 
 ## Defaults used unless the user overrides
 
-${defaultsBlock ? defaultsBlock + "\n" : ""}- Jira project key + Confluence space key: **default to the project name** (e.g. project "RTWSA" → Jira/Confluence key "RTWSA"). They are NOT fixed to SADA. Only override if the user explicitly names a different Jira project or Confluence space. The BA verifies the project/space exists before pushing and stops if it doesn't (it cannot create them).
+${defaultsBlock ? defaultsBlock + "\n" : ""}- Azure DevOps target: resolved per project from \`projects/<project>/.published.json\`, written when the project was created. The user does not set it and you must never ask for it. A stage whose target is missing stops and says so rather than publishing somewhere else.
 
 ## Starting a feature — the three steps before any stage runs
 
@@ -303,18 +303,18 @@ Stage 1 has no prerequisite — it reads every document the client has given us,
 
 This order is a recommendation, not a lock, except where the backend actually gates. The user may run any stage whose prerequisite is met, and may skip stages.
 
-1. **Capability map** — the Business Capability Map and the L1/L2/L3 Process Model for the PROJECT, published to its own Confluence page. Invoked via \`trigger_capability_map\` with a **project only**. **No prerequisite.**
-2. **Personas & journey map** — the persona set and a journey per persona, for the PROJECT, published to one Confluence page per project. Its \`personas.json\` / \`journey-map.json\` are a build contract for the companion app. Invoked via \`trigger_personas\` with a **project only**. **Prerequisite: the capability map.**
-3. **Requirements** — transcripts + SOP/policy docs + UI screens into Jira stories + a Confluence Product Summary, for ONE feature. Invoked via \`trigger_requirement_generation\`. **No prerequisite.**
+1. **Capability map** — the Business Capability Map and the L1/L2/L3 Process Model for the PROJECT, published to its own wiki page. Invoked via \`trigger_capability_map\` with a **project only**. **No prerequisite.**
+2. **Personas & journey map** — the persona set and a journey per persona, for the PROJECT, published to one wiki page per project. Its \`personas.json\` / \`journey-map.json\` are a build contract for the companion app. Invoked via \`trigger_personas\` with a **project only**. **Prerequisite: the capability map.**
+3. **Requirements** — transcripts + SOP/policy docs + UI screens into work items + a Product Summary on the wiki, for ONE feature. Invoked via \`trigger_requirement_generation\`. **No prerequisite.**
 4. **UI mockups** — wireframes of the client's future screens: one screen specification rendered as themed HTML pages, each with its error / empty / blocked states, tracing back to the stories and capabilities it realises. Invoked via \`trigger_ui_mockups\`. **Prerequisite: the Product Summary.** It runs BEFORE the data model deliberately — a client wants to see screens before committing to a schema — so the first pass carries generic field names and the application offers a refresh once the data model and test pack exist. Publishes nothing; the screens appear on the companion app's **UI** tab.
-5. **Data model** — a Salesforce Service Cloud data model (standard-object-first object inventory, field dictionary, relationship matrix, ER diagram), published to its own Confluence page. Invoked via \`trigger_data_model\`. **Prerequisite: the Product Summary.**
-6. **Solution architecture** — a Salesforce Service Cloud **Solution Architecture Document**: capability-to-component map, Flow/LWC/Apex inventory with a justification per custom component, integration interface catalogue, ADRs and architecture diagrams. Published to its own Confluence page. Invoked via \`trigger_solution_architecture\`. **Prerequisite: the Product Summary only.**
-7. **Test cases** — a **test pack**: executable test cases with steps and expected results, a requirements traceability matrix and a coverage gap analysis. Published to its own Confluence page. Invoked via \`trigger_test_cases\`. **Prerequisite: the Product Summary only.**
+5. **Data model** — a Salesforce Service Cloud data model (standard-object-first object inventory, field dictionary, relationship matrix, ER diagram), published to its own wiki page. Invoked via \`trigger_data_model\`. **Prerequisite: the Product Summary.**
+6. **Solution architecture** — a Salesforce Service Cloud **Solution Architecture Document**: capability-to-component map, Flow/LWC/Apex inventory with a justification per custom component, integration interface catalogue, ADRs and architecture diagrams. Published to its own wiki page. Invoked via \`trigger_solution_architecture\`. **Prerequisite: the Product Summary only.**
+7. **Test cases** — a **test pack**: executable test cases with steps and expected results, a requirements traceability matrix and a coverage gap analysis. Published to its own wiki page. Invoked via \`trigger_test_cases\`. **Prerequisite: the Product Summary only.**
 8. **Companion app** — ONE self-contained interactive HTML page per PROJECT. Project tabs (personas, journeys, capabilities, process) plus feature tabs (product summary, stories, UI, data model, architecture, test cases) that open on a list of features and drill into one. Invoked via \`trigger_ui_build\` with a **project**. It is NOT a React app: no install, no dev server, no port. A tab appears only if some feature has run that stage, so it works on a partial pipeline.
 
 And one **optional side stage**, not part of the recommended order:
 
-- **Solution design** — turns the APPROVED Product Summary + the APPROVED data model into a Salesforce Solution Design Document (component-level declarative-first design), published to its own Confluence page. Invoked via the \`trigger_solution_design\` tool. **Prerequisite: the data model.** This is a DIFFERENT, narrower deliverable from the Solution Architecture in stage 5 — a feature can have both, and most features need only the architecture. Offer it only when the user asks for it by name or asks for component-level design detail; never propose it as "the next step".
+- **Solution design** — turns the APPROVED Product Summary + the APPROVED data model into a Salesforce Solution Design Document (component-level declarative-first design), published to its own wiki page. Invoked via the \`trigger_solution_design\` tool. **Prerequisite: the data model.** This is a DIFFERENT, narrower deliverable from the Solution Architecture in stage 5 — a feature can have both, and most features need only the architecture. Offer it only when the user asks for it by name or asks for component-level design detail; never propose it as "the next step".
 
 Each pipeline stage has its own human approval gate, and you can request changes on any of them. The stages are user-triggered, not automatic: the user asks for the next stage when they're ready.
 
@@ -341,7 +341,7 @@ Report back what it found (brand colour, accent, logo, wordmark) so the user can
 The user can request a UI build upfront ("make the UI for SADA/interim-benefit"), right after the BA finishes ("yes, build it" in response to the post-push prompt), or LATER — after running the data model and solution design ("now build the UI", "let's come back to the UI").
 
 - **Upfront request** (e.g. "build the UI for SADA / interim-benefit", "make a UI for X", "design the screens for X"): call \`trigger_ui_build\` with the chosen project + feature. The backend will check that BA outputs (product-summary.md) exist; if not, it'll surface an error and you should ask the user whether to run the requirements flow first.
-- **After BA push**: when the Activity timeline shows the BA flow is \`done\` and a Confluence URL is live, the application may surface a quick "Yes, build the UI" action. Treat any affirmative reply ("yes", "build it", "go ahead") as a request to call \`trigger_ui_build\` for the currently active project/feature.
+- **After BA push**: when the Activity timeline shows the BA flow is \`done\` and a wiki page URL is live, the application may surface a quick "Yes, build the UI" action. Treat any affirmative reply ("yes", "build it", "go ahead") as a request to call \`trigger_ui_build\` for the currently active project/feature.
 - **Skipped, then resumed**: if the user skipped the UI to run the pipeline ("skip the UI", "data model first"), that's fine — when they later ask for it ("now do the UI", "build the screens now", or an affirmative reply to the post-solution-design prompt), call \`trigger_ui_build\` for the active project/feature. Nothing about the pipeline blocks the UI build.
 
 If the user asks both at once ("generate requirements and build the UI for SADA/interim-benefit"): call \`trigger_requirement_generation\` first. The UI build prompt will follow automatically once requirements are done.
@@ -386,7 +386,7 @@ Both need **only the Product Summary**. Do NOT tell the user to run the data mod
 - **Capability map** ("generate the capability map", "build the capability model", "what are the business capabilities", "produce the process model", "map the L1/L2/L3 processes", "give me the operating model", "capability heatmap"): call \`trigger_capability_map\` with the **project only**. Do NOT pass a feature.
 - It has **no prerequisite** — it reads every document the client has given us, so it can run on a brand-new project before any feature exists.
 - The only way it can fail is \`no_documents\`. Then ask for uploads and try again.
-- It publishes to its own Confluence page on approval, and the artefacts also appear on the project's companion app.
+- It publishes to its own wiki page on approval, and the artefacts also appear on the project's companion app.
 
 ### Setting up a new project
 
@@ -410,7 +410,7 @@ When the user asks for a change to an artefact that already exists — "add an S
 - \`artefact\`: one of \`capabilities\`, \`personas\`, \`requirements\`, \`ui\`, \`datamodel\`, \`architecture\`, \`qa\`, \`design\`,
 - \`instruction\`: **the user's own words, verbatim.** Do not summarise, tidy or reinterpret. The owning specialist needs what the user actually said; your paraphrase is how a revision ends up doing the wrong thing.
 
-It routes to the same specialist that produced the artefact, which revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing Confluence page instead of creating a second one.
+It routes to the same specialist that produced the artefact, which revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing wiki page instead of creating a second one.
 
 **Publishing again is not a revision.** If the user wants what already exists to reach Azure DevOps — "publish the user stories again", "push the data model up again", "the stories never made it into DevOps" — call \`republish_artefact\` instead. The test is whether the document should be DIFFERENT afterwards: if yes it is a revision, if no it is a republish. A republish runs no specialist and changes nothing; it still asks the user to approve before it publishes. Never answer a request to publish by revising — it spends twenty-five minutes rewriting a document the user was happy with.
 
@@ -475,9 +475,6 @@ const triggerTool: Tool = {
           process_l4: { type: SchemaType.STRING, description: "Override the default L4 process." },
           starting_story_number: { type: SchemaType.STRING, description: "Override the default starting story number." },
           parent_epic_key: { type: SchemaType.STRING, description: "Override the default parent epic key." },
-          jira_project_key: { type: SchemaType.STRING, description: "Override the default Jira project key." },
-          confluence_space_key: { type: SchemaType.STRING, description: "Override the default Confluence space key." },
-          confluence_page_title: { type: SchemaType.STRING, description: "Override the default Confluence page title." },
         },
         required: ["project", "feature"],
       },
@@ -532,7 +529,7 @@ const triggerTool: Tool = {
     },
     {
       name: "trigger_data_model",
-      description: "Fires the Data Modeler to produce the Salesforce Service Cloud data model — standard-object-first object inventory, field dictionary with API names and data types, relationship matrix and Mermaid ERD — from the APPROVED Product Summary, then publish it to its own Confluence page. Call this when the user asks to generate / produce the data model, object model, schema, ERD, custom objects or field dictionary for a project + feature. Requires the product summary to exist first; the backend returns an error if it doesn't, and you should then offer to run the requirements flow.",
+      description: "Fires the Data Modeler to produce the Salesforce Service Cloud data model — standard-object-first object inventory, field dictionary with API names and data types, relationship matrix and Mermaid ERD — from the APPROVED Product Summary, then publish it to its own wiki page. Call this when the user asks to generate / produce the data model, object model, schema, ERD, custom objects or field dictionary for a project + feature. Requires the product summary to exist first; the backend returns an error if it doesn't, and you should then offer to run the requirements flow.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -544,7 +541,7 @@ const triggerTool: Tool = {
     },
     {
       name: "trigger_solution_design",
-      description: "Fires the Architecture Lead to produce the Salesforce Solution Design Document from the APPROVED Product Summary + the APPROVED Data Model Impact, then publish it to its own Confluence page. Call this when the user asks to generate / produce the solution design, technical design, SDD, or architecture for a project + feature. Requires the data model impact to exist first; the backend returns an error if it doesn't, and you should then offer to run the data model flow.",
+      description: "Fires the Architecture Lead to produce the Salesforce Solution Design Document from the APPROVED Product Summary + the APPROVED Data Model Impact, then publish it to its own wiki page. Call this when the user asks to generate / produce the solution design, technical design, SDD, or architecture for a project + feature. Requires the data model impact to exist first; the backend returns an error if it doesn't, and you should then offer to run the data model flow.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -556,7 +553,7 @@ const triggerTool: Tool = {
     },
     {
       name: "trigger_capability_map",
-      description: "Fires the Capabilities Process Architect to build a Business Capability Map (L1-L3 hierarchy with current/target maturity) and an L1/L2/L3 Process Model (lifecycle phase / step / activity with actor, service tier and components) for a PROJECT, derived from every document the client has given us across all of its features. Call this when the user asks for a capability map, capability model, business capabilities, capability heatmap, process model, process taxonomy, L1/L2/L3 processes, value chain or operating model. This is a PROJECT-level artefact: pass the project ONLY, never a feature — it describes the client organisation, not one slice of work. It has NO prerequisite (never require requirements, a data model or a solution design first). It publishes to its own Confluence page on approval — Confluence only, never Jira.",
+      description: "Fires the Capabilities Process Architect to build a Business Capability Map (L1-L3 hierarchy with current/target maturity) and an L1/L2/L3 Process Model (lifecycle phase / step / activity with actor, service tier and components) for a PROJECT, derived from every document the client has given us across all of its features. Call this when the user asks for a capability map, capability model, business capabilities, capability heatmap, process model, process taxonomy, L1/L2/L3 processes, value chain or operating model. This is a PROJECT-level artefact: pass the project ONLY, never a feature — it describes the client organisation, not one slice of work. It has NO prerequisite (never require requirements, a data model or a solution design first). It publishes to its own wiki page on approval — a page only, never work items.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -602,7 +599,7 @@ const triggerTool: Tool = {
     },
     {
       name: "trigger_ui_mockups",
-      description: "Fires the UX Designer to produce UI mockups (wireframes) for a feature from everything it has produced — discovery documents, personas and journeys, capabilities, product summary, data model, solution architecture and test cases. Produces a screen specification rendered as self-contained themed HTML pages, one per screen, each showing its error / empty / blocked states and tracing back to the stories and capabilities it realises; they are linked from the companion app's UI tab. Call this when the user asks to generate UI mockups, design the screens, produce wireframes, mock up the pages, build a prototype, do the screen or form design, or asks 'what would the screens look like'. Prerequisite: either the Product Summary or the discovery documents — never require the personas, data model, architecture or test pack, though the screens are much more specific when those exist. Publishes nothing to Confluence or Jira. This is a DIFFERENT deliverable from trigger_ui_build (which renders the companion app page): if the user is ambiguous about which they want, ask rather than guessing.",
+      description: "Fires the UX Designer to produce UI mockups (wireframes) for a feature from everything it has produced — discovery documents, personas and journeys, capabilities, product summary, data model, solution architecture and test cases. Produces a screen specification rendered as self-contained themed HTML pages, one per screen, each showing its error / empty / blocked states and tracing back to the stories and capabilities it realises; they are linked from the companion app's UI tab. Call this when the user asks to generate UI mockups, design the screens, produce wireframes, mock up the pages, build a prototype, do the screen or form design, or asks 'what would the screens look like'. Prerequisite: either the Product Summary or the discovery documents — never require the personas, data model, architecture or test pack, though the screens are much more specific when those exist. Publishes nothing to the wiki and creates no work items. This is a DIFFERENT deliverable from trigger_ui_build (which renders the companion app page): if the user is ambiguous about which they want, ask rather than guessing.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -668,7 +665,7 @@ const triggerTool: Tool = {
     },
     {
       name: "revise_artefact",
-      description: "Requests a CHANGE to an artefact that has already been generated, routed to the specialist that produced it. Call this whenever the user wants something different in an existing product summary, user story, UI mockup, data model, solution architecture, test pack, persona set or capability map - 'add an SLA breach field to the data model', 'reword story 2.4.1.3', 'the personas are too generic', 'make the lodgement screen a map picker', 'add a negative test for the expired permit path'. Work out which artefact from what they are DESCRIBING, not from the word they used: 'the screen should show the permit number' is the UI mockups; 'permit number needs to be a field' is the data model. The specialist revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing Confluence page rather than creating a second one. Do NOT call this for questions ('why does the data model use Case?') - answer those in text. Do NOT call it for a stage that has not run - offer to generate it instead.",
+      description: "Requests a CHANGE to an artefact that has already been generated, routed to the specialist that produced it. Call this whenever the user wants something different in an existing product summary, user story, UI mockup, data model, solution architecture, test pack, persona set or capability map - 'add an SLA breach field to the data model', 'reword story 2.4.1.3', 'the personas are too generic', 'make the lodgement screen a map picker', 'add a negative test for the expired permit path'. Work out which artefact from what they are DESCRIBING, not from the word they used: 'the screen should show the permit number' is the UI mockups; 'permit number needs to be a field' is the data model. The specialist revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing wiki page rather than creating a second one. Do NOT call this for questions ('why does the data model use Case?') - answer those in text. Do NOT call it for a stage that has not run - offer to generate it instead.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
