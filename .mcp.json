@@ -10,7 +10,7 @@
         "pat"
       ],
       "env": {
-        "PERSONAL_ACCESS_TOKEN": "${ADO_MCP_BASIC}"
+        "PERSONAL_ACCESS_TOKEN": "${MCP_TOKEN_FOR_AZURE}"
       },
       "autoApproveTools": [
         "wiki",

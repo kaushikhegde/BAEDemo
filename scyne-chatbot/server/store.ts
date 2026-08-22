@@ -534,3 +534,81 @@ export const actions = (
   token: string | null, limit = 100,
 ): Promise<OpsResult<any[]>> =>
   fetchJson<any[]>(token, `/actions?limit=${encodeURIComponent(String(limit))}`);
+
+/**
+ * Record one chat turn — the user's message and the assistant's reply —
+ * against a conversation in the database.
+ *
+ * The `conversations` and `messages` tables, the store methods behind them and
+ * their HTTP routes have existed since the platform migration and **nothing
+ * ever wrote to them**: `scyne chat history` reads those tables, so it printed
+ * "(no conversations yet)" for every installation, always. The transcript
+ * lived in the browser's localStorage alone, which meant it was per-device,
+ * invisible to the CLI, and lost the moment someone cleared their site data.
+ *
+ * Best-effort and never fatal, exactly like `createDocumentRow`: the reply is
+ * what the person is waiting for, and losing the record of a conversation is a
+ * far smaller harm than failing the conversation itself. The caller reports
+ * the outcome rather than throwing on it.
+ *
+ * The caller's own token, so a conversation is filed against the person who
+ * had it and is invisible to anyone who could not see it anyway.
+ */
+export async function recordChatTurn(
+  token: string | null,
+  input: {
+    conversationId?: string | null;
+    project?: string | null;
+    feature?: string | null;
+    userMessage: unknown;
+    assistantMessage: unknown;
+  },
+): Promise<WriteResult & { conversationId?: string }> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    let conversationId = input.conversationId ?? null;
+
+    if (!conversationId) {
+      // Resolve the target to ids where we can. Both are optional on the row,
+      // and a chat that has not settled on a project yet is a normal state —
+      // so an unresolved name leaves null rather than refusing to record.
+      let projectId: string | null = null;
+      let featureId: string | null = null;
+      if (input.project) {
+        const row = (await listProjects(token)).find(p => p.name === input.project);
+        projectId = row?.id ?? null;
+        if (row && input.feature) {
+          const f = (await listFeatures(token, row.id)).find(x => x.name === input.feature);
+          featureId = f?.id ?? null;
+        }
+      }
+
+      const created = await send(token, "POST", "/conversations", {
+        projectId, featureId, title: titleFor(input.userMessage),
+      });
+      if (!created.ok) return { state: "failed", reason: failureText(created.status, created.json) };
+      conversationId = (created.json as { id?: string })?.id ?? null;
+      if (!conversationId) return { state: "failed", reason: "the orchestrator created no conversation id" };
+    }
+
+    for (const [role, content] of [["user", input.userMessage], ["assistant", input.assistantMessage]] as const) {
+      const r = await send(token, "POST", `/conversations/${conversationId}/messages`, { role, content });
+      if (!r.ok) return { state: "failed", reason: failureText(r.status, r.json), conversationId };
+    }
+    return { state: "created", conversationId };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/** A conversation's title: the opening of whatever the person first said. */
+function titleFor(message: unknown): string | null {
+  const text = typeof message === "string"
+    ? message
+    : Array.isArray(message)
+      ? message.map((b: { text?: string }) => b?.text ?? "").join(" ")
+      : "";
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (!trimmed) return null;
+  return trimmed.length > 80 ? trimmed.slice(0, 79) + "…" : trimmed;
+}

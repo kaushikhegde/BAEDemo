@@ -25,11 +25,15 @@ export async function postChat(
   messages: { role: "user" | "assistant"; content: any }[],
   target?: { project: string | null; feature: string | null },
   uiContext?: { active: boolean; project: string | null; feature: string | null },
+  // The conversation this turn belongs to, so the server appends to it rather
+  // than opening a new one per message. Null on the first turn of a session;
+  // the server answers with the id it used.
+  conversationId?: string | null,
 ) {
   const r = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, target, uiContext }),
+    body: JSON.stringify({ messages, target, uiContext, conversationId }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

@@ -90,6 +90,52 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
   }
 }
 
+// Every publish is preceded by the step that guarantees it has somewhere to
+// publish TO, and the verifier that judges it still points back at the publish.
+//
+// Both halves are position-dependent, which is the kind of thing that survives
+// a refactor looking correct: a capability-map publish already failed with
+// `TF200016: The following project does not exist` because nothing created the
+// Azure DevOps project, and a rewind pointed one step off would park the issue
+// on a verifier that can never pass — the SCY-1 loop.
+{
+  let ensured = 0;
+  for (const w of buildWorkflows()) {
+    for (const [i, step] of w.steps.entries()) {
+      if (step.type !== "agent" || step.phase !== "publish") continue;
+
+      const before = w.steps[i - 1];
+      if (before?.type !== "exec" || !String((before as any).cmd ?? "").includes("ensure-ado-project")) {
+        fail(`${w.key} step ${i}: publish is not preceded by the ensure-ado-project step`);
+      } else ensured++;
+
+      const verifier = w.steps[i + 1] as any;
+      if (verifier?.type !== "exec" || !String(verifier.cmd ?? "").includes("verify-published")) {
+        fail(`${w.key} step ${i}: publish is not followed by its verifier`);
+      } else if (verifier.rewindOnFailure !== i) {
+        fail(`${w.key} step ${i}: the verifier rewinds to ${verifier.rewindOnFailure}, not to the publish step`);
+      }
+    }
+  }
+  if (publishSteps && !ensured) fail("no publish step is preceded by ensure-ado-project");
+}
+
+// Only the stage that produces a backlog asks the verifier to check one.
+// Every other stage publishes a page and nothing else, and `--stories` there
+// would point at a file that does not exist and block a healthy publish.
+{
+  for (const w of buildWorkflows()) {
+    for (const [i, step] of w.steps.entries()) {
+      if (step.type !== "exec" || !String(step.cmd ?? "").includes("verify-published")) continue;
+      const asks = String(step.cmd).includes("--stories");
+      const should = w.key === "requirements" || w.key === "revise-requirements";
+      if (asks !== should) {
+        fail(`${w.key} step ${i}: --stories is ${asks ? "present" : "absent"}, expected ${should ? "present" : "absent"}`);
+      }
+    }
+  }
+}
+
 console.log(bad
   ? `\n${bad} workflow check(s) FAILED`
   : `\nevery publish step (${publishSteps}) runs as the publisher, with no skill`);

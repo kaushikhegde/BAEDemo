@@ -54,6 +54,12 @@ export function PreviewPane({ project, feature, onPush }: PreviewPaneProps) {
     // first poll for the new one is treated as a first load, not as an update.
     shownStamp.current = null;
     setAutoReloaded(false);
+    // And forget the previous PAGE. `entry` used to survive a target change,
+    // so switching project kept the old app on screen until a new fetch landed
+    // — and because a failed fetch is swallowed below, a project with no app,
+    // or one whose lookup errored, left the previous client's page showing
+    // indefinitely. Blank until this target answers for itself.
+    setEntry(null);
     let cancelled = false;
     const tick = async () => {
       try {

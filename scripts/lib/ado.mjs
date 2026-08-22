@@ -176,3 +176,24 @@ export async function recordPublished(file, key, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, JSON.stringify(current, null, 2) + "\n", "utf8");
 }
+
+/**
+ * Record the Azure DevOps target a project publishes to.
+ *
+ * The counterpart to `readAdoTarget` above, kept beside it so the two halves of
+ * `.published.json` cannot drift on shape. Written by the wizard when a project
+ * is created, and by `ensure-ado-project.mts` when a run finds the project
+ * missing and creates it — the same record either way, so nothing downstream
+ * can tell which produced it.
+ *
+ * Merged rather than replaced: `.published.json` also carries the per-artefact
+ * `ado.<key>` page identities, and losing those would make every later
+ * revision create a second page.
+ */
+export async function recordAdoTarget(file, target) {
+  if (!file || !target?.project) return;
+  const current = await readPublished(file);
+  current.adoTarget = { ...(current.adoTarget ?? {}), ...target };
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify(current, null, 2) + "\n", "utf8");
+}

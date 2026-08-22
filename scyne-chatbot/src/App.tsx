@@ -16,6 +16,7 @@ import { PreviewPane } from "./components/PreviewPane";
 import { NewProjectWizard } from "./components/NewProjectWizard";
 import { SuggestionChips } from "./components/SuggestionChips";
 import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
+import { clearPersistedSession } from "./lib/session";
 import { Rail, type View } from "./components/Rail";
 import { IssuesView } from "./components/IssuesView";
 import { DocumentsView } from "./components/DocumentsView";
@@ -155,7 +156,20 @@ export default function App() {
     );
   }
   if (!session) {
-    return <Login onAuthenticated={(s) => setSession(s)} />;
+    return (
+      <Login
+        onAuthenticated={(s) => {
+          // Before setSession, deliberately: AuthenticatedApp reads the
+          // transcript, the pinned target and the watched issue out of
+          // localStorage as it mounts, so clearing first is what makes a
+          // sign-in start blank. Logout already did this for the chat; the
+          // way IN cleared nothing, so a renewed session or a second person
+          // on the same browser inherited the last one.
+          clearPersistedSession();
+          setSession(s);
+        }}
+      />
+    );
   }
   return (
     <AuthenticatedApp
@@ -176,6 +190,12 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
   const [apiHistory, setApiHistory] = useState<ApiMsg[]>(() => loadHistory());
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // The server-side conversation this transcript belongs to. Persisted beside
+  // the transcript so a refresh keeps appending to the same one instead of
+  // splitting the conversation in two, and cleared with it on sign-in.
+  const [conversationId, setConversationId] = useState<string | null>(
+    typeof window !== "undefined" ? window.localStorage.getItem("scyne_conversation_id") : null,
+  );
   const [parentIssueId, setParentIssueIdRaw] = useState<string | null>(
     typeof window !== "undefined" ? window.localStorage.getItem("scyne_parent_issue_id") : null
   );
@@ -403,6 +423,10 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       setPreviewAvailable(false);
       return;
     }
+    // Off until THIS project answers. Without it the badge and the tab stay
+    // lit from the previous project for up to a poll, which is the same stale
+    // state the pane itself had.
+    setPreviewAvailable(false);
     let cancelled = false;
     const check = async () => {
       const ok = await hasPreview(targetProject, targetFeature);
@@ -506,7 +530,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       const uiContext = previewAvailable && targetProject
         ? { active: true, project: targetProject, feature: targetFeature }
         : undefined;
-      const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature }, uiContext);
+      const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature }, uiContext, conversationId);
+      if (resp.conversationId && resp.conversationId !== conversationId) {
+        setConversationId(resp.conversationId);
+        try { window.localStorage.setItem("scyne_conversation_id", resp.conversationId); } catch { /* private mode */ }
+      }
       const blocks = resp.content as any[];
       let textOut = "";
       let toolUse: any = null;
@@ -999,6 +1027,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     setStatusError(null);
     setRuns([]);
     clearChatPersistence();
+    setConversationId(null);
+    if (typeof window !== "undefined") window.localStorage.removeItem("scyne_conversation_id");
     // Otherwise a fresh session would never re-announce links it already saw.
     seenLinkUrls.current.clear();
     if (typeof window !== "undefined") window.localStorage.removeItem("scyne_ui_issue_id");

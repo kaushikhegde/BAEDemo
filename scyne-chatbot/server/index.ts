@@ -139,9 +139,27 @@ function extractLinks(bodies: string[]): { confluence: string[]; jira: string[] 
 //    user has already selected a project/feature.
 app.post("/api/chat", async (req, res) => {
   try {
-    const { messages, target, uiContext } = req.body;
+    const { messages, target, uiContext, conversationId } = req.body;
     const result = await chat(messages, target, uiContext, tokenFor(req));
-    res.json(result);
+
+    // Record the turn AFTER the model has answered, and never let the record
+    // fail the answer. The conversation tables have existed unused since the
+    // platform migration — the transcript lived in one browser's localStorage,
+    // so it was per-device, invisible to `scyne chat history`, and gone with
+    // the site data. Same best-effort contract as the document rows: the
+    // outcome is reported in a field, not thrown.
+    const recorded = await store.recordChatTurn(tokenFor(req), {
+      conversationId: typeof conversationId === "string" ? conversationId : null,
+      project: target?.project ?? null,
+      feature: target?.feature ?? null,
+      userMessage: Array.isArray(messages) ? messages[messages.length - 1]?.content ?? null : null,
+      assistantMessage: (result as { content?: unknown })?.content ?? result,
+    });
+    if (recorded.state === "failed") {
+      console.warn("[chat] the conversation was not recorded:", recorded.reason);
+    }
+
+    res.json({ ...result, conversationId: recorded.conversationId ?? conversationId ?? null });
   } catch (e: any) {
     console.error(e);
     res.status(500).json({ error: e?.message ?? String(e) });

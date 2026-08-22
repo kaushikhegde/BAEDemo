@@ -12,6 +12,15 @@ interface Stage {
   level: string; label: string; agentKey: string; skill?: string; script?: string;
   publishes: boolean; produces: string[]; producesInWorkspace?: string[];
   then?: string; optional?: boolean;
+  /**
+   * Whether this stage raises a human approval gate. Absent means yes — a
+   * stage author gets the gate by default and has to opt out deliberately.
+   *
+   * Separate from `publishes` on purpose: they answer different questions.
+   * `app` publishes nothing and keeps its gate; `ui` publishes nothing and
+   * does not.
+   */
+  gates?: boolean;
 }
 
 const S = STAGES as unknown as Record<string, Stage>;
@@ -296,13 +305,51 @@ function publishPrompt(key: string, s: Stage): string {
  * never retried, run outside the agent sandbox, and cost nothing — and asking
  * a model whether a model succeeded is not a check.
  */
+/**
+ * Make sure the Azure DevOps project exists before anything tries to publish
+ * into it.
+ *
+ * A capability-map publish failed its verifier with `TF200016: The following
+ * project does not exist` — the target recorded in `.published.json` had never
+ * been created in Azure DevOps, because the wizard is allowed to fail its
+ * creation step without failing the project (the tree, definition and branding
+ * are real and worth keeping). Nothing noticed until a human had approved a
+ * document that then had nowhere to go.
+ *
+ * BEFORE the publish, deliberately, not inside the verifier: a judge that
+ * repairs what it is judging cannot fail it. A failure here refuses with
+ * nothing published, which is the same clean refusal the "verify, never
+ * create" rule at the approval gate was protecting — just earlier, and without
+ * a human waiting on it.
+ *
+ * Only `{project}` is interpolated. Every workflow has one; `adoOrg` is
+ * optional, and a placeholder the engine cannot fill blocks the run with
+ * `unknown placeholder` — which is how the requirements publish broke once
+ * already. The script resolves the org from the recorded target, then ADO_ORG.
+ */
+function ensureAdoProjectStep(): Step {
+  return {
+    type: "exec",
+    label: "Making sure the Azure DevOps project exists",
+    cmd: `node --import tsx scripts/ensure-ado-project.mts "{project}"`,
+    timeoutMs: 5 * MINUTES,
+  };
+}
+
 function verifyPublishStep(key: string, s: Stage, publishStepIndex: number): Step {
   return {
     type: "exec",
     label: "Confirming the page is really there",
     cmd: `node scripts/verify-published.mjs "{project}"` +
          ` --artefact "${artefactKeyTpl(key, s)}"` +
-         ` --path "${wikiPathTpl(s)}"`,
+         ` --path "${wikiPathTpl(s)}"` +
+         // The requirements stage is the only one whose deliverable is a page
+         // AND a backlog, and the backlog half had nothing checking it: a
+         // published page with zero work items closed the issue green.
+         // Same condition as `stories` in publishPrompt, for the same reason.
+         (key === "requirements"
+           ? ` --stories "projects/{project}/{feature}/outputs/stories.json"`
+           : ""),
     timeoutMs: 5 * MINUTES,
     // This step judges the PUBLISH step, so a failure has to send Resume back
     // there. Without it the issue parks on the verifier and every Resume
@@ -337,9 +384,16 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   const files = attachFiles(s);
   if (files.length) steps.push({ type: "attach", files });
 
-  steps.push({ type: "gate", title: `Approve ${s.label} — ${scope(s)}`, summary: approvalSummary(s) });
+  // `gates: false` opts a stage out. Declared on the STAGE rather than
+  // derived from `publishes`, because they are different questions: `app`
+  // publishes nothing either and keeps its gate. A stage author who adds a
+  // stage gets the gate by default and has to say otherwise.
+  if (s.gates !== false) {
+    steps.push({ type: "gate", title: `Approve ${s.label} — ${scope(s)}`, summary: approvalSummary(s) });
+  }
 
   if (s.publishes) {
+    steps.push(ensureAdoProjectStep());
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -408,21 +462,26 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
   ];
   if (s.then) steps.push({ type: "exec", label: "Checking the revision", cmd: swap(s.then), timeoutMs: 5 * MINUTES });
   steps.push({ type: "attach", files: attachFiles(s) });
-  steps.push({
-    type: "gate",
-    title: `Approve revised ${s.label} — ${scope(s)}`,
-    summary: [
-      `The ${s.label} has been revised.`,
-      ``,
-      `Read the diff, not the document — the instruction should be the only`,
-      `thing that changed, plus its genuine consequences.`,
-      ``,
-      s.publishes
-        ? `Approving UPDATES the existing wiki page rather than creating a second one.`
-        : `Approving completes the revision.`,
-    ].join("\n"),
-  });
+  // Same opt-out as the generate variant: a revision of a stage that gates
+  // nothing has nothing to gate either.
+  if (s.gates !== false) {
+    steps.push({
+      type: "gate",
+      title: `Approve revised ${s.label} — ${scope(s)}`,
+      summary: [
+        `The ${s.label} has been revised.`,
+        ``,
+        `Read the diff, not the document — the instruction should be the only`,
+        `thing that changed, plus its genuine consequences.`,
+        ``,
+        s.publishes
+          ? `Approving UPDATES the existing wiki page rather than creating a second one.`
+          : `Approving completes the revision.`,
+      ].join("\n"),
+    });
+  }
   if (s.publishes) {
+    steps.push(ensureAdoProjectStep());
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -504,6 +563,32 @@ export const ORG: AgentSpec[] = [
 function baselineWorkflow(): WorkflowDef {
   const cap = stageWorkflow("capabilities", S.capabilities);
   const per = stageWorkflow("personas", S.personas);
+
+  /**
+   * Re-base any step index a step carries onto its position in the COMBINED
+   * list.
+   *
+   * `rewindOnFailure` is an index into the workflow the step belongs to. Glue
+   * two workflows together and every index in the second half is silently off
+   * by the length of the first: the personas verifier said "rewind to 6", which
+   * inside its own workflow is the personas publish and inside `baseline` is
+   * the CAPABILITIES publish. A failed personas publish therefore re-published
+   * the capability map — a page nobody asked to touch, at twenty-five minutes
+   * and real money — and never retried the step that actually failed.
+   *
+   * Applied to both halves, with `cap` at offset 0, so the first half is not a
+   * special case that happens to work.
+   *
+   * The `type === "exec"` test is what makes this type-check: `rewindOnFailure`
+   * is declared on the exec member of `Step` alone. Nothing type-checks THIS
+   * file today (no tsconfig includes it), so a union error here would run
+   * perfectly under tsx and surface only when someone adds it to one.
+   */
+  const rebase = (steps: Step[], offset: number): Step[] =>
+    steps.map(step => (step.type === "exec" && typeof step.rewindOnFailure === "number"
+      ? { ...step, rewindOnFailure: step.rewindOnFailure + offset }
+      : step));
+
   return {
     key: "baseline",
     label: "Project Baseline (capabilities + personas)",
@@ -514,8 +599,8 @@ function baselineWorkflow(): WorkflowDef {
       // the `publisher`, and flattening them back onto the specialist here
       // would reintroduce the generate-shaped system prompt this workflow is
       // the only place that could silently undo.
-      ...cap.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "capArchitect" } : s)),
-      ...per.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "serviceDesigner" } : s)),
+      ...rebase(cap.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "capArchitect" } : s)), 0),
+      ...rebase(per.steps.map(s => (s.type === "agent" ? { ...s, agent: s.agent ?? "serviceDesigner" } : s)), cap.steps.length),
     ],
   };
 }

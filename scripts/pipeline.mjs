@@ -160,6 +160,14 @@ export const STAGES = {
     work: "solutions/UI",
     titlePrefix: "Generate UI mockups",
     publishes: false,
+    // No approval gate. Every other stage raises one because something
+    // irreversible happens on the other side of it — a page published to a
+    // client's wiki, a backlog created. This stage publishes nothing: it
+    // writes mockups.json and renders themed HTML into generated-apps/, both
+    // local, both overwritten by the next render. Asking a human to approve
+    // that only parks the run in front of a decision that changes nothing it
+    // could not change afterwards by re-running.
+    gates: false,
     produces: ["solutions/UI/outputs/mockups.json"],
     requires: [req("feature", "outputs/product-summary.md", "requirements")],
     enriches: [

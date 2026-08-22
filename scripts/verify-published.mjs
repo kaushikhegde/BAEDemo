@@ -37,6 +37,7 @@
  * USAGE
  * -----
  *   node scripts/verify-published.mjs <project> --artefact "<key>" --path "<page path>"
+ *        [--stories <stories.json>]
  *        [--org <org>] [--project <adoProject>] [--wiki <wiki>]
  *
  * `--artefact` is the key under `ado.` in `.published.json` — matching
@@ -47,6 +48,7 @@
  * reason, which is the entire point.
  */
 
+import fsp from "node:fs/promises";
 import process from "node:process";
 import { API, adoFetch, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished }
   from "./lib/ado.mjs";
@@ -55,6 +57,9 @@ const { flags, positional } = parseArgs(process.argv.slice(2));
 const project = positional[0];
 const artefact = flags.artefact ? String(flags.artefact) : "";
 const wantedPath = flags.path ? String(flags.path) : "";
+// Only the requirements stage passes this. Everything else publishes a page
+// and nothing else, and asking those for work items would fail every one.
+const storiesFile = flags.stories ? String(flags.stories) : "";
 
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1); };
 
@@ -185,4 +190,65 @@ if (!res.ok) {
 }
 
 console.log(`  ✓ the page exists in Azure DevOps  (${wiki} :: ${pagePath})`);
+
+// ------------------------------------------------------- 3. the work items
+//
+// The page was the only thing this script checked, and for the requirements
+// stage the page is half the deliverable. Measured against the live
+// organisation while diagnosing exactly this: SA-Power-Networks held a
+// published wiki page and **zero** work items, and the issue had closed green,
+// because nothing downstream ever asked whether the backlog arrived.
+//
+// The same two-part shape as above, for the same reason: `adoId` in
+// stories.json is a file the agent wrote about itself, so the ids are then
+// resolved over the API. An agent that can invent a reason for failing can
+// invent a record of succeeding.
+if (storiesFile) {
+  let stories = null;
+  try {
+    stories = JSON.parse(await fsp.readFile(storiesFile, "utf8"));
+  } catch (e) {
+    die(`--stories ${storiesFile} could not be read: ${e.message}`);
+  }
+  if (!Array.isArray(stories)) die(`${storiesFile} is not an array of stories.`);
+
+  const ids = stories.map((st) => st?.adoId ?? st?.fields?.adoId).filter(Boolean);
+  if (ids.length !== stories.length) {
+    die([
+      `${stories.length - ids.length} of ${stories.length} stor${stories.length === 1 ? "y" : "ies"} carry no \`adoId\`, so the backlog was not created.`,
+      ``,
+      `  file: ${storiesFile}`,
+      ``,
+      `The wiki page published, which is why this step got this far. The work`,
+      `items are the other half of this stage and they are missing.`,
+      ``,
+      `Read the publish run's transcript. If every MCP call was refused, the`,
+      `credential in .mcp.json is the place to look — the server is handed`,
+      `\`PERSONAL_ACCESS_TOKEN\` from the root .env, and a variable name that does`,
+      `not resolve produces a 401 that reads exactly like a bad token.`,
+      ``,
+      `The deterministic path does all of this and writes the ids back itself:`,
+      `  node scripts/ado-workitems.mjs ${storiesFile} --summary-url "<the wiki page URL>"`,
+    ].join("\n"));
+  }
+
+  const probe = await adoFetch(
+    ado,
+    `${projectPath(ado)}/_apis/wit/workitemsbatch?api-version=${API}`,
+    {
+      method: "POST",
+      // Explicit, because adoFetch does not set one for a body and Azure
+      // DevOps answers a missing content type with 400, not with a hint.
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ids.slice(0, 200).map(Number), fields: ["System.Id"] }),
+    },
+  ).catch((e) => die(`Could not confirm the work items: ${e.message}`));
+
+  const found = (probe?.value ?? []).length;
+  if (found !== Math.min(ids.length, 200)) {
+    die(`stories.json names ${ids.length} work item(s) but Azure DevOps returned ${found}.`);
+  }
+  console.log(`  ✓ ${ids.length} work item(s) exist in Azure DevOps`);
+}
+
 console.log(`\n${artefact} is published.\n`);

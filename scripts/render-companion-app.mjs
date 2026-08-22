@@ -84,6 +84,99 @@ async function readDataUri(dir, base) {
   return null;
 }
 
+/**
+ * The island payload, with every trace of WHICH DOCUMENT said so removed.
+ *
+ * The persona and capability artefacts carry their evidence in two shapes: a
+ * `sources` / `sourceDocs` array of file paths, and inline `[project/root/….md
+ * §7.5]` citations inside the persona's own today/tomorrow bullets. Both were
+ * rendered — the arrays as chips, the citations as raw text mid-sentence — so
+ * a client reading their own delivery pack saw our internal file names.
+ *
+ * Stripped HERE, at the one place every surface is fed from, rather than at
+ * each render site: there are several, and a new one added later would
+ * reintroduce this silently.
+ *
+ * The files on disk are NOT touched. Evidence is the discipline the persona
+ * skill is built on, `validate-experience.mjs` checks it, and the wiki
+ * document keeps it — this removes it from the page, not from the record.
+ */
+function withoutSourceRefs(value) {
+  const CITATION = /\s*\[[^\]\n]*\.md[^\]\n]*\]/gi;
+  const walk = (v) => {
+    if (typeof v === "string") return v.replace(CITATION, "").trim();
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) {
+        // "source" (singular) is the third shape, on the metric objects
+        // inside a journey: {name, today, target, source}. Measured rather
+        // than guessed — the first two keys alone still left five file
+        // paths on the page.
+        if (k === "sources" || k === "sourceDocs" || k === "source") continue;
+        out[k] = walk(val);
+      }
+      return out;
+    }
+    return v;
+  };
+  return walk(value);
+}
+
+/**
+ * A story's description, as parts a page can lay out.
+ *
+ * `stories.json` is Jira-shaped and its description is Jira WIKI MARKUP —
+ * `h3.` headings, `*bold*` labels and `*` bullets — because that is what the
+ * BA writes for the backlog. The page rendered the whole thing into a single
+ * <p>, so HTML collapsed every newline and the reader got one grey paragraph
+ * with `h3. Detail Description`, the labels, every acceptance criterion and a
+ * literal `{{PRODUCT_SUMMARY_URL}}` run together on one line.
+ *
+ * Parsed HERE rather than in the browser for the reason every other artefact
+ * is: the renderer owns the pixels, the agent writes the data, and a parse
+ * that runs in node can be checked without a browser.
+ *
+ * Anything unrecognised comes back as `narrative`, so a story written in a
+ * shape this does not know still renders its own words rather than nothing.
+ */
+function parseStory(raw) {
+  const text = String(raw == null ? "" : raw).trim();
+  const empty = { narrative: "", userGroup: "", process: "", acceptanceCriteria: [] };
+  if (!text) return empty;
+
+  // A publish-time token, substituted when the work items are created and
+  // meaningless to anyone reading the page.
+  const cleaned = text.replace(/^[ \t]*\*Product Summary:\*.*$/gim, "").trim();
+
+  const field = (label) => {
+    const re = new RegExp("^[ \\t]*\\*" + label + ":\\*[ \\t]*(.+)$", "im");
+    const m = cleaned.match(re);
+    return m ? m[1].trim() : "";
+  };
+
+  // The bullets are the `* ` lines after the Acceptance Criteria label.
+  const parts = cleaned.split(/^[ \t]*\*Acceptance Criteria[^*\n]*:\*[ \t]*$/im);
+  const acceptanceCriteria = (parts[1] || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("* "))
+    .map((l) => l.slice(2).trim())
+    .filter(Boolean);
+
+  // The narrative is everything before the first structural marker.
+  const narrative = cleaned
+    .split(/^[ \t]*(?:h[1-6]\.|\*(?:User Group|Process|Acceptance Criteria))/im)[0]
+    .trim();
+
+  return {
+    narrative,
+    userGroup: field("User Group"),
+    process: field("Process"),
+    acceptanceCriteria,
+  };
+}
+
 async function readText(...rel) {
   try { return await fs.readFile(path.join(...rel), "utf8"); } catch { return null; }
 }
@@ -617,7 +710,7 @@ async function loadFeatureArtefacts(featureRoot) {
   const stories = Array.isArray(storiesJson)
     ? storiesJson.map((s) => ({
         summary: s?.fields?.summary ?? s?.summary ?? "",
-        description: s?.fields?.description ?? s?.description ?? "",
+        ...parseStory(s?.fields?.description ?? s?.description ?? ""),
         labels: s?.fields?.labels ?? s?.labels ?? [],
       }))
     : [];
@@ -808,7 +901,7 @@ function page({ project, features, generatedOn, p, theme }) {
     }));
   }
 
-  const data = jsonIsland({
+  const data = jsonIsland(withoutSourceRefs({
     project,
     features: features.map((f) => f.feature),
     personas: p.personas, journeys: p.journeys,
@@ -817,7 +910,7 @@ function page({ project, features, generatedOn, p, theme }) {
     featureTabs,
     tabMeta: liveTabs.map((t) => ({ id: t.id, label: t.label, eyebrow: t.eyebrow, noun: t.noun })),
     defaultSection: DEFAULT_SECTION,
-  });
+  }));
 
   // Horizontal perspective nav with a sliding underline — the house design
   // system's shell, matching the capability map page.
@@ -1237,6 +1330,15 @@ main{min-width:0}
 .chip{display:inline-block;font-size:.7rem;font-weight:600;padding:.15rem .5rem;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--muted)}
 .chip-actor{background:var(--tmrw-bg);border-color:var(--tmrw-line);color:var(--tmrw-lbl)}
 .chip-quiet{background:transparent}
+.story{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:1.15rem 1.25rem;margin:0 0 .85rem;display:flex;flex-direction:column;gap:.6rem}
+.story-h{margin:0;font-size:.95rem;font-weight:700;line-height:1.45;color:var(--brand-fg,var(--brand-deep))}
+.story-b{margin:0;font-size:.85rem;line-height:1.6;color:var(--ink,inherit)}
+.story-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:.35rem .6rem;font-size:.78rem}
+.story-k{color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:.68rem}
+.story-v{color:var(--muted);margin-right:.6rem}
+.story-ac-h{margin:.2rem 0 0;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.story-ac{margin:0;padding-left:1.1rem;display:flex;flex-direction:column;gap:.3rem;font-size:.84rem;line-height:1.55}
+.story-labels{display:flex;flex-wrap:wrap;gap:.35rem}
 .act-caps{display:flex;gap:.5rem;font-size:.75rem;color:var(--muted);border-top:1px solid var(--line);padding-top:.6rem}
 .act-caps-l{font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.65rem;flex:none}
 
@@ -1706,11 +1808,6 @@ ${(() => {
       go.addEventListener("click", function(){ dlg.close(); showSub("journeys"); selectJourney(j.id); });
       body.appendChild(el("div", null, " ")).appendChild(go);
     }
-    if((p.sources||[]).length){
-      var s = el("div","box"); s.appendChild(el("h4",null,"Evidence"));
-      p.sources.forEach(function(f){ s.appendChild(el("span","tag", f)); });
-      body.appendChild(s);
-    }
     if(typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open","");
   }
   if($("#dlg-close")) $("#dlg-close").addEventListener("click", function(){ dlg.close(); });
@@ -2132,7 +2229,25 @@ ${(() => {
       row.stories.forEach(function(s){
         var card = el("article","story");
         card.appendChild(el("h3","story-h", s.summary || "(untitled story)"));
-        if(s.description) card.appendChild(el("p","story-b", s.description));
+        if(s.narrative) card.appendChild(el("p","story-b", s.narrative));
+        if(s.userGroup || s.process){
+          var meta = el("div","story-meta");
+          if(s.userGroup){
+            meta.appendChild(el("span","story-k","User group"));
+            meta.appendChild(el("span","story-v", s.userGroup));
+          }
+          if(s.process){
+            meta.appendChild(el("span","story-k","Process"));
+            meta.appendChild(el("span","story-v", s.process));
+          }
+          card.appendChild(meta);
+        }
+        if(s.acceptanceCriteria && s.acceptanceCriteria.length){
+          card.appendChild(el("h4","story-ac-h","Acceptance criteria"));
+          var ul = el("ul","story-ac");
+          s.acceptanceCriteria.forEach(function(a){ ul.appendChild(el("li",null,a)); });
+          card.appendChild(ul);
+        }
         if(s.labels && s.labels.length){
           var lw = el("div","story-labels");
           s.labels.forEach(function(l){ lw.appendChild(el("span","chip", l)); });
@@ -2319,7 +2434,7 @@ ${(() => {
         leafList.forEach(function(leaf){
           var t = el("button","cap-tile"); t.type = "button"; t.dataset.capId = leaf.id;
           t.setAttribute("aria-haspopup","dialog");
-          t.dataset.hay = [leaf.id, leaf.name, leaf.description, leaf.stage, (leaf.sourceDocs||[]).join(" ")].join(" ").toLowerCase();
+          t.dataset.hay = [leaf.id, leaf.name, leaf.description, leaf.stage].join(" ").toLowerCase();
           t.dataset.root = r.id;
           var th = el("div","cap-tile-h");
           th.appendChild(el("span","cap-tile-n tnum", leaf.id));
@@ -2402,12 +2517,6 @@ ${(() => {
         body.appendChild(el("p","so-desc","No process activity references this capability. That is a coverage gap worth checking."));
       }
 
-      if((c.sourceDocs||[]).length){
-        body.appendChild(el("h3","so-h","Evidence"));
-        var ev = el("div","chips");
-        c.sourceDocs.forEach(function(d){ ev.appendChild(el("span","chip chip-quiet", d)); });
-        body.appendChild(ev);
-      }
 
       $("#so").hidden = false; $("#so-scrim").hidden = false;
       document.body.style.overflow = "hidden";
