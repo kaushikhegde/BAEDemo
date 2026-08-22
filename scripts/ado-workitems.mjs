@@ -103,9 +103,44 @@ const summaryUrl = typeof flags["summary-url"] === "string" ? flags["summary-url
 const esc = (s) => String(s ?? "")
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// `requirement-generator` still writes `fields.description` as Jira WIKI
+// MARKUP (`h3. Heading`, `*bold*`, `* bullet`) — the body template the skill
+// still uses is unchanged from the Jira/Confluence era, ADO descriptions are
+// HTML. Dumped through `esc()` alone, every story rendered as one
+// unformatted paragraph with literal "h3." and "*" characters visible.
+// Blocks are separated by a blank line, same convention Jira wiki markup
+// itself uses, so splitting on that is enough to recover the structure.
+function jiraWikiToHtml(text) {
+  const bold = (raw) => esc(raw).replace(/\*([^\n*]+)\*/g, "<b>$1</b>");
+  const blocks = String(text ?? "").split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
+  return blocks.map((block) => {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 1 && /^h3\.\s+/.test(lines[0])) {
+      return `<h3>${bold(lines[0].replace(/^h3\.\s+/, ""))}</h3>`;
+    }
+    if (lines.every((l) => l.startsWith("* "))) {
+      return `<ul>${lines.map((l) => `<li>${bold(l.slice(2))}</li>`).join("")}</ul>`;
+    }
+    // "*Acceptance Criteria (AC):*" followed by its "* " bullets is one block
+    // — the label and the list render separately, not as one bullet.
+    if (lines.length > 1 && lines.slice(1).every((l) => l.startsWith("* "))) {
+      return `<p>${bold(lines[0])}</p><ul>${lines.slice(1).map((l) => `<li>${bold(l.slice(2))}</li>`).join("")}</ul>`;
+    }
+    return `<p>${bold(lines.join(" "))}</p>`;
+  }).join("");
+}
+
+// `requirement-generator` still writes stories.json as Atlassian Cloud
+// REST v3 create-issue payloads — `{fields: {summary, description, ...}}` —
+// a leftover from before this pipeline moved off Jira/Confluence that the
+// skill was never updated to drop. Every field read here falls back through
+// `story.fields.*` for that reason: without it, EVERY story in EVERY
+// project's stories.json reads as titleless and this script silently
+// creates nothing, which is what happened here before this fallback existed.
 function describe(story, title) {
   const parts = [];
-  if (story.description) parts.push(`<p>${esc(story.description)}</p>`);
+  const description = story.description ?? story.fields?.description;
+  if (description) parts.push(jiraWikiToHtml(description));
   const ac = story.acceptanceCriteria ?? story.acceptance_criteria ?? [];
   if (Array.isArray(ac) && ac.length) {
     parts.push(`<p><b>Acceptance criteria</b></p><ul>${ac.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`);
@@ -130,7 +165,7 @@ function describe(story, title) {
 
 const results = [];
 for (const story of stories) {
-  const title = story.summary ?? story.title ?? story.name;
+  const title = story.summary ?? story.title ?? story.name ?? story.fields?.summary;
   if (!title) { say(`  · skipped a story with no title`); continue; }
 
   const acText = (story.acceptanceCriteria ?? story.acceptance_criteria ?? []);
@@ -176,7 +211,7 @@ for (const story of stories) {
   const url = `${projectPath(ado)}/_workitems/edit/${item.id}`;
   story.adoId = item.id;
   story.adoUrl = url;
-  results.push({ story: story.process_number ?? story.number ?? title, id: item.id, url });
+  results.push({ story: story.process_number ?? story.number ?? story._meta?.story_number ?? title, id: item.id, url });
   say(`  ${existingId ? "updated" : "created"} #${item.id}  ${title}`);
 }
 
