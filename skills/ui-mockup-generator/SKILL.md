@@ -55,7 +55,7 @@ Read everything the feature has produced. Each one answers a different question:
 | `solutions/UI/capabilities/*.json` | Which capability each screen realises (project-level) |
 | `solutions/UI/productsummary/*.md` | The user stories and acceptance criteria the screen must satisfy |
 | `solutions/UI/DataModel/*.md` | Field names, types, picklist values, required-ness |
-| `solutions/UI/Architecture/*.md` | Which component type the screen is (portal page, internal record page, flow screen) |
+| `solutions/UI/Architecture/*.md` | Confirms or corrects `surface` once it exists — usually empty on a first pass (see below), so treat this as a later correction, not the source |
 | `solutions/UI/QA/*.md` | The states a screen must be able to show — error, empty, blocked, success |
 | `projects/<project>/<feature>/requirements/UI/` | **Supplied mockups.** If the client gave real designs, treat them as the source of truth and reflect them rather than inventing a different layout |
 
@@ -105,6 +105,30 @@ Work from **journeys and stories**, not from your imagination.
 
 Aim for the smallest set that covers the journeys. Eight well-specified screens
 beat thirty thin ones.
+
+**Classify `surface` from the persona, not from Architecture.** `Architecture`
+is usually empty at this point in the pipeline — `ui` deliberately runs before
+it — so it cannot be the source for whether a screen is internal or external.
+The persona already tells you: an internal staff persona (an agent, an
+officer, an internal team role) means an **internal record page**, and the
+renderer draws it in Salesforce's own SLDS palette instead of the client's
+brand, because that is what the screen will actually look like in production.
+An external/customer persona means an **external portal**, rendered in the
+client's brand.
+
+Use one of these four values for every screen's `surface`:
+
+| Value | When |
+|---|---|
+| `Internal record page` | A Salesforce record page or app screen an internal user works from |
+| `Internal console` | An agent console / omni-channel work surface |
+| `Flow screen` | A guided Flow screen, internal-facing |
+| `External portal` | Anything an external customer, applicant or the public sees |
+
+If a later revision adds `solutions/UI/Architecture/*.md`, use it to confirm or
+correct this — e.g. a screen guessed as an external portal that the SAD
+actually places on an internal console. Record the correction in that
+revision's `notes`.
 
 ## Step 2 — Specify each screen
 
@@ -246,6 +270,12 @@ instruction**, you are revising, not regenerating.
   generic field labels with the data model's real names, types, required-ness and
   picklist values, then add the failure states the test pack catalogues. Update
   `generatedFrom`. Do not redesign screens that were already right.
+- **A refresh once Architecture exists is the other common one.** Re-check each
+  screen's `surface` against what the SAD actually places it as — a screen
+  guessed `External portal` from its persona alone may turn out to be an
+  internal console, or vice versa. Changing `surface` changes which palette the
+  screen renders in (SLDS vs the client's brand), so this is a real design
+  change, not bookkeeping — note it.
 - Add a `notes` entry on each changed screen recording what changed.
 - Re-run `render-mockups.mjs`. A revision that breaks the JSON contract is worse
   than no revision.

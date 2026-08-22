@@ -18,6 +18,15 @@
 // are duplicated rather than imported because the companion app builds its CSS
 // inline inside a template literal; if that is ever extracted into a module,
 // both should read it from there instead.
+//
+// TWO THEMES, chosen PER SCREEN by `surface`. A screen that will actually be
+// delivered as a Salesforce Lightning record page, console or Flow screen
+// should not be mocked up in the client's public marketing brand — that is
+// what a portal page looks like, not what an agent sees. `isInternalSurface()`
+// switches that screen's own page (each screen is already its own HTML file)
+// to a fixed SLDS-derived palette instead of the client's `theme.json`. The
+// client's logo/name still appears in the header either way, so a reviewer
+// still knows whose org this is — only the colour tokens change.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -74,7 +83,39 @@ async function loadTheme(projectRoot) {
     brandFg: textColour(deep, "#f7f8fb"),
     accentFg: textColour(accent, "#f7f8fb"),
     selFg: readableOn(brand),
+    panel: "#f7f8fb",
+    bg: "#ffffff",
   };
+}
+
+// Fixed Salesforce Lightning Design System palette — not derived from the
+// client's theme.json, deliberately. Brand blue #0176D3 and deep #032D60 are
+// SLDS's own brand tokens; the panel/bg pairing is SLDS's standard page
+// background (#F3F2F2) over white card surfaces. The client's logo/name are
+// carried over from the brand theme so a reviewer still knows whose org this
+// is — only the colour tokens are Salesforce's rather than the client's.
+function sldsThemeFrom(brandTheme) {
+  const brand = "#0176d3", deep = "#032d60", accent = "#0b5cab";
+  return {
+    ...brandTheme,
+    brand, deep, accent,
+    brandFg: textColour(deep, "#f3f2f2"),
+    accentFg: textColour(accent, "#f3f2f2"),
+    selFg: readableOn(brand),
+    panel: "#f3f2f2",
+    bg: "#ffffff",
+  };
+}
+
+// A screen's `surface` decides which theme it renders in. Free text (it
+// mirrors persona/journeyStep, which are also free text), matched leniently
+// rather than validated against a strict enum — an unrecognised value falls
+// back to the client brand theme, the same "safe default" the block renderer
+// uses for an unknown `tone` or `kind`. Recognise the values the skill is
+// told to write: "Internal record page", "Internal console", "Flow screen".
+function isInternalSurface(surface) {
+  const v = str(surface).toLowerCase();
+  return v.includes("internal") || v.includes("lightning") || v === "flow screen";
 }
 
 // ------------------------------------------------------------------ validate
@@ -204,7 +245,7 @@ function block(b) {
 function css(t) {
   return `
 :root{
-  --ink:#1f2430; --muted:#5c6478; --line:#e2e5ee; --bg:#ffffff; --panel:#f7f8fb;
+  --ink:#1f2430; --muted:#5c6478; --line:#e2e5ee; --bg:${t.bg || "#ffffff"}; --panel:${t.panel || "#f7f8fb"};
   --brand:${t.brand}; --brand-deep:${t.deep}; --brand-fg:${t.brandFg};
   --accent:${t.accent}; --accent-fg:${t.accentFg};
   --sel-bg:${t.brand}; --sel-fg:${t.selFg};
@@ -448,17 +489,20 @@ async function main() {
   doc.project = str(doc.project) || project;
   doc.feature = str(doc.feature) || feature;
 
-  const theme = await loadTheme(path.join(WORKSPACE, "projects", project));
+  const brandTheme = await loadTheme(path.join(WORKSPACE, "projects", project));
+  const sldsTheme = sldsThemeFrom(brandTheme);
   const outDir = path.join(WORKSPACE, "generated-apps", project, "mockups", slug(feature));
   await fs.mkdir(outDir, { recursive: true });
 
   for (const s of screens) {
+    const theme = isInternalSurface(s.surface) ? sldsTheme : brandTheme;
     await fs.writeFile(path.join(outDir, `${slug(s.id)}.html`), screenPage(theme, doc, s), "utf8");
   }
-  await fs.writeFile(path.join(outDir, "index.html"), indexPage(theme, doc, screens), "utf8");
+  await fs.writeFile(path.join(outDir, "index.html"), indexPage(brandTheme, doc, screens), "utf8");
 
   const personas = [...new Set(screens.map((s) => str(s.persona)).filter(Boolean))];
   const stories = [...new Set(screens.flatMap((s) => list(s.realises?.stories)))];
+  const internalCount = screens.filter((s) => isInternalSurface(s.surface)).length;
   console.log(JSON.stringify({
     ok: true,
     index: rel(path.join(outDir, "index.html")),
@@ -466,7 +510,9 @@ async function main() {
     states: screens.reduce((n, s) => n + s.states.length, 0),
     personas,
     storiesCovered: stories.length,
-    theme: theme.logoSrc ? { brand: theme.brand, logo: "embedded" } : { brand: theme.brand, logo: "text" },
+    theme: brandTheme.logoSrc ? { brand: brandTheme.brand, logo: "embedded" } : { brand: brandTheme.brand, logo: "text" },
+    sldsScreens: internalCount,
+    brandScreens: screens.length - internalCount,
   }, null, 2));
   console.log(`\n[render-mockups] now re-render the companion app so its UI tab picks these up:\n  node scripts/render-companion-app.mjs ${project}\n`);
 }
