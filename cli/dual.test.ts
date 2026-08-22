@@ -11,15 +11,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { uploadDocument, suggestProjectName } from "./dual.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-type Call = { url: string; method: string };
+type Call = { url: string; method: string; body?: unknown };
 
 /** Stub global fetch (the chatbot) and a Client (the platform API). */
 function harness(chat: { status: number; body?: unknown }) {
   const calls: Call[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
-    calls.push({ url: String(url), method: (init?.method ?? "GET").toUpperCase() });
+    calls.push({ url: String(url), method: (init?.method ?? "GET").toUpperCase(), body: init?.body });
     return {
       ok: chat.status >= 200 && chat.status < 300,
       status: chat.status,
@@ -147,4 +150,43 @@ test("suggestProjectName matches the server's slug rule", () => {
   for (const n of ["SA Power Networks", "SA - Power", "  SAPN "]) {
     assert.equal(suggestProjectName(suggestProjectName(n)), suggestProjectName(n));
   }
+});
+
+// A PowerPoint reaches the server the same way every other document does.
+//
+// It could not, until the converter learned the format: the file pickers did
+// not offer it, and an un-hinted deck was refused with `ambiguous_kind`. What
+// this pins is the CLI half — that it posts a deck to the SAME two routes the
+// browser posts to, with the same fields, so neither surface can grow its own
+// idea of what may be uploaded. The conversion itself is one shared script.
+const deckPath = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "scyne-cli-"));
+  const f = join(dir, "Slides for Scyne.pptx");
+  writeFileSync(f, "PK");   // never parsed here — the server converts, not the CLI
+  return f;
+})();
+
+test("a deck with no feature goes to the PROJECT upload route", async () => {
+  const h = harness({ status: 200, body: { filename: "Slides for Scyne.md", converted: true } });
+  try {
+    await uploadDocument(h.client, { project: "SAPN", file: deckPath });
+    const post = h.calls.find(c => c.method === "POST" && c.url.includes("/api/upload"))!;
+    assert.ok(post.url.endsWith("/api/upload/project"), post.url);
+    const form = post.body as FormData;
+    assert.equal(form.get("project"), "SAPN");
+    assert.equal((form.get("file") as File).name, "Slides for Scyne.pptx");
+  } finally { h.restore(); }
+});
+
+test("a deck with --as carries the hint, so the server never has to guess", async () => {
+  const h = harness({ status: 200, body: { filename: "Slides for Scyne.md", converted: true } });
+  try {
+    await uploadDocument(h.client, { project: "SAPN", feature: "MVP", file: deckPath, as: "sop" });
+    const post = h.calls.find(c => c.method === "POST" && c.url.includes("/api/upload"))!;
+    assert.ok(post.url.endsWith("/api/upload"), post.url);
+    const form = post.body as FormData;
+    assert.equal(form.get("feature"), "MVP");
+    assert.equal(form.get("hint"), "sop");
+    assert.equal((form.get("file") as File).name, "Slides for Scyne.pptx");
+  } finally { h.restore(); }
 });
