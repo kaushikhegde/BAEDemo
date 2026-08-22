@@ -28,15 +28,32 @@
  *        [--type "User Story"]        override the discovered type
  *        [--parent <id>]              link each item under this work item
  *        [--summary-url <url>]        substituted for {{PRODUCT_SUMMARY_URL}}
+ *        [--artefact-key <key>]       e.g. "CRM-Management/requirements" — with
+ *                                     --published-json, adds a real Links-tab
+ *                                     Wiki relation to each item, on top of the
+ *                                     inline hyperlink --summary-url gives you
  *        [--dry-run] [--json]
  *
  * Re-running UPDATES rather than duplicating: the created id is written back
  * into stories.json, and a story that already has one is patched.
+ *
+ * THE WIKI LINK'S ARTIFACT URI IS NOT DOCUMENTED ANYWHERE PUBLIC
+ * ---------------------------------------------------------------
+ * `vstfs:///Wiki/WikiPage/{projectId}%2F{wikiId}%2F{pagePath, no leading
+ * slash, URL-encoded}` — reverse-engineered by comparing a manually-created
+ * link's stored relation against a guessed construction (2026-08-22). Verified
+ * two ways: it matched the manual one byte-for-byte, and Azure DevOps itself
+ * confirmed the match by refusing a duplicate with `RelationAlreadyExistsException`
+ * when both were present on the same work item. The first guess put the page
+ * path's leading "/" through `encodeURIComponent` as part of the segment
+ * instead of stripping it first, which double-encoded it (`%2f%2F` instead of
+ * `%2F`) and created a relation ADO accepted (200) but never rendered — a
+ * PATCH returning success here is not evidence the link is real.
  */
 
 import fs from "node:fs/promises";
 import process from "node:process";
-import { API, adoFetch, fail, loadAdo, parseArgs, projectPath, readAdoTarget } from "./lib/ado.mjs";
+import { API, adoFetch, fail, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished } from "./lib/ado.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const json = Boolean(flags.json);
@@ -99,6 +116,45 @@ if (!stories.length) fail(`${storiesFile} contains no stories.`);
 
 const summaryUrl = typeof flags["summary-url"] === "string" ? flags["summary-url"] : null;
 
+// A real Links-tab relation, not just the inline hyperlink --summary-url
+// gives the description. Optional: needs --published-json AND --artefact-key
+// to name which published page to link, so an invocation without them just
+// skips this — the inline hyperlink still happens regardless.
+const publishedJsonPath = typeof flags["published-json"] === "string" ? flags["published-json"] : null;
+const artefactKey = typeof flags["artefact-key"] === "string" ? flags["artefact-key"] : null;
+
+async function resolveWikiArtifactUri() {
+  if (!publishedJsonPath || !artefactKey) return null;
+  const record = (await readPublished(publishedJsonPath))?.ado?.[artefactKey];
+  if (!record?.wikiId || !record?.wikiPath) return null;
+
+  const project = await adoFetch(ado, `${orgUrl(ado)}/_apis/projects/${encodeURIComponent(ado.project)}?api-version=${API}`);
+  const pagePath = String(record.wikiPath).replace(/^\//, "");
+  return `vstfs:///Wiki/WikiPage/${project.id}%2F${record.wikiId}%2F${encodeURIComponent(pagePath)}`;
+}
+
+function orgUrl(a) { return `https://dev.azure.com/${encodeURIComponent(a.org)}`; }
+
+const wikiArtifactUri = await resolveWikiArtifactUri();
+if (artefactKey && !wikiArtifactUri) {
+  say(`  (no recorded wiki page for artefact "${artefactKey}" — skipping the Links-tab relation, inline hyperlink only)`);
+}
+
+/** Best-effort — a failed link must never fail the work item it belongs to. */
+async function linkToWikiPage(id) {
+  if (!wikiArtifactUri) return "skipped";
+  const ops = [{ op: "add", path: "/relations/-", value: { rel: "ArtifactLink", url: wikiArtifactUri, attributes: { name: "Wiki Page" } } }];
+  try {
+    await adoFetch(ado, `${projectPath(ado)}/_apis/wit/workitems/${id}?api-version=${API}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json-patch+json" }, body: JSON.stringify(ops) });
+    return "linked";
+  } catch (e) {
+    if (String(e.message).includes("RelationAlreadyExistsException")) return "already";
+    say(`  · #${id}: could not add the wiki link (${String(e.message).split("\n")[0]})`);
+    return "failed";
+  }
+}
+
 /** ADO descriptions are HTML, not Atlassian Document Format and not markdown. */
 const esc = (s) => String(s ?? "")
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -146,7 +202,13 @@ function describe(story, title) {
     parts.push(`<p><b>Acceptance criteria</b></p><ul>${ac.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`);
   }
   let html = parts.join("");
-  if (summaryUrl) html = html.split("{{PRODUCT_SUMMARY_URL}}").join(esc(summaryUrl));
+  if (summaryUrl) {
+    // A real hyperlink, not the bare URL as text — {{PRODUCT_SUMMARY_URL}}
+    // sits after a "Product Summary:" label (see jiraWikiToHtml), so this is
+    // the one place in the description a reader can click through to the
+    // wiki page rather than having to copy a plain string.
+    html = html.split("{{PRODUCT_SUMMARY_URL}}").join(`<a href="${esc(summaryUrl)}">${esc(summaryUrl)}</a>`);
+  }
 
   // The whole reason the substitution lives in this script rather than in a
   // model's instructions is that it must not be forgettable. Observed while
@@ -164,6 +226,7 @@ function describe(story, title) {
 }
 
 const results = [];
+const linkCounts = { linked: 0, already: 0, failed: 0, skipped: 0 };
 for (const story of stories) {
   const title = story.summary ?? story.title ?? story.name ?? story.fields?.summary;
   if (!title) { say(`  · skipped a story with no title`); continue; }
@@ -182,7 +245,8 @@ for (const story of stories) {
 
   const existingId = story.adoId ?? story.ado_id ?? null;
   if (flags["dry-run"]) {
-    say(`  would ${existingId ? `update #${existingId}` : "create"}: ${title}`);
+    say(`  would ${existingId ? `update #${existingId}` : "create"}: ${title}` +
+      (wikiArtifactUri ? ` (+ link to wiki page)` : ""));
     continue;
   }
 
@@ -211,7 +275,11 @@ for (const story of stories) {
   const url = `${projectPath(ado)}/_workitems/edit/${item.id}`;
   story.adoId = item.id;
   story.adoUrl = url;
-  results.push({ story: story.process_number ?? story.number ?? story._meta?.story_number ?? title, id: item.id, url });
+
+  const linkOutcome = await linkToWikiPage(item.id);
+  linkCounts[linkOutcome]++;
+
+  results.push({ story: story.process_number ?? story.number ?? story._meta?.story_number ?? title, id: item.id, url, wikiLink: linkOutcome });
   say(`  ${existingId ? "updated" : "created"} #${item.id}  ${title}`);
 }
 
@@ -222,10 +290,15 @@ if (!flags["dry-run"]) {
   await fs.writeFile(storiesFile, JSON.stringify(raw, null, 2) + "\n", "utf8");
 }
 
-if (json) console.log(JSON.stringify({ ok: true, type, items: results }, null, 2));
+if (json) console.log(JSON.stringify({ ok: true, type, items: results, wikiLinks: linkCounts }, null, 2));
 else {
   console.log("");
   console.log("| story | work item | url |");
   console.log("|---|---|---|");
   for (const r of results) console.log(`| ${r.story} | ${r.id} | ${r.url} |`);
+  if (wikiArtifactUri) {
+    console.log("");
+    console.log(`Wiki page links: ${linkCounts.linked} added, ${linkCounts.already} already there` +
+      (linkCounts.failed ? `, ${linkCounts.failed} FAILED — see above` : "") + ".");
+  }
 }
