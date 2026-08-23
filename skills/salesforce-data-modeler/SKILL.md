@@ -34,7 +34,20 @@ Use it to:
   consumer, and getting this wrong mis-frames every persona and every story;
 - avoid proposing anything the organisation is not permitted to do;
 - ground language, roles and obligations in the client's real operating model
-  rather than in generic industry assumptions.
+  rather than in generic industry assumptions;
+- **check for a confirmed delivery platform.** If it states a platform decision
+  as settled (e.g. "Salesforce Energy & Utilities Cloud is confirmed and
+  licensed for this engagement") that is a fact, not a hypothesis — design
+  directly against it in Step 3 and do not raise it as an Assumption or Open
+  Question. A generated document that reopens a question this file already
+  answered, or writes "pending confirmation" over a stated fact, is the failure
+  this line exists to prevent — it happened on SA-Power-Networks-Transformation
+  22 August 2026: a data model correctly modelled `ServicePoint` once told E&U
+  Cloud was confirmed, then a later regeneration reverted to the custom
+  `Service_Point__c` fallback because the confirmation lived only in a prior
+  conversation, not in any file the regeneration actually read. If this file
+  says nothing about the platform, that silence is not a "no" — follow the
+  standard-object-first ladder in Step 3 as normal, uncertainty and all.
 
 The file is **optional**. If it is absent, proceed on the discovery documents
 alone and note in your output that no project definition was supplied — do not
@@ -169,17 +182,25 @@ extracted entity to a standard object before considering anything custom. Most
 service requirements land on Account, Contact, Case, Asset, Product2,
 Entitlement, Knowledge, and the activity objects.
 
-**If the client is a utility** (the product summary or discovery documents use
-language like NMI, service point, meter, feeder, transformer, premises,
-connection point, tariff, or "utility/energy provider") **and Energy &
-Utilities Cloud is in scope, check Appendix D before falling through to
-custom.** A surprising share of what reads as bespoke utility data — the
-service point itself, the premises, the meter and transformer as devices — is a
-relabelled standard object there, not a genuine gap. Appendix D's own "what is
-genuinely still custom" section names the parts (interval usage volumes,
-network/outage events, notification/compliance records) that correctly remain
-custom even with E&U Cloud licensed — don't skip proposing those just because
-the client is a utility.
+**If the project definition confirms Energy & Utilities Cloud is licensed,
+Appendix D is not optional reading — it is the baseline for every NMI/service
+point/meter/premises entity, the same way Appendix A is the baseline for
+everything else.** Model directly against it; do not hedge with an Assumption
+or Open Question about licensing the project definition already settled.
+
+**If the client merely reads as a utility** (the product summary or discovery
+documents use language like NMI, service point, meter, feeder, transformer,
+premises, connection point, tariff, or "utility/energy provider") but the
+project definition doesn't confirm E&U Cloud either way, check Appendix D
+before falling through to custom, and record the licensing status as a
+genuine Open Question — you don't know the answer, so say that, rather than
+silently picking one. A surprising share of what reads as bespoke utility
+data — the service point itself, the premises, the meter and transformer as
+devices — is a relabelled standard object there, not a genuine gap either way.
+Appendix D's own "what is genuinely still custom" section names the parts
+(interval usage volumes, network/outage events, notification/compliance
+records) that correctly remain custom even with E&U Cloud licensed — don't
+skip proposing those just because the client is a utility.
 
 Apply this test in order. Go custom only when all four fail:
 

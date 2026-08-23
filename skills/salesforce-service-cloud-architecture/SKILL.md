@@ -36,7 +36,14 @@ Use it to:
   consumer, and getting this wrong mis-frames every persona and every story;
 - avoid proposing anything the organisation is not permitted to do;
 - ground language, roles and obligations in the client's real operating model
-  rather than in generic industry assumptions.
+  rather than in generic industry assumptions;
+- **check for a confirmed delivery platform.** If it states a platform decision
+  as settled (e.g. "Salesforce Energy & Utilities Cloud is confirmed and
+  licensed for this engagement"), that is a fact — design directly against it
+  and do not raise it as an Open Question or ADR pending confirmation. Also
+  read the data model's own platform choice (Step 3 has the full rule) — the
+  two documents must not independently re-decide the same licensing question
+  and risk disagreeing.
 
 The file is **optional**. If it is absent, proceed on the discovery documents
 alone and note in your output that no project definition was supplied — do not
