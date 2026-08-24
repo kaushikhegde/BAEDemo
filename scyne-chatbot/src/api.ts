@@ -809,3 +809,34 @@ export function sinceFor(period: SpendPeriod, now: number = Date.now()): string 
   d.setDate(d.getDate() - days);
   return d.toISOString();
 }
+
+/**
+ * The stored chat for a project: its conversation id and every message in it.
+ *
+ * The transcript in localStorage is the fuller copy — it carries agent bubbles,
+ * approval decisions and Published cards the database never held — so this is
+ * the fallback for a project THIS browser has not chatted about: another
+ * machine, or cleared site data. Never an error: a chat that will not load
+ * opens empty rather than refusing to start.
+ */
+export async function getProjectChat(
+  project: string,
+): Promise<{ conversationId: string | null; messages: { role: string; content: unknown }[] } | null> {
+  try {
+    const r = await apiFetch(`/api/conversations?project=${encodeURIComponent(project)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+/** Forget every conversation this person has had about a project. */
+export async function clearProjectChat(project: string): Promise<{ cleared: number }> {
+  const r = await apiFetch(`/api/conversations?project=${encodeURIComponent(project)}`, { method: "DELETE" });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || `Could not clear the chat (${r.status})`);
+  }
+  return r.json();
+}

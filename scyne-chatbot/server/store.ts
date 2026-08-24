@@ -119,7 +119,7 @@ export interface WriteResult {
 }
 
 async function send(
-  token: string, method: "POST" | "PATCH", path: string, body: unknown,
+  token: string, method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown,
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
   const res = await fetch(BASE + path, {
     method,
@@ -611,4 +611,81 @@ function titleFor(message: unknown): string | null {
   const trimmed = text.trim().replace(/\s+/g, " ");
   if (!trimmed) return null;
   return trimmed.length > 80 ? trimmed.slice(0, 79) + "…" : trimmed;
+}
+
+
+/**
+ * The conversation a project is currently on, with its messages.
+ *
+ * A chat belongs to a PROJECT: `conversations.project_id` has carried one since
+ * the platform migration, but the browser held a single conversation id across
+ * every project it switched between — so a chat begun under one client kept
+ * being appended to while the person talked about another.
+ *
+ * The most recently updated conversation for the project is the one to resume;
+ * `listConversations` already orders by `updated_at desc` and already scopes to
+ * the caller, so this reads the first row rather than choosing.
+ *
+ * Best-effort, like everything else here: an unresolvable project or an
+ * unreachable orchestrator returns null and the caller opens an empty chat. A
+ * chat that will not load must never be a chat that will not start.
+ */
+export async function loadProjectChat(
+  token: string | null,
+  project: string,
+): Promise<{ conversationId: string; messages: { role: string; content: unknown }[] } | null> {
+  if (!token || !project) return null;
+  try {
+    const row = (await listProjects(token)).find(p => p.name === project);
+    if (!row) return null;
+
+    const convos = await fetchJson<{ id: string }[]>(
+      token, `/conversations?projectId=${encodeURIComponent(row.id)}`);
+    const latest = convos.data?.[0];
+    if (!latest?.id) return null;
+
+    const msgs = await fetchJson<{ role: string; content: unknown }[]>(
+      token, `/conversations/${latest.id}/messages`);
+    return { conversationId: latest.id, messages: msgs.data ?? [] };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Forget every conversation this caller has had about a project.
+ *
+ * Scoped to the project rather than to the installation: `scyne reset --all` is
+ * the only thing that used to clear a chat, and it takes users, projects and
+ * documents with it. Clearing one client's thread should not be that.
+ *
+ * The orchestrator deletes the messages by cascade and refuses an id the caller
+ * does not own, so this loops over what it was allowed to list in the first
+ * place and cannot reach anyone else's.
+ */
+export async function clearProjectChat(
+  token: string | null,
+  project: string,
+): Promise<WriteResult & { cleared?: number }> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  if (!project) return { state: "skipped", reason: "no project" };
+  try {
+    const row = (await listProjects(token)).find(p => p.name === project);
+    if (!row) return { state: "skipped", reason: `no such project in the database: ${project}` };
+
+    const convos = await fetchJson<{ id: string }[]>(
+      token, `/conversations?projectId=${encodeURIComponent(row.id)}`);
+    if (!convos.ok) return { state: "failed", reason: `could not list conversations (${convos.status})` };
+
+    let cleared = 0;
+    for (const c of convos.data ?? []) {
+      const r = await send(token, "DELETE", `/conversations/${c.id}`);
+      if (r.ok) cleared++;
+      // A 404 means it is already gone, which is the outcome asked for.
+      else if (r.status !== 404) return { state: "failed", reason: failureText(r.status, r.json), cleared };
+    }
+    return { state: "created", cleared };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
 }

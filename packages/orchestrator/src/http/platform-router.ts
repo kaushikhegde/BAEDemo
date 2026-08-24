@@ -70,6 +70,7 @@ export const PLATFORM_ROUTES = [
   { method: "POST",   path: "/conversations" },
   { method: "GET",    path: "/conversations/{id}/messages" },
   { method: "POST",   path: "/conversations/{id}/messages" },
+  { method: "DELETE", path: "/conversations/{id}" },
   { method: "GET",    path: "/spend" },
   { method: "GET",    path: "/models" },
   { method: "PUT",    path: "/models/{provider}/{model}" },
@@ -749,6 +750,14 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     created(res, await platform.appendMessage(String(req.params.id), {
       role: String(role), content, adapter: adapter ?? null, model: model ?? null,
     }));
+  }));
+
+  r.delete("/conversations/:id", requireAuth(), wrap(async (req, res) => {
+    const done = await platform.deleteConversation(
+      String(req.params.id), req.principal!.companyId, req.principal!.user.id);
+    if (!done) return missing(res, "conversation");
+    await audit(req, "chat.clear", { targetType: "conversation", targetId: String(req.params.id) });
+    ok(res, { ok: true });
   }));
 
   // ----------------------------------------------------------------- spend

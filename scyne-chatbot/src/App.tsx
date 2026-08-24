@@ -29,7 +29,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
-import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, republishArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, type RunSummary, type OpsIssue } from "./api";
+import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, republishArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, getProjectChat, clearProjectChat, type RunSummary, type OpsIssue } from "./api";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -53,8 +53,57 @@ const SUGGESTED_PROMPTS = [
 // the conversation vanished on reload ("chat empties"). Persist the rendered
 // messages + the LLM history so a refresh resumes the conversation, not just the
 // right-hand workflow panel (which already rehydrates from /api/status).
-const MESSAGES_KEY = "scyne_chat_messages";
-const HISTORY_KEY = "scyne_chat_history";
+// A chat belongs to a PROJECT, so its three keys are slotted by project name
+// rather than being one global set. The browser used to hold ONE transcript and
+// ONE conversation id across every project it switched between: a thread begun
+// under one client kept being appended to while the person talked about
+// another, and every one of those turns was filed against the first project (or
+// against no project at all, if none was pinned when it started).
+//
+// A chat with no project pinned is a normal state — "what projects have we
+// got?" is how the assistant is designed to open — so it gets a slot too.
+const UNFILED = "__unfiled";
+const slot = (project: string | null) => project || UNFILED;
+const messagesKey = (project: string | null) => `scyne_chat_messages__${slot(project)}`;
+const historyKey = (project: string | null) => `scyne_chat_history__${slot(project)}`;
+const conversationKey = (project: string | null) => `scyne_conversation_id__${slot(project)}`;
+
+/** The pinned project, read straight from storage — state initialisers need it. */
+function storedProject(): string | null {
+  if (typeof window === "undefined") return null;
+  try { return JSON.parse(window.localStorage.getItem("scyne_target") || "null")?.project ?? null; }
+  catch { return null; }
+}
+
+/**
+ * Lift a transcript written before chats were per-project into its slot.
+ *
+ * Runs once, on the first load after this change. The transcript is filed under
+ * whatever project was pinned at that moment, which is the only honest guess
+ * available — the old keys recorded no project at all. Without it, everyone
+ * mid-conversation would come back to an empty chat, which reads as data loss
+ * rather than as a migration.
+ */
+function migrateLegacyChatSlot(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const legacy = window.localStorage.getItem("scyne_chat_messages");
+    if (legacy === null) return;
+    const project = storedProject();
+    // Never overwrite a slot that already holds a conversation.
+    if (!window.localStorage.getItem(messagesKey(project))) {
+      window.localStorage.setItem(messagesKey(project), legacy);
+      const hist = window.localStorage.getItem("scyne_chat_history");
+      if (hist) window.localStorage.setItem(historyKey(project), hist);
+      const conv = window.localStorage.getItem("scyne_conversation_id");
+      if (conv) window.localStorage.setItem(conversationKey(project), conv);
+    }
+    for (const k of ["scyne_chat_messages", "scyne_chat_history", "scyne_conversation_id"]) {
+      window.localStorage.removeItem(k);
+    }
+  } catch { /* private mode — nothing to migrate, and nothing to lose */ }
+}
+migrateLegacyChatSlot();
 
 /**
  * Drop "Published" cards whose links were all announced earlier in the same
@@ -116,11 +165,27 @@ function migrateLinkKeys(list: UIMessage[]): UIMessage[] {
   });
 }
 
-function loadMessages(): UIMessage[] {
+/**
+ * The readable text of a stored message's content.
+ *
+ * The database holds `ApiMsg.content` verbatim, which is a plain string for a
+ * user turn and Anthropic-shaped blocks for an assistant one. A turn that was
+ * nothing but a `tool_use` block has no text and is dropped by the caller
+ * rather than rendered as an empty bubble.
+ */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((b: { type?: string; text?: string }) => (b?.type === "text" ? b.text ?? "" : "")).join("");
+  }
+  return "";
+}
+
+function loadMessages(project: string | null): UIMessage[] {
   if (typeof window === "undefined") return [buildGreeting(false)];
   const resuming = !!window.localStorage.getItem("scyne_parent_issue_id");
   try {
-    const raw = window.localStorage.getItem(MESSAGES_KEY);
+    const raw = window.localStorage.getItem(messagesKey(project));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) return dedupeLinkMessages(migrateLinkKeys(parsed as UIMessage[]));
@@ -129,10 +194,10 @@ function loadMessages(): UIMessage[] {
   return [buildGreeting(resuming)];
 }
 
-function loadHistory(): ApiMsg[] {
+function loadHistory(project: string | null): ApiMsg[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(HISTORY_KEY);
+    const raw = window.localStorage.getItem(historyKey(project));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed as ApiMsg[];
@@ -141,10 +206,32 @@ function loadHistory(): ApiMsg[] {
   return [];
 }
 
-function clearChatPersistence() {
+/** Forget ONE project's stored chat. Signing out clears every slot instead. */
+function clearChatPersistence(project: string | null) {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(MESSAGES_KEY);
-  window.localStorage.removeItem(HISTORY_KEY);
+  window.localStorage.removeItem(messagesKey(project));
+  window.localStorage.removeItem(historyKey(project));
+  window.localStorage.removeItem(conversationKey(project));
+}
+
+/**
+ * Forget every project's chat — for signing out, where the next person at this
+ * browser must not inherit the last one's conversations.
+ */
+function clearAllChatPersistence() {
+  if (typeof window === "undefined") return;
+  for (const k of Object.keys(window.localStorage)) {
+    if (k.startsWith("scyne_chat_messages__") || k.startsWith("scyne_chat_history__")
+        || k.startsWith("scyne_conversation_id__")) {
+      window.localStorage.removeItem(k);
+    }
+  }
+}
+
+/** Does this project have a transcript on THIS device? */
+function hasStoredChat(project: string | null): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(messagesKey(project)) !== null;
 }
 
 export default function App() {
@@ -205,7 +292,7 @@ export default function App() {
       onLogout={() => {
         // Clear the server session first; the cookie is the server's to remove.
         void clearSession().finally(() => {
-          clearChatPersistence();
+          clearAllChatPersistence();
           setSession(null);
         });
       }}
@@ -214,15 +301,15 @@ export default function App() {
 }
 
 function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogout: () => void }) {
-  const [messages, setMessages] = useState<UIMessage[]>(() => loadMessages());
-  const [apiHistory, setApiHistory] = useState<ApiMsg[]>(() => loadHistory());
+  const [messages, setMessages] = useState<UIMessage[]>(() => loadMessages(storedProject()));
+  const [apiHistory, setApiHistory] = useState<ApiMsg[]>(() => loadHistory(storedProject()));
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   // The server-side conversation this transcript belongs to. Persisted beside
   // the transcript so a refresh keeps appending to the same one instead of
   // splitting the conversation in two, and cleared with it on sign-in.
   const [conversationId, setConversationId] = useState<string | null>(
-    typeof window !== "undefined" ? window.localStorage.getItem("scyne_conversation_id") : null,
+    typeof window !== "undefined" ? window.localStorage.getItem(conversationKey(storedProject())) : null,
   );
   const [parentIssueId, setParentIssueIdRaw] = useState<string | null>(
     typeof window !== "undefined" ? window.localStorage.getItem("scyne_parent_issue_id") : null
@@ -473,16 +560,117 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     // message back out of view — the same symptom this fix is removing.
   }, [messages, status, composerExtra]);
 
+  // ---------------------------------------------------------------- chat swap
+  //
+  // Which project the transcript on screen belongs to. A ref rather than state
+  // because the persistence effects below write with it and must not re-run
+  // when it changes — the swap itself decides what to save and when.
+  const chatProject = useRef<string | null>(storedProject());
+  // Guards the async DB read: switching twice quickly must not let the first
+  // project's transcript land after the second's.
+  const swapToken = useRef(0);
+
+  useEffect(() => {
+    const from = chatProject.current;
+    const to = targetProject;
+    if (from === to) return;
+    chatProject.current = to;
+    const mine = ++swapToken.current;
+
+    // NOT-PINNED → PINNED. The person has just said where this conversation
+    // belongs; the conversation itself is unchanged, so the thread stays on
+    // screen. Only the server-side conversation is let go: the next turn opens
+    // a fresh one carrying this project's id, and the unfiled one stays
+    // unfiled. Resetting the visible transcript here would delete the very
+    // message that announced the switch, because `set_target` fires mid-turn.
+    if (from === null) {
+      setConversationId(null);
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(messagesKey(to), JSON.stringify(messages));
+          window.localStorage.setItem(historyKey(to), JSON.stringify(apiHistory));
+          window.localStorage.removeItem(messagesKey(null));
+          window.localStorage.removeItem(historyKey(null));
+          window.localStorage.removeItem(conversationKey(null));
+        } catch { /* private mode */ }
+      }
+      return;
+    }
+
+    // PINNED → SOMEWHERE ELSE. A wholesale swap.
+    //
+    // Detach the watched run IF it belongs to the project being left: the poll
+    // appends a "Published" card to `messages`, so leaving it attached would
+    // file one project's links in another project's transcript, and persist
+    // them there. Conditional rather than unconditional because `openIssue`
+    // sets the target and the issue together — it nulls `status` in the same
+    // batch, so an issue just opened from the Issues list is not detached the
+    // moment it is chosen.
+    if (status?.target?.project && status.target.project !== to) {
+      setParentIssueId(null);
+      setStatus(null);
+      setStatusError(null);
+      setRuns([]);
+    }
+    seenLinkUrls.current.clear();
+
+    // This device's copy is the fuller one — it carries the agent bubbles,
+    // approval decisions and Published cards that the database does not hold.
+    // Prefer it, and fall back to the server for a project this browser has
+    // never chatted about (another machine, or cleared site data).
+    if (hasStoredChat(to)) {
+      const restored = loadMessages(to);
+      setMessages(restored);
+      setApiHistory(loadHistory(to));
+      setConversationId(typeof window !== "undefined"
+        ? window.localStorage.getItem(conversationKey(to)) : null);
+      seenLinkUrls.current = new Set(restored.flatMap((m) =>
+        m.kind === "links" && m.links ? [...(m.links.wiki ?? []), ...(m.links.workItems ?? [])] : []));
+      return;
+    }
+
+    setMessages([buildGreeting(false)]);
+    setApiHistory([]);
+    setConversationId(null);
+    if (!to) return;
+
+    void (async () => {
+      const remote = await getProjectChat(to);
+      if (swapToken.current !== mine) return;   // a later switch already won
+      if (!remote?.conversationId || !remote.messages.length) return;
+      // The database holds the LLM turns verbatim — `messages.content` is the
+      // same value the frontend sent — so history restores 1:1. The transcript
+      // is rebuilt from their text: agent bubbles, decisions and link cards are
+      // this device's embellishments and were never stored.
+      setApiHistory(remote.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+      const bubbles = remote.messages
+        .map((m) => ({ role: m.role, text: textOf(m.content) }))
+        .filter((m) => m.text && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({
+          id: crypto.randomUUID(),
+          role: m.role as "user" | "assistant",
+          text: m.text,
+        }));
+      if (bubbles.length) setMessages(bubbles);
+      setConversationId(remote.conversationId);
+    })();
+    // `messages`/`apiHistory` are read in the not-pinned branch but must not
+    // re-trigger the swap — this effect fires on a change of PROJECT.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetProject]);
+
   // Persist the chat transcript + LLM history so a refresh resumes the
   // conversation. The right-hand workflow panel rehydrates separately from
   // /api/status via the polling effect below.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try { window.localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages)); } catch { /* quota */ }
+    try { window.localStorage.setItem(messagesKey(chatProject.current), JSON.stringify(messages)); }
+    catch { /* quota */ }
   }, [messages]);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(apiHistory)); } catch { /* quota */ }
+    try { window.localStorage.setItem(historyKey(chatProject.current), JSON.stringify(apiHistory)); }
+    catch { /* quota */ }
   }, [apiHistory]);
 
   // Polling: once we have a parent issue, poll status every 3s.
@@ -561,7 +749,8 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       const resp = await postChat(nextHistory, { project: targetProject, feature: targetFeature }, uiContext, conversationId);
       if (resp.conversationId && resp.conversationId !== conversationId) {
         setConversationId(resp.conversationId);
-        try { window.localStorage.setItem("scyne_conversation_id", resp.conversationId); } catch { /* private mode */ }
+        try { window.localStorage.setItem(conversationKey(chatProject.current), resp.conversationId); }
+        catch { /* private mode */ }
       }
       const blocks = resp.content as any[];
       let textOut = "";
@@ -1074,22 +1263,47 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
     }]);
   }
 
-  function resetSession() {
-    if (!confirm("Start a fresh conversation? This will detach the current workflow.")) return;
+  /**
+   * Clear the chat for the PINNED PROJECT — here and on the server.
+   *
+   * Scoped rather than global, because a chat now belongs to a project: wiping
+   * every client's thread to start a fresh one about this client would be a
+   * surprising amount of collateral for a button labelled "New session".
+   *
+   * The target is deliberately KEPT. It used to be cleared, which now means
+   * swapping to the unfiled slot — so the button would empty the chat and
+   * silently move you somewhere else at the same time.
+   */
+  async function resetSession() {
+    const project = targetProject;
+    const scope = project
+      ? `This clears the chat for ${project}, here and on the server. Other projects are untouched.`
+      : `This clears the current, unfiled conversation.`;
+    if (!confirm(`Start a fresh conversation? ${scope} The current workflow is detached.`)) return;
     setParentIssueId(null);
     setStatus(null);
     setStatusError(null);
     setRuns([]);
-    clearChatPersistence();
+    clearChatPersistence(project);
     setConversationId(null);
-    if (typeof window !== "undefined") window.localStorage.removeItem("scyne_conversation_id");
     // Otherwise a fresh session would never re-announce links it already saw.
     seenLinkUrls.current.clear();
     if (typeof window !== "undefined") window.localStorage.removeItem("scyne_ui_issue_id");
     setMessages([buildGreeting(false)]);
     setApiHistory([]);
-    setTargetProject(null);
-    setTargetFeature(null);
+    // The stored conversations go too. Without this, switching away and back
+    // would restore from the database exactly the thread just cleared — the
+    // local copy is only a cache of it.
+    if (!project) return;
+    try {
+      await clearProjectChat(project);
+    } catch (e: any) {
+      setMessages((m) => [...m, {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        text: `Cleared the chat here, but the stored copy is still on the server: ${e?.message ?? e}`,
+      }]);
+    }
   }
 
   // "live" gates: awaiting the human (pending) or being regenerated after feedback
@@ -1123,12 +1337,24 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           onCancel={() => setShowWizard(false)}
           onDeployed={(project, issueId) => {
             setShowWizard(false);
+            // A brand-new project opens on a CLEAN chat — it must not inherit
+            // the thread the person was having about the last one.
+            //
+            // Moving `chatProject` forward first makes the swap effect below a
+            // no-op (`from === to`), so this decides what the new project's
+            // chat opens with. Without it the effect runs after these updates
+            // and replaces the announcement with a bare greeting.
+            clearChatPersistence(project);
+            chatProject.current = project;
+            setConversationId(null);
+            seenLinkUrls.current.clear();
+            setApiHistory([]);
             setTargetProject(project);
             setTargetFeature(null);
             setParentIssueId(issueId);
             setFeaturesRefreshKey((k) => k + 1);
             setChipsKey((k) => k + 1);
-            setMessages((m) => [...m, {
+            setMessages([buildGreeting(false), {
               id: crypto.randomUUID(),
               role: "assistant",
               text: `**${project}** is set up. I'm building the baseline now — the capability map first, then the personas. Each raises its own approval gate; live progress is on the right.`,

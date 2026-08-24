@@ -247,6 +247,33 @@ describe("chats", () => {
     expect((await p.listMessages(a.id))[0].seq).toBe(1);
     expect((await p.listMessages(b.id))[0].seq).toBe(1);
   });
+
+  it("deletes a conversation and its messages with it", async () => {
+    const u = await member();
+    const c = await p.createConversation({ companyId: company, userId: u.id });
+    await p.appendMessage(c.id, { role: "user", content: [{ type: "text", text: "hello" }] });
+
+    expect(await p.deleteConversation(c.id, company, u.id)).toBe(true);
+    expect(await p.listConversations(company, { userId: u.id })).toEqual([]);
+    // The messages go by cascade, not by a second delete anyone has to remember.
+    expect(await p.listMessages(c.id)).toEqual([]);
+  });
+
+  it("refuses to delete another user's conversation", async () => {
+    // Scoped to the owner because `listConversations` already is: a member who
+    // cannot READ a colleague's chat must not delete it by guessing an id.
+    const owner = await member("owner@x.co");
+    const other = await member("other@x.co");
+    const c = await p.createConversation({ companyId: company, userId: owner.id });
+
+    expect(await p.deleteConversation(c.id, company, other.id)).toBe(false);
+    expect(await p.listConversations(company, { userId: owner.id })).toHaveLength(1);
+  });
+
+  it("reports false for an id that matches nothing, rather than throwing", async () => {
+    const u = await member();
+    expect(await p.deleteConversation(randomUUID(), company, u.id)).toBe(false);
+  });
 });
 
 describe("run events", () => {

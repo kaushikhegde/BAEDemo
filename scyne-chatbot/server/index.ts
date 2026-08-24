@@ -166,6 +166,32 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// 1b. The project's chat — read it back, or forget it.
+//
+// A chat belongs to a project. The transcript used to live only in one
+// browser's localStorage, so switching project kept the same thread and a
+// second device saw nothing at all. These two put the database behind it.
+//
+// Both are best-effort in the same sense the recording is: a chat that cannot
+// be loaded opens empty rather than failing, because the alternative is a
+// person who cannot talk to the assistant at all.
+app.get("/api/conversations", async (req, res) => {
+  const project = String(req.query.project ?? "").trim();
+  if (!project) return res.status(400).json({ error: "project_required" });
+  const chat = await store.loadProjectChat(tokenFor(req), project);
+  res.json(chat ?? { conversationId: null, messages: [] });
+});
+
+app.delete("/api/conversations", async (req, res) => {
+  const project = String(req.query.project ?? "").trim();
+  if (!project) return res.status(400).json({ error: "project_required" });
+  const result = await store.clearProjectChat(tokenFor(req), project);
+  if (result.state === "failed") {
+    return res.status(502).json({ error: "clear_failed", message: result.reason });
+  }
+  res.json({ ok: true, cleared: result.cleared ?? 0, skipped: result.reason });
+});
+
 // 2. Trigger — create a Paperclip issue from a parameter bundle
 app.post("/api/trigger", async (req, res) => {
   try {

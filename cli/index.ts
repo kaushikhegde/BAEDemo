@@ -1170,7 +1170,29 @@ async function cmdChat(client: Client, args: string[]): Promise<void> {
     }
     return;
   }
-  throw new ApiError(400, "usage: scyne chat history");
+  if (args[0] === "clear") {
+    // Scoped to one project, because a chat belongs to one. `scyne reset --all`
+    // was the only thing that cleared a conversation before, and it takes
+    // users, projects and documents with it.
+    const project = await resolveProject(client, targetProject(client, args[1] ?? flag("project")));
+    const convos = await client.get<any[]>(`/conversations?projectId=${encodeURIComponent(project.id)}`);
+    if (!convos.length) return out(`  (no conversations for ${project.name})`);
+
+    if (!has("yes")) {
+      const answer = await prompt(
+        `Delete ${convos.length} conversation(s) for ${project.name}? They cannot be recovered. [y/N] `);
+      if (!/^y(es)?$/i.test(answer.trim())) return out("  cancelled");
+    }
+    let cleared = 0;
+    for (const c of convos) {
+      // Already gone is the outcome asked for, not a failure to report.
+      await client.del(`/conversations/${c.id}`).then(() => { cleared++; }, (e: unknown) => {
+        if (!(e instanceof ApiError) || e.status !== 404) throw e;
+      });
+    }
+    return out(`✓ cleared ${cleared} conversation(s) for ${project.name}`);
+  }
+  throw new ApiError(400, "usage: scyne chat history | scyne chat clear [<project>] [--yes]");
 }
 
 async function cmdAdapter(client: Client, args: string[]): Promise<void> {
@@ -1312,7 +1334,8 @@ scyne — the Scyne pipeline, from the command line
     installs [list]                  who installed the plugin, and where
     installs register [--version V]  register this machine
     installs revoke <id>             stop that installation authenticating
-    chat history
+    chat history                     the conversations, newest first
+    chat clear [<project>] [--yes]   forget a project's conversations
     adapter list                     what is registered, and what runs where
     adapter set <name> [--project P] switch a project, or the whole org
     adapter unset [--project P]      fall back to the next scope up

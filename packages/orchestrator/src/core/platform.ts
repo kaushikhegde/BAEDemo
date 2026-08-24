@@ -685,6 +685,22 @@ export function createPlatformRepo(db: Db) {
       return rows[0];
     },
 
+    /**
+     * Delete one conversation and, by cascade, its messages.
+     *
+     * Scoped to the company AND to the owning user, matching what
+     * `GET /conversations` already filters by: a member who cannot READ a
+     * colleague's conversation must not be able to delete it by guessing an
+     * id. A row that matches nothing returns false rather than throwing, so the
+     * caller answers 404 instead of 500.
+     */
+    async deleteConversation(id: string, companyId: string, userId: string): Promise<boolean> {
+      const { rows } = await db.query<{ id: string }>(
+        `delete from conversations where id=$1 and company_id=$2 and user_id=$3 returning id`,
+        [id, companyId, userId]);
+      return rows.length > 0;
+    },
+
     async listMessages(conversationId: string): Promise<MessageRow[]> {
       const { rows } = await db.query<MessageRow>(
         `select * from messages where conversation_id=$1 order by seq`, [conversationId]);

@@ -7,7 +7,7 @@
 // A conversation that fails to record must never fail the conversation.
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { recordChatTurn } from "./store.js";
+import { recordChatTurn, loadProjectChat, clearProjectChat } from "./store.js";
 
 type Call = { url: string; method: string; body: any };
 let calls: Call[] = [];
@@ -83,5 +83,95 @@ describe("recordChatTurn", () => {
     const r = await recordChatTurn("tok", { userMessage: "x", assistantMessage: "y" });
     expect(r.state).toBe("failed");
     expect(r.reason).toContain("ECONNREFUSED");
+  });
+});
+
+// The chat is per PROJECT. `conversations.project_id` carried one all along,
+// but the browser held ONE conversation id across every project it switched
+// between, so a thread begun under one client kept being appended to while the
+// person talked about another.
+
+const withChat = (url: string) =>
+  url.endsWith("/projects") ? { status: 200, json: [{ id: "p1", name: "SAPN" }] }
+  : url.includes("/conversations?projectId=") ? { status: 200, json: [{ id: "conv-1" }, { id: "conv-0" }] }
+  : url.includes("/messages") ? { status: 200, json: [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ] }
+  : { status: 200, json: {} };
+
+describe("loadProjectChat", () => {
+  it("returns the project's most recent conversation and its messages", async () => {
+    stub(withChat);
+    const r = await loadProjectChat("tok", "SAPN");
+    // listConversations orders by updated_at desc, so the first row is the one
+    // to resume — this reads it rather than choosing again.
+    expect(r?.conversationId).toBe("conv-1");
+    expect(r?.messages.map(m => m.role)).toEqual(["user", "assistant"]);
+    expect(calls.some(c => c.url.includes("projectId=p1"))).toBe(true);
+  });
+
+  it("returns null for a project the database does not know", async () => {
+    stub(withChat);
+    expect(await loadProjectChat("tok", "NoSuchProject")).toBeNull();
+  });
+
+  it("returns null when the project has never been chatted about", async () => {
+    stub(url => url.endsWith("/projects") ? { status: 200, json: [{ id: "p1", name: "SAPN" }] }
+                : { status: 200, json: [] });
+    expect(await loadProjectChat("tok", "SAPN")).toBeNull();
+  });
+
+  it("returns null rather than throwing when the orchestrator is unreachable", async () => {
+    // The caller opens an empty chat. A chat that will not LOAD must never be a
+    // chat that will not START.
+    globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
+    expect(await loadProjectChat("tok", "SAPN")).toBeNull();
+  });
+
+  it("skips when nobody is signed in", async () => {
+    stub(withChat);
+    expect(await loadProjectChat(null, "SAPN")).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("clearProjectChat", () => {
+  it("deletes every conversation the project has, and only that project's", async () => {
+    stub(withChat);
+    const r = await clearProjectChat("tok", "SAPN");
+    expect(r.state).toBe("created");
+    expect(r.cleared).toBe(2);
+    const deletes = calls.filter(c => c.method === "DELETE");
+    expect(deletes.map(d => d.url.split("/").pop())).toEqual(["conv-1", "conv-0"]);
+  });
+
+  it("treats an already-deleted conversation as the outcome asked for", async () => {
+    stub((url, method) =>
+      method === "DELETE" ? { status: 404, json: { error: "not_found" } } : withChat(url));
+    const r = await clearProjectChat("tok", "SAPN");
+    expect(r.state).toBe("created");
+    expect(r.cleared).toBe(0);
+  });
+
+  it("reports a refusal rather than throwing", async () => {
+    stub((url, method) =>
+      method === "DELETE" ? { status: 403, json: { message: "nope" } } : withChat(url));
+    const r = await clearProjectChat("tok", "SAPN");
+    expect(r.state).toBe("failed");
+    expect(r.reason).toBe("nope");
+  });
+
+  it("skips an unknown project instead of clearing nothing silently", async () => {
+    stub(withChat);
+    const r = await clearProjectChat("tok", "NoSuchProject");
+    expect(r.state).toBe("skipped");
+    expect(calls.filter(c => c.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("skips when nobody is signed in", async () => {
+    stub(withChat);
+    expect(await clearProjectChat(null, "SAPN")).toEqual({ state: "skipped", reason: "not signed in" });
+    expect(calls).toHaveLength(0);
   });
 });

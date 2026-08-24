@@ -1475,6 +1475,17 @@ paths:
         "201":
           description: OK
         "401": { description: Authentication required }
+  /conversations/{id}:
+    delete:
+      operationId: deleteConversation
+      summary: Delete a conversation and its messages. The caller's own conversations only.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+        "401": { description: Authentication required }
+        "404": { description: No such conversation for this caller }
   /conversations/{id}/messages:
     get:
       operationId: listMessages
