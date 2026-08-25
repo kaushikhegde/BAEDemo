@@ -9,8 +9,10 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:acceptance": "vitest run --config vitest.acceptance.config.ts",
     "typecheck": "tsc --noEmit",
+    "sync": "./node_modules/.bin/tsx scripts/sync.mjs",
     "orchestrator": "tsx src/orchestrator/server.ts",
-    "worker": "tsx src/worker/index.ts"
+    "worker": "tsx src/worker/index.ts",
+    "workspace-server": "tsx src/workspace/server.ts"
   },
   "dependencies": {
     "@azure/data-tables": "^13.3.2",

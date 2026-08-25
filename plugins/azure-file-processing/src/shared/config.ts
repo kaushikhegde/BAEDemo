@@ -34,6 +34,27 @@ export interface Config {
    *  by curl on the HOST, where that name does not resolve. Null means "use the
    *  endpoint from the connection string", which is right when running natively. */
   publicBlobEndpoint: string | null;
+
+  // ---- MCP server 2 (scyne-workspace) ----------------------------------
+  //
+  // Distinct from everything above, which is server 1's (`scyne`, :8080)
+  // Azurite/job-processing config. This block is what lets server 2 reach the
+  // Scyne orchestrator and chatbot that already run natively on this machine.
+
+  /** Where MCP server 2 reaches the Scyne orchestrator. */
+  orchUrl: string;
+  /** Bearer token for it. auth-middleware accepts
+   *  `bearerFrom(headers) ?? cookieCredential(headers)`, and this server is not
+   *  a browser, so a token is the only option it has. Also sent to the chatbot
+   *  — both accept the same token. */
+  orchToken: string | null;
+  /** Where MCP server 2 reaches the Scyne chatbot for document uploads. */
+  chatbotUrl: string;
+  /** Port for MCP server 2. 8080 belongs to the file plane. */
+  workspacePort: number;
+  /** The Scyne workspace root — where `projects/<project>/...` lives on disk.
+   *  Defaults to cwd because this server is meant to run from the repo root. */
+  workspaceRoot: string;
 }
 
 /** Accepts the shapes an operator actually types. Anything else is a typo
@@ -72,6 +93,12 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => ({
   tempDir: env.TEMP_DIR || "/tmp/afp",
   allowLocalPathUpload: bool(env, "ALLOW_LOCAL_PATH_UPLOAD", !env.MCP_BEARER_TOKEN),
   publicBlobEndpoint: env.SAS_PUBLIC_BLOB_ENDPOINT || null,
+
+  orchUrl: env.SCYNE_ORCH_URL || "http://127.0.0.1:3100",
+  orchToken: env.SCYNE_ORCH_TOKEN || null,
+  chatbotUrl: env.SCYNE_CHATBOT_URL || `http://127.0.0.1:${env.CHATBOT_PORT || 4000}`,
+  workspacePort: num(env, "WORKSPACE_PORT", 8081),
+  workspaceRoot: env.WORKSPACE_PATH || process.cwd(),
 });
 
 export const UPLOADS_CONTAINER = "uploads";
