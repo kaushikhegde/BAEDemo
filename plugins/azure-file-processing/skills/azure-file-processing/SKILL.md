@@ -46,7 +46,16 @@ upload_file({ path: "/Users/you/Downloads/contract.pdf" })
 
 The server opens the file, streams it to storage in blocks, records the
 SHA-256 of the bytes it actually sent, and queues the job — in that one call.
-Only `.pdf`, `.docx`, `.txt` and `.md` are accepted.
+
+Accepted: PDF, Word, PowerPoint, Excel, HTML, CSV, RTF, EPUB, ODF and plain
+text. Images and audio are refused deliberately — a markdown rendering of a
+screenshot loses the point of the screenshot, and audio has a better path.
+
+Every finished job carries a **`document.md`** artifact alongside its chunks: a
+structured markdown rendering with headings and tables intact. `get_result`
+lists it. Do not download it to read — it is the whole document. It exists so
+`ingest_document` on the workspace plane can file it into a Scyne project, and
+so a format with no page text (a deck, a spreadsheet) is still searchable.
 
 **Do not** run `shasum`, **do not** run `upload.mjs`, and **do not** read one
 byte of the file to "check" it first. The checksum is computed for you and

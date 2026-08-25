@@ -10,7 +10,8 @@ import { getJob, updateJob } from "../shared/jobs.js";
 import { log } from "../shared/logger.js";
 import { downloadToTemp } from "./download.js";
 import { writeArtifacts } from "./artifacts.js";
-import { extractPages, readMetadata } from "./extract/index.js";
+import { extractPages, readMetadata, canExtractPages } from "./extract/index.js";
+import { writeMarkdownFile, type Converter } from "./markdown.js";
 
 export const WORKER_ID = `w-${randomUUID().slice(0, 8)}`;
 
@@ -103,6 +104,12 @@ const process1 = async (ctx: Ctx, jobId: string, attempt: number): Promise<void>
     expectSha256: job.sha256,
   });
 
+  // Declared outside the try so the finally can remove it. It holds a full
+  // markdown rendering of the document — for a large spreadsheet that is not
+  // small — and a job that throws mid-chunking must not leave one behind on a
+  // worker that will run thousands more.
+  let preScratch: string | null = null;
+
   try {
     const ext = extname(job.filename).toLowerCase();
     const params = JSON.parse(job.params || "{}") as Record<string, number>;
@@ -111,7 +118,28 @@ const process1 = async (ctx: Ctx, jobId: string, attempt: number): Promise<void>
     const pageWindow = params.pageWindow ?? ctx.cfg.pageWindow;
 
     await updateJob(ctx.storage, jobId, { phase: "extracting" });
-    const meta = await readMetadata(downloaded.path, ext);
+
+    // A spreadsheet or a slide deck has no page text to stream, so there is
+    // nothing for the chunker to consume. Converting it to markdown FIRST and
+    // chunking that gives those formats working search and fetch — without
+    // page citations, which they never had to give: a .pptx has slides and a
+    // .xlsx has sheets, neither of which is a page. Formats the page extractor
+    // CAN read are left alone, so a PDF keeps the page-accurate citations that
+    // are the whole point of the file plane.
+    let chunkPath = downloaded.path;
+    let chunkExt = ext;
+    let preConverted: Converter | null = null;
+    if (!canExtractPages(ext)) {
+      preScratch = join(ctx.cfg.tempDir, `${randomUUID()}-pre.md`);
+      await updateJob(ctx.storage, jobId, { phase: "converting" });
+      preConverted = (await writeMarkdownFile(
+        preScratch, downloaded.path, ext, job.filename, ctx.cfg,
+      )).converter;
+      chunkPath = preScratch;
+      chunkExt = ".md";
+    }
+
+    const meta = await readMetadata(chunkPath, chunkExt);
     await updateJob(ctx.storage, jobId, { progressTotal: meta.pages, phase: "chunking" });
 
     // Progress is throttled: a page-per-write would put thousands of round
@@ -119,8 +147,19 @@ const process1 = async (ctx: Ctx, jobId: string, attempt: number): Promise<void>
     // more than one every couple of seconds does.
     let lastWrite = 0;
     const result = await writeArtifacts(ctx.storage, ctx.cfg, jobId, {
-      pages: extractPages(downloaded.path, ext, { pageWindow }),
+      pages: extractPages(chunkPath, chunkExt, { pageWindow }),
       meta, chunkChars, overlapChars,
+      // The temp file is already here and already verified against the sha256
+      // the uploader recorded, so rendering markdown from it costs a second
+      // local read and no second download. For a pre-converted format this
+      // points at the markdown, so writeMarkdownFile copies it through rather
+      // than running a second, identical conversion — `converterOverride`
+      // carries the engine that actually did the work, which would otherwise
+      // be reported as the passthrough that merely copied its output.
+      source: {
+        path: chunkPath, ext: chunkExt, filename: job.filename,
+        converterOverride: preConverted,
+      },
       onProgress: (done) => {
         const now = Date.now();
         if (now - lastWrite < PROGRESS_EVERY_MS) return;
@@ -140,6 +179,7 @@ const process1 = async (ctx: Ctx, jobId: string, attempt: number): Promise<void>
     });
   } finally {
     await rm(downloaded.path, { force: true });
+    if (preScratch) await rm(preScratch, { force: true }).catch(() => {});
   }
 };
 

@@ -7,6 +7,7 @@ import { ARTIFACTS_CONTAINER, type Config } from "../shared/config.js";
 import type { Storage } from "../shared/storage.js";
 import { log } from "../shared/logger.js";
 import { chunkPages, type PageText } from "./chunk.js";
+import { writeMarkdownFile, type Converter } from "./markdown.js";
 import type { DocMetadata } from "./extract/index.js";
 
 export interface ChunkIndexEntry {
@@ -16,6 +17,9 @@ export interface ChunkIndexEntry {
 export interface JobResult {
   pages: number; words: number; chunks: number;
   language: string; headings: string[]; tables: number; durationMs: number;
+  /** Which engine produced `document.md`, and how long it is. Absent when
+   *  no `source` was supplied and therefore no markdown was rendered. */
+  converter?: Converter; markdownChars?: number;
 }
 
 const HEADING = /^(?:#{1,6}\s+\S|\d+(?:\.\d+)*[.)]?\s+[A-Z])/;
@@ -30,11 +34,19 @@ export const writeArtifacts = async (
     chunkChars: number;
     overlapChars: number;
     onProgress?: (pagesDone: number) => void;
+    /** The downloaded file itself, so `document.md` can be rendered from it.
+     *  Optional: a caller that only wants chunks (every unit test here) omits
+     *  it and no markdown artifact is written. */
+    source?: {
+      path: string; ext: string; filename: string;
+      converterOverride?: Converter | null;
+    };
   },
 ): Promise<JobResult> => {
   const startedAt = Date.now();
   await mkdir(cfg.tempDir, { recursive: true });
   const scratch = join(cfg.tempDir, `${randomUUID()}-chunks.jsonl`);
+  const mdScratch = join(cfg.tempDir, `${randomUUID()}-document.md`);
   // Declared here, not inside the try block, so the finally below can destroy
   // it: createWriteStream's open() is asynchronous, and abandoning the stream
   // without destroying it lets a deferred open() (still holding buffered
@@ -141,12 +153,30 @@ export const writeArtifacts = async (
           blobHTTPHeaders: { blobContentType: "application/json" },
         });
 
+    // `document.md` is rendered SEPARATELY from the chunks above, deliberately,
+    // rather than by chunking the markdown. The two artifacts answer two
+    // different questions and want opposite things: chunks want page numbers,
+    // because every citation search_chunks returns is a page reference, and
+    // markitdown throws pagination away (it is a rendering decision, absent
+    // from a .docx entirely). The markdown wants headings and tables, which the
+    // page-at-a-time extractor cannot see. Producing each with the engine that
+    // suits it costs one extra pass over a file that is already on local disk,
+    // and keeps both properties instead of trading one away for the other.
+    let markdown: { converter: Converter; chars: number } | null = null;
+    if (input.source) {
+      markdown = await writeMarkdownFile(
+        mdScratch, input.source.path, input.source.ext, input.source.filename, cfg,
+        input.source.converterOverride ?? null,
+      );
+    }
+
     const result: JobResult = {
       pages: Math.max(input.meta.pages, pagesSeen),
       words, chunks,
       language: words > 0 && stopwordHits / words > 0.02 ? "en" : "unknown",
       headings, tables,
       durationMs: Date.now() - startedAt,
+      ...(markdown ? { converter: markdown.converter, markdownChars: markdown.chars } : {}),
     };
 
     // uploadFile streams from disk, so chunks.jsonl is never held in memory —
@@ -164,6 +194,11 @@ export const writeArtifacts = async (
     // (same jobId/name), so a retry simply overwrites whatever partial set was
     // left behind. No rollback is attempted here, deliberately: rollback
     // machinery can itself fail halfway, trading one partial state for another.
+    if (markdown) {
+      await container.getBlockBlobClient(`${jobId}/document.md`).uploadFile(mdScratch, {
+        blobHTTPHeaders: { blobContentType: "text/markdown; charset=utf-8" },
+      });
+    }
     await container.getBlockBlobClient(`${jobId}/chunks.jsonl`).uploadFile(scratch, {
       blobHTTPHeaders: { blobContentType: "application/x-ndjson" },
     });
@@ -193,5 +228,6 @@ export const writeArtifacts = async (
       await once(out, "close").catch(() => {});
     }
     await rm(scratch, { force: true }).catch(() => {});
+    await rm(mdScratch, { force: true }).catch(() => {});
   }
 };

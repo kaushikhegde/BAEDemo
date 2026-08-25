@@ -6,6 +6,10 @@ import type { Ctx } from "../mcp.js";
 const MAX_RESPONSE_BYTES = 8192;
 
 const ARTIFACTS = [
+  // Listed but NEVER returned inline: it is the whole document. `bytes` is a
+  // properties read, so naming it here costs nothing and tells a caller the
+  // markdown exists to be ingested. ingest_document is what moves it.
+  { type: "markdown", name: "document.md",   contentType: "text/markdown" },
   { type: "chunks",   name: "chunks.jsonl",  contentType: "application/x-ndjson" },
   { type: "index",    name: "index.json",    contentType: "application/json" },
   { type: "metadata", name: "metadata.json", contentType: "application/json" },

@@ -18,11 +18,23 @@ import { startJob } from "./start-job.js";
 const BLOCK_BYTES = 8 * 1024 * 1024;
 const CONCURRENCY = 4;
 
+/** Only the formats worth labelling precisely. Anything absent here uploads
+ *  with no explicit content type, which Azure stores as
+ *  application/octet-stream — correct, and never load-bearing: every consumer
+ *  routes on the FILENAME's extension, not on this header. */
 const CONTENT_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".csv": "text/csv",
+  ".rtf": "application/rtf",
+  ".epub": "application/epub+zip",
   ".txt": "text/plain",
   ".md": "text/markdown",
+  ".markdown": "text/markdown",
 };
 
 export interface UploadFileArgs {

@@ -6,7 +6,25 @@ import { mintUploadSas } from "../../shared/sas.js";
 import { log } from "../../shared/logger.js";
 import type { Ctx } from "../mcp.js";
 
-export const SUPPORTED_EXTENSIONS = [".pdf", ".docx", ".txt", ".md"] as const;
+/** Everything the worker can turn into markdown — deliberately the same set
+ *  `scripts/convert-to-md.mjs` accepts, because a document the Scyne pipeline
+ *  would happily read must not be refused at the plugin's door. It was pdf /
+ *  docx / txt / md while chunking was the only thing the worker did; a
+ *  PowerPoint deck or a spreadsheet has no page text worth chunking but a
+ *  perfectly good markdown rendering, which is the artifact ingest_document
+ *  actually wants.
+ *
+ *  Images and audio stay out, for the reason convert-to-md.mjs gives: a
+ *  markdown rendering of a screenshot loses the point of the screenshot, and
+ *  audio has a better path through transcription. */
+export const SUPPORTED_EXTENSIONS = [
+  ".pdf", ".docx", ".txt", ".md", ".markdown",
+  ".doc", ".xlsx", ".html", ".htm", ".xml", ".ipynb",
+  ".pptx", ".ppt", ".pptm", ".ppsx", ".pps", ".pot", ".ppsm",
+  ".odt", ".ods", ".odp",
+  ".xls", ".xlsm", ".xlsb", ".docm",
+  ".rtf", ".epub", ".csv",
+] as const;
 
 /** Azure caps a single Put Blob at 5000 MiB, and a request that large is fragile
  *  regardless. scripts/upload.mjs stages blocks above this. */

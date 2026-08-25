@@ -18,7 +18,7 @@ export const deleteJob = async (ctx: Ctx, args: { jobId: string }) => {
   const job = await getJob(ctx.storage, args.jobId);
   if (!job) throw new Error(`unknown job ${args.jobId}`);
 
-  // The worker uploads its four artifacts and writes `state: "succeeded"`
+  // The worker uploads its artifacts and writes `state: "succeeded"`
   // unconditionally, with no check that the job it is finishing has not
   // meanwhile been deleted. Purging now and refusing later would let a
   // `queued`/`running` job's own completion re-create everything this call

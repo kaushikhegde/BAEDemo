@@ -91,9 +91,26 @@ refused with the reason.
 
 ## Documents
 
-`attach_document` takes a **local path**, never file contents. It is converted to
-markdown on arrival and the source archived, so the filename it reports back is
-frequently not the one you passed — use the reported one.
+**`ingest_document` is the one to reach for.** It takes a local path, streams the
+bytes to Azure in 8 MiB blocks, has a worker convert them to markdown *there*,
+and files only the markdown into the project. A 2 GB PDF goes in without a byte
+of it entering the conversation. It accepts PDF, Word, PowerPoint, Excel, HTML,
+CSV, RTF, EPUB and plain text.
+
+It blocks while the worker runs — seconds for a small document, minutes for a
+very large one — and returns counts, an engine name and a path. **Never text.**
+If you want to know what the document SAYS, that is `search_chunks` on the file
+plane, not this.
+
+`attach_document` does the same job by reading the whole file into memory and
+posting it. Use it only for something small when you have a reason to skip the
+worker; it will fail on a large file, which is the ceiling this plugin exists to
+remove.
+
+Both convert on arrival and archive the source, so the filename reported back is
+frequently not the one you passed — use the reported one. `ingest_document`
+archives the original **in Azure**, not in `original-files/`; `delete_job`
+disposes of it.
 
 For a feature-level document pass `kind`: `sop`, `transcripts`, `notes` or `ui`.
 The folder is what the pipeline reads — the BA treats `Transcripts/` as the
@@ -104,6 +121,41 @@ choosing it is a real decision, not a filing convenience.
 use them before guessing a name. `list_documents` marks each row `inDb`. A row
 with `inDb: false` is on disk and absent from the database: real, and fixed by
 `npm run sync:docs -- --apply`. Report it rather than passing over it.
+
+`replace_document` swaps one for a new local file — it removes the old markdown
+AND its archived original first, which is what stops the replacement landing
+beside it as `handling (1).md`.
+
+**`delete_document` needs the person's word first.** It takes the file, its
+archived original and its database row. A sentence typed at a prompt is not
+consent to change what every later stage reads: say what you are about to
+delete, and wait. Taking the archived original too is deliberate — leave it and
+the next conversion pass puts the document straight back.
+
+`read_document` returns one document's full text. For short notes only. Anything
+substantial belongs on the file plane, or you have just spent the context window
+this plugin exists to protect.
+
+## Changing what a stage produced
+
+`revise_artefact` is the one that makes this more than a launcher. "Add an SLA
+breach field to the data model", "reword story 2.4.1.3", "the personas are too
+generic" — it hands the owning agent its own previous output plus your
+instruction verbatim and asks for a **small diff**, not a regeneration. It
+raises its own gate, and on approval it UPDATES the existing wiki page instead
+of creating a second one.
+
+Keep the instruction specific. The agent is given nothing else to work from, and
+a regenerate-from-scratch produces a diff too large for a reviewer to check —
+which defeats the gate that follows it.
+
+`republish_artefact` re-publishes an approved document to the same page, for
+when a publish failed on a bad target and the document itself is fine. Far
+cheaper than re-running the stage.
+
+`staleness` reports artefacts generated before one of their inputs last changed.
+Nothing regenerates on its own — say what is stale and let the person decide. A
+refresh is twenty-five minutes and real money, and it over-reports deliberately.
 
 ## What this does not do
 

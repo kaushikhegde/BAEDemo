@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "vitest run test/*.test.ts --exclude 'test/*.int.test.ts' --exclude 'test/*.acc.test.ts'",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -18,7 +20,9 @@
     "@azure/data-tables": "^13.3.2",
     "@azure/storage-blob": "^12.33.0",
     "@azure/storage-queue": "^12.31.0",
+    "@firecrawl/anydoc": "0.2.3",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "markitdown-ts": "^0.0.10",
     "sax": "^1.6.1",
     "yauzl": "^3.4.0",
     "zod": "^4.4.3"

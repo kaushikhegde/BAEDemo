@@ -27,11 +27,68 @@ export interface AttachResult {
   synced: { pushed: number; skipped: number; bytes: number } | { error: string };
 }
 
+export interface PostArgs {
+  project: string; feature?: string; kind?: DocKind;
+  filename: string; bytes: Buffer;
+}
+
+/**
+ * POSTs one document to the chatbot's multipart upload route and returns its
+ * parsed response.
+ *
+ * Extracted so `attach_document` (bytes read from the caller's disk) and
+ * `ingest_document` (markdown fetched back from Azure) reach the chatbot by
+ * exactly one path. Two copies of this would be two places for the `hint`
+ * mapping, the 409 translation and the project-vs-feature route choice to
+ * drift — and the chatbot is the ONLY thing permitted to write a document row,
+ * so this is the seam that rule lives on.
+ */
+export const postDocument = async (ctx: OrchCtx, args: PostArgs): Promise<any> => {
+  const form = new FormData();
+  form.set("file", new Blob([new Uint8Array(args.bytes)]), args.filename);
+  form.set("project", args.project);
+  if (args.feature) form.set("feature", args.feature);
+  // The route reads `hint`, not `kind`. Mapped once, here.
+  if (args.kind) form.set("hint", args.kind);
+
+  const route = args.feature ? "/api/upload" : "/api/upload/project";
+  const url = `${ctx.cfg.chatbotUrl.replace(/\/+$/, "")}${route}`;
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (ctx.cfg.orchToken) headers.authorization = `Bearer ${ctx.cfg.orchToken}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", headers, body: form });
+  } catch (e: any) {
+    throw new Error(
+      `cannot reach the Scyne chatbot at ${url}: ${e?.message ?? e}. ` +
+      `Start it with \`npm run dev\` at the workspace root.`);
+  }
+  const text = await res.text();
+  let body: any;
+  try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
+
+  if (res.status === 401) throw new Error("not_authenticated: set SCYNE_ORCH_TOKEN");
+  if (res.status === 409 && body?.error === "ambiguous_kind") {
+    throw new Error(
+      `ambiguous_kind: ${args.filename} matches neither the SOP nor the transcript ` +
+      `pattern. Pass kind: sop | transcripts | notes | ui.`);
+  }
+  if (!res.ok) {
+    throw new Error(`${body?.error ?? `http_${res.status}`}: ${body?.message ?? text.slice(0, 300)}`);
+  }
+  return body ?? {};
+};
+
 /**
  * Uploads a LOCAL file into a Scyne project (or feature) via the chatbot's
  * multipart routes, then pushes the resulting workspace tree to blob so the
  * durable copy matches disk. A sync failure is reported, never thrown — the
  * file and its database row are real either way.
+ *
+ * Holds the whole file in memory, so it suits a note or a transcript and not a
+ * multi-gigabyte PDF. `ingest_document` is the one for those: same destination,
+ * but the bytes go disk → Azure → worker and only the markdown comes back.
  */
 export const attachDocument = async (ctx: OrchCtx, args: AttachArgs): Promise<AttachResult> => {
   const abs = isAbsolute(args.path) ? args.path : resolve(process.cwd(), args.path);
@@ -49,38 +106,10 @@ export const attachDocument = async (ctx: OrchCtx, args: AttachArgs): Promise<At
       "kind applies to a FEATURE document only; a project document always lands in documents/");
   }
 
-  const bytes = await readFile(abs);
-  const form = new FormData();
-  form.set("file", new Blob([new Uint8Array(bytes)]), basename(abs));
-  form.set("project", args.project);
-  if (args.feature) form.set("feature", args.feature);
-  // The route reads `hint`, not `kind`.
-  if (args.kind) form.set("hint", args.kind);
-
-  const path = args.feature ? "/api/upload" : "/api/upload/project";
-  const url = `${ctx.cfg.chatbotUrl.replace(/\/+$/, "")}${path}`;
-  const headers: Record<string, string> = { accept: "application/json" };
-  if (ctx.cfg.orchToken) headers.authorization = `Bearer ${ctx.cfg.orchToken}`;
-
-  let res: Response;
-  try {
-    res = await fetch(url, { method: "POST", headers, body: form });
-  } catch (e: any) {
-    throw new Error(`cannot reach the Scyne chatbot at ${url}: ${e?.message ?? e}`);
-  }
-  const text = await res.text();
-  let body: any;
-  try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
-
-  if (res.status === 401) throw new Error("not_authenticated: set SCYNE_ORCH_TOKEN");
-  if (res.status === 409 && body?.error === "ambiguous_kind") {
-    throw new Error(
-      `ambiguous_kind: ${basename(abs)} matches neither the SOP nor the transcript ` +
-      `pattern. Pass kind: sop | transcripts | notes | ui.`);
-  }
-  if (!res.ok) {
-    throw new Error(`${body?.error ?? `http_${res.status}`}: ${body?.message ?? text.slice(0, 300)}`);
-  }
+  const body = await postDocument(ctx, {
+    project: args.project, feature: args.feature, kind: args.kind,
+    filename: basename(abs), bytes: await readFile(abs),
+  });
 
   // Push the converted markdown to blob so the durable copy matches disk.
   let synced: AttachResult["synced"];

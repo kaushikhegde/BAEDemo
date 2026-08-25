@@ -2,7 +2,13 @@ import type { Storage } from "./storage.js";
 
 export type JobState =
   | "awaiting_upload" | "queued" | "running" | "succeeded" | "failed" | "deleted";
-export type JobPhase = "downloading" | "extracting" | "chunking" | "uploading" | "done";
+/** "converting" is the markdown render. It is a phase of its own rather than
+ *  part of "extracting" because for a slide deck or a spreadsheet it is the
+ *  only thing that reads the document at all, and it is the phase a large
+ *  file spends most of its time in — a poll that reported "extracting"
+ *  throughout would say nothing about where the time went. */
+export type JobPhase =
+  | "downloading" | "extracting" | "converting" | "chunking" | "uploading" | "done";
 
 export interface Job {
   jobId: string;

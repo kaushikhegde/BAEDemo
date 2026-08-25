@@ -51,11 +51,13 @@ describe("deleteJob", () => {
   it("removes every blob in both containers", async () => {
     const jobId = await processedJob();
     expect(await countUnder(UPLOADS_CONTAINER, `${jobId}/`)).toBeGreaterThan(0);
-    expect(await countUnder(ARTIFACTS_CONTAINER, `${jobId}/`)).toBe(4);
+    // chunks.jsonl, index.json, metadata.json, result.json and document.md.
+    expect(await countUnder(ARTIFACTS_CONTAINER, `${jobId}/`)).toBe(5);
 
     const r = await deleteJob(ctx, { jobId });
     expect(r.deleted).toBe(true);
-    expect(r.blobsRemoved).toBe(5);
+    // Six: the five artifacts plus the uploaded source in `uploads/`.
+    expect(r.blobsRemoved).toBe(6);
     expect(await countUnder(UPLOADS_CONTAINER, `${jobId}/`)).toBe(0);
     expect(await countUnder(ARTIFACTS_CONTAINER, `${jobId}/`)).toBe(0);
   });
@@ -112,6 +114,7 @@ describe("deleteJob", () => {
 
     await expect(deleteJob(ctx, { jobId })).rejects.toThrow(/running/);
     expect((await getJob(storage, jobId))?.state).toBe("running");
-    expect(await countUnder(ARTIFACTS_CONTAINER, `${jobId}/`)).toBe(4);
+    // chunks.jsonl, index.json, metadata.json, result.json and document.md.
+    expect(await countUnder(ARTIFACTS_CONTAINER, `${jobId}/`)).toBe(5);
   });
 });

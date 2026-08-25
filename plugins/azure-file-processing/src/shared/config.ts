@@ -1,3 +1,53 @@
+import { readFileSync, existsSync } from "node:fs";
+import { getHeapStatistics } from "node:v8";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Load the WORKSPACE ROOT's `.env` into `process.env`, once, at import.
+ *
+ * The plugin never did this, and two real failures came out of it: every
+ * workspace tool answered 401 because `SCYNE_ORCH_TOKEN` was unset when a test
+ * ran from the plugin directory, and `workspaceRoot` fell back to `cwd` —
+ * the plugin subdirectory — which masked what a dual-write test was actually
+ * doing and left three stray Azure DevOps projects on a client's tenant.
+ *
+ * Dependency-free by necessity: the plugin declares no `dotenv`, and the root
+ * has no runtime dependencies at all. The root is found the same way
+ * `scyne-chatbot/server/env.ts` finds it — by walking up for the two
+ * directories that only the workspace root has — so it is cwd-independent.
+ *
+ * An existing environment variable always wins: an explicit export, or a value
+ * Compose injected, must not be silently overwritten by a file on disk.
+ */
+const findWorkspaceRoot = (): string | null => {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, "agent-instructions")) && existsSync(join(dir, "skills"))) return dir;
+    const up = resolve(dir, "..");
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
+};
+
+const loadDotEnv = (): string | null => {
+  const root = findWorkspaceRoot();
+  if (!root) return null;
+  const file = join(root, ".env");
+  if (!existsSync(file)) return root;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!m || line.trimStart().startsWith("#")) continue;
+    const [, key, raw] = m;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = raw.trim().replace(/^(['"])(.*)\1$/, "$2");
+  }
+  return root;
+};
+
+const WORKSPACE_ROOT = loadDotEnv();
+
 /** Azurite's well-known development account. Not a secret; it is published by
  *  Microsoft and is identical on every machine running Azurite. */
 const AZURITE_CONNECTION_STRING =
@@ -20,6 +70,21 @@ export interface Config {
   pageWindow: number;
   maxDequeueCount: number;
   tempDir: string;
+  /** Above this, `document.md` is produced by the STREAMING extractor instead
+   *  of markitdown — flat text, but one page of memory rather than the whole
+   *  document. It is the worker's HEAP being protected here, not the model's
+   *  context: the ceiling exists so one enormous upload cannot take a worker
+   *  down and strand every job queued behind it.
+   *
+   *  DERIVED from the heap limit rather than fixed, because a fixed number is
+   *  only ever right for one heap size. Measured: a 40,000-page PDF (~130 MB)
+   *  under the acceptance suite's deliberately capped `--max-old-space-size=256`
+   *  worker sat below a fixed 256 MiB ceiling, so markitdown buffered it and
+   *  the run died — breaking the bounded-memory guarantee that suite exists to
+   *  prove. A twelfth of the heap leaves room for the source buffer, the
+   *  parser's intermediate strings and the markdown output all being live at
+   *  once, which is roughly three to four times the file's size in practice. */
+  markdownMaxBytes: number;
   /** Whether `upload_file` is offered at all — the one tool that reads a path
    *  from the caller's own filesystem. True means the orchestrator process can
    *  open any document its user can, which is exactly the point when it runs
@@ -78,6 +143,16 @@ const num = (env: NodeJS.ProcessEnv, key: string, fallback: number): number => {
   return n;
 };
 
+/** A twelfth of this process's heap, capped at 256 MiB so a machine with a
+ *  large default heap does not decide to buffer a gigabyte-scale document just
+ *  because it could. Floored at 4 MiB so a very small heap still converts
+ *  ordinary notes properly rather than sending everything down the flat-text
+ *  path. `MARKDOWN_MAX_BYTES` overrides it outright. */
+const defaultMarkdownMaxBytes = (): number => {
+  const heap = getHeapStatistics().heap_size_limit;
+  return Math.max(4 * 1024 * 1024, Math.min(268_435_456, Math.floor(heap / 12)));
+};
+
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => ({
   connectionString: env.AZURE_STORAGE_CONNECTION_STRING || AZURITE_CONNECTION_STRING,
   orchPort: num(env, "ORCH_PORT", 8080),
@@ -91,6 +166,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => ({
   pageWindow: num(env, "DEFAULT_PAGE_WINDOW", 25),
   maxDequeueCount: num(env, "MAX_DEQUEUE_COUNT", 3),
   tempDir: env.TEMP_DIR || "/tmp/afp",
+  markdownMaxBytes: num(env, "MARKDOWN_MAX_BYTES", defaultMarkdownMaxBytes()),
   allowLocalPathUpload: bool(env, "ALLOW_LOCAL_PATH_UPLOAD", !env.MCP_BEARER_TOKEN),
   publicBlobEndpoint: env.SAS_PUBLIC_BLOB_ENDPOINT || null,
 
@@ -98,7 +174,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => ({
   orchToken: env.SCYNE_ORCH_TOKEN || null,
   chatbotUrl: env.SCYNE_CHATBOT_URL || `http://127.0.0.1:${env.CHATBOT_PORT || 4000}`,
   workspacePort: num(env, "WORKSPACE_PORT", 8081),
-  workspaceRoot: env.WORKSPACE_PATH || process.cwd(),
+  workspaceRoot: env.WORKSPACE_PATH || WORKSPACE_ROOT || process.cwd(),
 });
 
 export const UPLOADS_CONTAINER = "uploads";

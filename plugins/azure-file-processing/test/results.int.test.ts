@@ -77,7 +77,10 @@ describe("getResult", () => {
     expect(r.result.pages).toBe(45);
     expect(r.result.chunks).toBeGreaterThan(0);
     expect(r.artifacts.map((a) => a.type).sort())
-      .toEqual(["chunks", "index", "metadata", "result"]);
+      // Five, not four: `document.md` is the structured markdown rendering that
+      // ingest_document files into a Scyne project. Listed here so a caller
+      // knows it exists; its bytes are never returned inline.
+      .toEqual(["chunks", "index", "markdown", "metadata", "result"]);
   });
 
   it("reports a byte size for every artifact — spec §6.4's contract", async () => {

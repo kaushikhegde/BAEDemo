@@ -30,8 +30,21 @@ export const artifactStream = async (s: Storage, jobId: string, name: string) =>
 
 /** A HEAD-style properties read — never a download — so asking every
  *  artifact's size (spec §6.4's `bytes` field on get_result) stays cheap even
- *  for a chunks.jsonl running into the hundreds of megabytes. */
-export const artifactBytes = async (s: Storage, jobId: string, name: string): Promise<number> => {
-  const props = await blob(s, jobId, name).getProperties();
-  return props.contentLength ?? 0;
+ *  for a chunks.jsonl running into the hundreds of megabytes.
+ *
+ *  Null, not a throw, when the blob is absent. `document.md` was added after
+ *  jobs had already been processed, so every job older than it has four
+ *  artifacts where the list now names five — and a missing artifact must read
+ *  as "this job has no markdown", not as get_result failing outright on a job
+ *  whose chunks are perfectly good. */
+export const artifactBytes = async (
+  s: Storage, jobId: string, name: string,
+): Promise<number | null> => {
+  try {
+    const props = await blob(s, jobId, name).getProperties();
+    return props.contentLength ?? 0;
+  } catch (e: any) {
+    if (e?.statusCode === 404) return null;
+    throw e;
+  }
 };

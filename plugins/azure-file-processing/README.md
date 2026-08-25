@@ -78,10 +78,46 @@ shapes are the contract the skill is written against — see
 | `create_upload_url` | The fallback, for when the file is not on the orchestrator's machine. Mints a `jobId` and a short-lived, write-only SAS URL for one blob. Refuses a filename with a path separator, an unsupported extension, or a size over `MAX_UPLOAD_BYTES`. |
 | `start_job` | Verifies the upload landed at the declared size, then queues processing. Idempotent — calling it again on a job already queued/running reports the current state rather than enqueueing twice. |
 | `job_status` | Polls `state` (`awaiting_upload → queued → running → succeeded`/`failed`/`deleted`), `phase` within `running`, and page-count progress. |
-| `get_result` | Computed facts once a job has `succeeded` — pages, words, chunk count, language, up to 50 short headings, table count — plus artifact paths. Never returns passage text; the whole response is capped under 8 KB. |
+| `get_result` | Computed facts once a job has `succeeded` — pages, words, chunk count, language, up to 50 short headings, table count, and which engine rendered the markdown — plus artifact paths. Never returns passage text; the whole response is capped under 8 KB. |
 | `search_chunks` | A bounded, server-side streaming scan of the document's chunks for the query terms. Returns short snippets with `pageStart`/`pageEnd` and `chunkId`, capped at `topK` (default 5, max 20) hits and at `SEARCH_MAX_SCAN_BYTES` of scanning. |
 | `fetch_chunks` | Full text of up to 10 named chunk ids, read as ranged blob reads — never a whole artifact download. Hard-capped at `FETCH_MAX_BYTES` (32 KB) per call. |
 | `delete_job` | Permanently deletes every blob under that job's upload and artifact prefixes. The job row is kept, marked `deleted`, so a later `job_status` explains the absence rather than 404ing. |
+
+### Five artifacts, not four
+
+A succeeded job writes `chunks.jsonl`, `index.json`, `metadata.json`,
+`result.json` and — since the workspace plane needed one — **`document.md`**: a
+structured markdown rendering of the whole document, produced by the same
+`markitdown-ts` + `@firecrawl/anydoc` pair `scripts/convert-to-md.mjs` uses, so
+a document converts identically whichever door it came in by.
+
+It is rendered **separately from the chunks**, deliberately, rather than by
+chunking the markdown. The two artifacts want opposite things: chunks want page
+numbers, because every citation `search_chunks` returns is a page reference, and
+markitdown throws pagination away (it is a rendering decision, absent from a
+`.docx` entirely). The markdown wants headings and tables, which the
+page-at-a-time extractor cannot see. Producing each with the engine that suits
+it costs one extra pass over a file already on local disk and keeps both
+properties instead of trading one away.
+
+**The markdown engine buffers, so it is bounded by the heap.** `markdownMaxBytes`
+defaults to a twelfth of this process's heap limit, capped at 256 MiB — derived
+rather than fixed, because a fixed number is only ever right for one heap size.
+Above it, `document.md` is written by the STREAMING extractor instead: flat
+text, no headings, one page of memory regardless of the document's size. Which
+engine ran is recorded in `result.json` as `converter`, never guessed at
+afterwards.
+
+That default is not a guess. A fixed 256 MiB ceiling passed every unit and
+integration test and then failed the acceptance suite's bounded-memory case,
+where a 40,000-page (~130 MB) PDF sits *below* the ceiling and is therefore
+buffered — inside a worker deliberately capped at `--max-old-space-size=256`.
+The guarantee that suite exists to prove is exactly the one a fixed ceiling
+breaks.
+
+Formats: PDF, Word, PowerPoint, Excel, HTML, CSV, RTF, EPUB, ODF and plain
+text. Images and audio are refused deliberately — a markdown rendering of a
+screenshot loses the point of the screenshot, and audio has a better path.
 
 File content travels exactly two ways, neither of them a tool response:
 `upload_file` streaming disk → orchestrator process → storage, and
@@ -444,14 +480,70 @@ Three verbs, `npm run sync -- <project> --up|--down|--status [--prefix P] [--dry
 | `--up` | Uploads every local file that is new or different. Never deletes a blob a local `rm` removed |
 | `--down` | Downloads every blob file that is new or different, to a temp file renamed atomically into place. Never deletes a local file blob does not have |
 
+### The thirty tools
+
+Enough to cover what the web chat and the `scyne` CLI can each do, so a person
+working from Codex is not driven back to a browser for an ordinary operation.
+
+| Group | Tools |
+|---|---|
+| documents | `ingest_document` · `attach_document` · `read_document` · `replace_document` · `delete_document` · `list_documents` |
+| pipeline | `start_stage` · `revise_artefact` · `republish_artefact` · `staleness` |
+| gates | `approve_gate` · `reject_gate` · `request_changes` |
+| issues | `issue_status` · `list_issues` · `pause_issue` · `resume_issue` · `cancel_issue` · `issue_runs` · `run_transcript` |
+| workspace | `create_project` · `create_feature` · `list_projects` · `list_features` · `get_project_definition` · `save_project_definition` · `extract_brand` |
+| reporting | `spend` · `actions` · `history` |
+
+Deliberately **not** covered: organisations, users, members, model prices and
+installations. Those are installation administration, guarded by role upstream,
+and the console is the right surface for them — a plugin that can re-price every
+run in the install is not a document tool.
+
+`test/workspace-tools.test.ts` asserts this list against what is actually
+registered, in both directions, and separately asserts that every chatbot LLM
+tool and every daily-work CLI verb maps to something here. A tool added without
+a line in the table fails the suite.
+
+**`ingest_document` is the large-file door**, and the reason the workspace plane
+is more than a launcher. `attach_document` reads the whole file into the
+workspace server's memory and posts it to the chatbot — fine for a 200 KB note,
+hopeless for a 2 GB PDF, which is the exact ceiling this plugin exists to
+remove. `ingest_document` streams the bytes to Azure in 8 MiB blocks, has a
+worker convert them to markdown *there*, and sends only the **markdown** on to
+the chatbot to be filed and recorded:
+
+```
+local file ──8 MiB blocks──▶ Azure ──worker──▶ document.md
+                                                   │
+                        (orders of magnitude smaller than the source)
+                                                   ▼
+                                   chatbot ──▶ projects/<p>/…/x.md + DB row
+```
+
+Measured end to end: a 2000-page, 6.5 MB PDF processed in 5.2 s into 5.4 MB of
+markdown, filed at `documents/…md`, with `search_chunks` afterwards resolving a
+phrase on page 1450 to `pageStart: 1448, pageEnd: 1450`. The document's text
+never appears in a tool response — what comes back is counts, a path and an
+engine name.
+
+The chatbot still writes the database row, because it is the only thing that
+may: only the server knows the name a file converts to and where `routeFile()`
+put it. Filing the markdown here and asking for a row afterwards is how the CLI
+once ended up writing rows naming files the converter had already renamed.
+
+The original is archived **in Azure**, under `uploads/<jobId>/`, not in
+`original-files/` — it is the only copy that was never size-limited.
+`delete_job` disposes of it.
+
 ### A worked sequence
 
 ```
 create_project { project: "Acme Insurance", description: "…" }
 → { project: "Acme-Insurance", slugged: { from: "Acme Insurance", to: "Acme-Insurance" }, dbError: null, adoError: null }
 
-attach_document { project: "Acme-Insurance", path: "/Users/me/policy.pdf" }
-→ { filename: "policy.md", storedPath: "documents/policy.md", converted: true }
+ingest_document { project: "Acme-Insurance", path: "/Users/me/policy.pdf" }
+→ { jobId: "j-…", bytes: 6543826, converter: "markitdown", pages: 2000,
+    filename: "policy.md", storedPath: "documents/policy.md" }
 
 start_stage { workflow: "capabilities", project: "Acme-Insurance" }
 → { issueId: "…", state: "todo" }
