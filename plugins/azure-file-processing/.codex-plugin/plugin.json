@@ -1,6 +1,6 @@
 {
   "name": "azure-file-processing",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Upload, process and query very large documents through Azure Blob Storage without their contents entering the model's context, and drive the Scyne requirements pipeline as tracked issues.",
   "author": {
     "name": "Scyne"
@@ -19,7 +19,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Azure File Processing",
-    "shortDescription": "Process huge files in Azure and run the Scyne pipeline, without filling the context window",
+    "shortDescription": "Run the Scyne pipeline and process huge documents, without filling the context window",
     "longDescription": "Ships two MCP servers. The FILE plane provides an upload-process-retrieve workflow for documents up to 5 GiB: files travel directly from the machine into Azure Blob Storage using staged 8 MiB blocks, and a worker pool converts and chunks them there, so a 2 GB PDF can be questioned while only a few kilobytes ever reach the context window. The WORKSPACE plane is a full front door to the Scyne requirements pipeline \u2014 thirty tools covering what the web chat and the scyne CLI can each do: ingesting documents of any size into a project, starting and revising every stage, approving gates, and reporting spend and audit. A stage started from Codex becomes the SAME tracked issue the chatbot creates, visible in the console, in Spend and in Actions.",
     "developerName": "Scyne",
     "category": "Developer Tools",

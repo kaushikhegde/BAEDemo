@@ -5,11 +5,35 @@ import { fileURLToPath } from "node:url";
 
 const skill = readFileSync(resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../skills/azure-file-processing/SKILL.md"), "utf8");
+  "../skills/scyne/SKILL.md"), "utf8");
 
-describe("SKILL.md", () => {
+describe("SKILL.md — one skill, both planes", () => {
+  it("covers the WORKSPACE plane too, not only the file plane", () => {
+    // Three skills became one so there is a single `$scyne` to invoke. The
+    // merge is only correct if nothing was dropped: the workspace verbs and
+    // the file-plane sequence must both survive in the same file.
+    for (const token of ["start_stage", "ingest_document", "approve_gate",
+                         "revise_artefact", "stages", "spend"]) {
+      expect(skill, token).toContain(token);
+    }
+  });
+
+  it("leads with the rule, before any verb table", () => {
+    // The single most important constraint in the plugin. Buried under a
+    // dispatch table it is a rule nobody reads.
+    const rule = skill.toLowerCase().indexOf("never read a document yourself");
+    const verbs = skill.indexOf("## Verbs");
+    expect(rule).toBeGreaterThan(-1);
+    expect(rule).toBeLessThan(verbs);
+  });
+
+  it("says the prefix is $, since three others were tried and failed", () => {
+    expect(skill).toMatch(/\$scyne/);
+    expect(skill).toMatch(/`\$`, not `\/`/);
+  });
+
   it("has frontmatter naming the skill and when to use it", () => {
-    expect(skill).toMatch(/^---\nname: azure-file-processing\ndescription: /);
+    expect(skill).toMatch(/^---\nname: scyne\ndescription: /);
   });
 
   it("names every tool the model needs, in the order they are called", () => {

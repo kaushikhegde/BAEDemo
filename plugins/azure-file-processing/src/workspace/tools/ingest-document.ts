@@ -5,6 +5,7 @@ import { getStorage } from "../../shared/storage.js";
 import { ensureWorkspaceContainer, syncUp } from "../sync.js";
 import { ARTIFACTS_CONTAINER } from "../../shared/config.js";
 import { uploadFile } from "../../orchestrator/tools/upload-file.js";
+import type { Ctx as FileCtx } from "../../orchestrator/mcp.js";
 import { getJob } from "../../shared/jobs.js";
 import { readArtifactJson } from "../../orchestrator/artifacts.js";
 import type { JobResult } from "../../worker/artifacts.js";
@@ -68,12 +69,16 @@ export const ingestDocument = async (
   }
 
   const storage = getStorage(ctx.cfg);
-  const fileCtx = { cfg: ctx.cfg, storage };
+  // Typed as the FILE plane's own Ctx rather than cast. The two planes have
+  // separate context types and this is the one place they meet; a cast here
+  // would suppress exactly the mismatch worth being told about if either side
+  // grows a field.
+  const fileCtx: FileCtx = { cfg: ctx.cfg, storage };
 
   // Streams the bytes and queues the job in one call. Refuses a path that is
   // not there, is not a regular file, is empty, or carries an extension no
   // engine can read — all before anything is created.
-  const up = await uploadFile(fileCtx as never, { path, start: true });
+  const up = await uploadFile(fileCtx, { path, start: true });
 
   const deadline = Date.now() + (args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   let job = await getJob(storage, up.jobId);

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeMarkdownFile, isConvertible } from "../src/worker/markdown.js";
+import { writeMarkdownFile, isConvertible, chooseConverter } from "../src/worker/markdown.js";
 import { loadConfig } from "../src/shared/config.js";
 
 let dir: string;
@@ -87,5 +87,35 @@ describe("writeMarkdownFile", () => {
     // the same trap the pipeline's own `failed` extracts exist to avoid.
     await expect(render("broken.docx", Buffer.from("not a zip at all")))
       .rejects.toThrow(/central directory|zip/i);
+  });
+});
+
+describe("chooseConverter — decided before the document is walked", () => {
+  it("sends anything over the ceiling to the streaming path", async () => {
+    const src = join(dir, "huge.pdf");
+    await writeFile(src, "x".repeat(4096));
+    // The decision that stops a second full pass over a 634 MB document: the
+    // acceptance suite's bounded-memory job blew its ten-minute deadline when
+    // document.md was rendered as its own walk of the file.
+    expect(await chooseConverter(src, ".pdf", { ...cfg, markdownMaxBytes: 1 } as typeof cfg))
+      .toBe("stream");
+  });
+
+  it("keeps the structured engine for anything under it", async () => {
+    const src = join(dir, "small.html");
+    await writeFile(src, "<h1>Hi</h1>");
+    expect(await chooseConverter(src, ".html", cfg)).toBe("markitdown");
+  });
+
+  it("honours a pre-conversion, so a deck is not re-decided as markitdown", async () => {
+    const src = join(dir, "pre.md");
+    await writeFile(src, "# already converted\n");
+    expect(await chooseConverter(src, ".md", cfg, "anydoc")).toBe("anydoc");
+  });
+
+  it("falls through to streaming for a format no engine claims", async () => {
+    const src = join(dir, "odd.bin");
+    await writeFile(src, "??");
+    expect(await chooseConverter(src, ".bin", cfg)).toBe("stream");
   });
 });

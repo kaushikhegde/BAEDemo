@@ -7,9 +7,9 @@ streamable HTTP, and a worker pool that extracts and chunks documents in the
 background. See `docs/superpowers/specs/2026-08-24-codex-azure-file-processing-design.md`
 for the full design.
 
-The `azure-file-processing` skill is the other half of the deliverable: it is
-what stops a model from opening the file itself once the tools exist. See
-`skills/azure-file-processing/SKILL.md`.
+The **`scyne` skill** is the other half of the deliverable: it is what stops a
+model from opening the file itself once the tools exist, and it is what `$scyne`
+invokes. One skill covers both planes — see `skills/scyne/SKILL.md`.
 
 ## Install
 
@@ -427,7 +427,7 @@ Azure without filling the context window, the workspace plane fronts the
 **Scyne requirements pipeline** — the same one the chatbot drives — so a stage
 started from Codex is the SAME tracked issue the chatbot creates, visible in
 the orchestrator console, in Spend and in Actions. See
-`skills/scyne-workspace/SKILL.md` for the full method; this section covers what
+`skills/scyne/SKILL.md` for the full method; this section covers what
 a reader needs before any of it works.
 
 **Four facts, none of them guessable:**
@@ -480,7 +480,51 @@ Three verbs, `npm run sync -- <project> --up|--down|--status [--prefix P] [--dry
 | `--up` | Uploads every local file that is new or different. Never deletes a blob a local `rm` removed |
 | `--down` | Downloads every blob file that is new or different, to a temp file renamed atomically into place. Never deletes a local file blob does not have |
 
-### The thirty tools
+### `$scyne` — the command surface
+
+```
+$scyne use SAPN "CRM Management"
+$scyne run datamodel                 → created SCY-41 · Data Modeler working…
+$scyne status SCY-41                 → in_review · gate pending your approval
+$scyne gate approve g_8f21
+$scyne spend --by feature
+```
+
+**`$`, not `/`, and it is a SKILL rather than a command.** Codex removed custom
+slash commands in **0.117.0** in favour of skills, and invokes a skill with `$`.
+`skills/scyne/SKILL.md` is the whole mechanism — and it is the plugin's ONLY
+skill, covering both planes, so there is one `$scyne` rather than three entries
+in the picker.
+
+Three other mechanisms were tried first and every one of them was inert — worth
+recording, because each looks correct and none of them announces its failure:
+
+| Tried | Result |
+|---|---|
+| `commands/scyne.md` at the plugin root — the shape Figma, Vercel and Zoom ship | Installed, present in the cache, never surfaced |
+| An **MCP prompt** (`prompts/list` → `scyne`) | Served correctly on the wire, never surfaced |
+| The command→skill migration (`migrated-command-skills` in the binary) | Never ran; `commands/` sat untouched |
+
+The symptom in every case was `Unrecognized command '/scyne'` while every MCP
+tool worked perfectly — which reads like a broken plugin and is actually a
+plugin using a mechanism the host retired.
+
+**The skill lives in the PLUGIN, not in `<repo>/.codex/skills/`.** The
+project-level path works and is where this was first proved, but it is
+project-scoped: install the plugin anywhere else and `$scyne` would not exist.
+Under `skills/` it ships with the plugin and appears as `scyne` in the `$`
+picker alongside `scyne-workspace` and `azure-file-processing`.
+
+`src/workspace/prompts.ts` still registers the MCP prompt, and serves **that same
+SKILL.md** rather than a copy — `prompts/list` is real protocol other clients do
+surface, and reading one file means the two cannot drift.
+
+There is deliberately **no `$scyne login`**. Credentials are `SCYNE_ORCH_TOKEN`
+and `SCYNE_ORCH_URL` in the workspace-root `.env`, shared with the orchestrator,
+the chatbot and `.mcp.json`. `$scyne use` pins a target for the conversation
+only — it writes no config file.
+
+### The thirty-one tools
 
 Enough to cover what the web chat and the `scyne` CLI can each do, so a person
 working from Codex is not driven back to a browser for an ordinary operation.
@@ -488,7 +532,7 @@ working from Codex is not driven back to a browser for an ordinary operation.
 | Group | Tools |
 |---|---|
 | documents | `ingest_document` · `attach_document` · `read_document` · `replace_document` · `delete_document` · `list_documents` |
-| pipeline | `start_stage` · `revise_artefact` · `republish_artefact` · `staleness` |
+| pipeline | `stages` · `start_stage` · `revise_artefact` · `republish_artefact` · `staleness` |
 | gates | `approve_gate` · `reject_gate` · `request_changes` |
 | issues | `issue_status` · `list_issues` · `pause_issue` · `resume_issue` · `cancel_issue` · `issue_runs` · `run_transcript` |
 | workspace | `create_project` · `create_feature` · `list_projects` · `list_features` · `get_project_definition` · `save_project_definition` · `extract_brand` |
@@ -498,6 +542,14 @@ Deliberately **not** covered: organisations, users, members, model prices and
 installations. Those are installation administration, guarded by role upstream,
 and the console is the right surface for them — a plugin that can re-price every
 run in the install is not a document tool.
+
+**`stages` is read from the server, never shipped.** `start_stage` takes a
+free-string workflow key and validates it against `GET /config` at call time, so
+a stage the pipeline gains appears without upgrading this plugin. It used to
+carry its own array of ten while the server had twenty-six — and `extract`, a
+stage added after that array was written, was refused by the plugin while the
+engine ran it perfectly well. Same mistake `cli/stages.ts` exists to correct,
+and the failure mode a separately-distributed plugin is most exposed to.
 
 `test/workspace-tools.test.ts` asserts this list against what is actually
 registered, in both directions, and separately asserts that every chatbot LLM

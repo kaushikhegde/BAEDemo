@@ -70,8 +70,19 @@ export const listStages = async (ctx: OrchCtx, force = false): Promise<Stage[]> 
 /** Resolves a workflow key against the server, and refuses an unknown one with
  *  the list the SERVER actually offers — not a list this package believes in. */
 export const resolveStage = async (ctx: OrchCtx, key: string): Promise<Stage> => {
-  const stages = await listStages(ctx);
-  const found = stages.find((s) => s.key === key);
+  let stages = await listStages(ctx);
+  let found = stages.find((s) => s.key === key);
+  if (found) return found;
+
+  // A MISS is the one moment the cache is worth distrusting. The cache exists
+  // so an ordinary call costs no round trip, but refusing a key on the strength
+  // of a list fetched when this process booted is the same staleness the whole
+  // module exists to avoid — just with a shorter half-life. A stage added to
+  // the pipeline while the workspace server happens to be running would be
+  // refused until somebody restarted it, and the refusal would name a list that
+  // was already out of date. So: miss, refetch once, then decide.
+  stages = await listStages(ctx, true);
+  found = stages.find((s) => s.key === key);
   if (found) return found;
   // Generation keys first: a caller naming a stage almost always means to run
   // it, and listing thirteen `revise-` variants ahead of them buries the answer.

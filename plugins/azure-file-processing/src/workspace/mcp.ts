@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { registerPrompts } from "./prompts.js";
 import type { OrchCtx } from "./orchestrator.js";
 import { startStage, stages } from "./tools/start-stage.js";
 import { issueStatus } from "./tools/issue-status.js";
@@ -532,6 +533,10 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
     },
     async () => jsonResult(await history(ctx)),
   );
+
+  // The `/scyne` slash command. Codex sources commands from MCP prompts,
+  // not from a commands/ directory — see prompts.ts.
+  registerPrompts(server);
 
   return server;
 };

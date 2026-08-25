@@ -7,7 +7,7 @@ import { ARTIFACTS_CONTAINER, type Config } from "../shared/config.js";
 import type { Storage } from "../shared/storage.js";
 import { log } from "../shared/logger.js";
 import { chunkPages, type PageText } from "./chunk.js";
-import { writeMarkdownFile, type Converter } from "./markdown.js";
+import { writeMarkdownFile, chooseConverter, type Converter } from "./markdown.js";
 import type { DocMetadata } from "./extract/index.js";
 
 export interface ChunkIndexEntry {
@@ -60,7 +60,30 @@ export const writeArtifacts = async (
   // survive that. force:true tolerates it not existing yet (a failure before
   // the stream ever opened); the cleanup's own failure is swallowed so it can
   // never mask the real error that got us here.
+  // Which engine will render document.md, decided BEFORE the single pass over
+  // the document begins. When it is "stream", the markdown is the page text the
+  // chunker is about to walk anyway, so it is teed out of that pass rather than
+  // costing a second one — see chooseConverter for what that second pass cost.
+  let mdConverter: Converter | null = null;
+  let mdOut: ReturnType<typeof createWriteStream> | undefined;
+  let mdChars = 0;
+
   try {
+    if (input.source) {
+      mdConverter = await chooseConverter(
+        input.source.path, input.source.ext, cfg, input.source.converterOverride ?? null);
+      if (mdConverter === "stream") {
+        mdOut = createWriteStream(mdScratch);
+        // Same header the streaming renderer writes, so a document produced by
+        // either route is indistinguishable to whatever reads it later.
+        const head =
+          `<!-- Converted from ${input.source.filename} by stream. ` +
+          `Source archived in Azure Blob Storage. -->\n\n`;
+        mdOut.write(head);
+        mdChars += head.length;
+      }
+    }
+
     const index: Record<string, ChunkIndexEntry> = {};
     const headings: string[] = [];
     let byteOffset = 0, words = 0, chunks = 0, tables = 0, stopwordHits = 0, pagesSeen = 0;
@@ -93,6 +116,14 @@ export const writeArtifacts = async (
           log.warn("artifacts.progress_callback_failed", {
             jobId, message: String((err as Error)?.message ?? err).slice(0, 200),
           });
+        }
+        if (mdOut) {
+          const text = p.text.endsWith("\n") ? p.text : `${p.text}\n`;
+          mdChars += text.length;
+          // Backpressure is handled by the chunk loop's own drain below; a page
+          // is small enough that awaiting a drain here would stall extraction
+          // for no benefit.
+          mdOut.write(text);
         }
         yield p;
       }
@@ -153,17 +184,28 @@ export const writeArtifacts = async (
           blobHTTPHeaders: { blobContentType: "application/json" },
         });
 
-    // `document.md` is rendered SEPARATELY from the chunks above, deliberately,
-    // rather than by chunking the markdown. The two artifacts answer two
-    // different questions and want opposite things: chunks want page numbers,
+    // `document.md` is a SEPARATE artifact from the chunks, not a chunking of
+    // the markdown: the two want opposite things. Chunks want page numbers,
     // because every citation search_chunks returns is a page reference, and
     // markitdown throws pagination away (it is a rendering decision, absent
     // from a .docx entirely). The markdown wants headings and tables, which the
-    // page-at-a-time extractor cannot see. Producing each with the engine that
-    // suits it costs one extra pass over a file that is already on local disk,
-    // and keeps both properties instead of trading one away for the other.
+    // page-at-a-time extractor cannot see.
+    //
+    // Separate artifact, but NOT a separate pass. Where the renderer is the
+    // streaming one, the bytes were teed above out of the walk the chunker
+    // already made. Only the buffered engines re-read the file, and they run
+    // solely below markdownMaxBytes, so that read is bounded by construction.
     let markdown: { converter: Converter; chars: number } | null = null;
-    if (input.source) {
+    if (mdOut) {
+      const done = new Promise<void>((resolve, reject) => {
+        mdOut!.once("finish", resolve);
+        mdOut!.once("error", reject);
+      });
+      mdOut.end();
+      await done;
+      mdOut = undefined;
+      markdown = { converter: "stream", chars: mdChars };
+    } else if (input.source && mdConverter) {
       markdown = await writeMarkdownFile(
         mdScratch, input.source.path, input.source.ext, input.source.filename, cfg,
         input.source.converterOverride ?? null,
@@ -226,6 +268,10 @@ export const writeArtifacts = async (
     if (out && !out.destroyed) {
       out.destroy();
       await once(out, "close").catch(() => {});
+    }
+    if (mdOut && !mdOut.destroyed) {
+      mdOut.destroy();
+      await once(mdOut, "close").catch(() => {});
     }
     await rm(scratch, { force: true }).catch(() => {});
     await rm(mdScratch, { force: true }).catch(() => {});

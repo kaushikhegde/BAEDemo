@@ -86,6 +86,30 @@ const header = (filename: string, how: Converter): string =>
  * bounded memory, and a job that finishes. Which one ran is recorded, never
  * guessed at afterwards.
  */
+/**
+ * Which engine WILL render this file, decided before anything is read.
+ *
+ * Exported so `writeArtifacts` can ask first. When the answer is `stream`, the
+ * markdown is just the page text — exactly what the chunker is about to walk —
+ * so it is teed out of that single pass instead of walking the document a
+ * second time. Measured: rendering a 634 MB, 40,000-page PDF as a second pass
+ * pushed the acceptance suite's bounded-memory job past its ten-minute deadline.
+ * Bounded memory was never the problem; doing the work twice was.
+ */
+export const chooseConverter = async (
+  path: string, ext: string, cfg: Config,
+  converterOverride: Converter | null = null,
+): Promise<Converter> => {
+  if (converterOverride) return converterOverride;
+  const e = ext.toLowerCase();
+  const { size } = await stat(path);
+  if (size > cfg.markdownMaxBytes) return "stream";
+  if (PLAIN_FORMATS.has(e)) return "markitdown";
+  if (MARKITDOWN_FORMATS.has(e)) return "markitdown";
+  if (ANYDOC_FORMATS.has(e) && loadAnydoc()) return "anydoc";
+  return "stream";
+};
+
 export const writeMarkdownFile = async (
   scratch: string, path: string, ext: string, filename: string, cfg: Config,
   /** The engine that ALREADY converted this file, when `path` is a markdown

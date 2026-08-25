@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -46,14 +46,19 @@ describe("the workspace plane is declared", () => {
   it("ships the skill where the manifest says skills live", () => {
     const manifest = JSON.parse(readFileSync(resolve(here, "../.codex-plugin/plugin.json"), "utf8"));
     expect(manifest.skills).toBe("./skills/");
-    expect(existsSync(resolve(here, "../skills/scyne-workspace/SKILL.md"))).toBe(true);
+    expect(existsSync(resolve(here, "../skills/scyne/SKILL.md"))).toBe(true);
   });
 
-  it("the SKILL.md carries the frontmatter Codex matches on", () => {
-    const md = readFileSync(resolve(here, "../skills/scyne-workspace/SKILL.md"), "utf8");
+  it("the SKILL.md describes BOTH planes, since one skill now covers both", () => {
+    const md = readFileSync(resolve(here, "../skills/scyne/SKILL.md"), "utf8");
     expect(md.startsWith("---")).toBe(true);
-    expect(md).toMatch(/^name: scyne-workspace$/m);
-    expect(md).toMatch(/^description: Use when /m);
+    expect(md).toMatch(/^name: scyne$/m);
+    // The description is the only thing Codex matches on when deciding to load
+    // it, so a merged skill whose description covers only one plane is a
+    // merged skill that never fires for the other.
+    const desc = /^description: (.+)$/m.exec(md)![1];
+    expect(desc).toMatch(/pipeline|stage/i);
+    expect(desc).toMatch(/large|PDF|document/i);
   });
 
   it("the manifest describes both planes, not only the file one", () => {
@@ -71,5 +76,80 @@ describe("the workspace plane is declared", () => {
     const readme = readFileSync(resolve(here, "../README.md"), "utf8");
     expect(readme).toMatch(/SCYNE_ORCH_TOKEN/);
     expect(readme).toMatch(/8081/);
+  });
+});
+
+describe("the $scyne skill", () => {
+  const skill = resolve(pluginDir, "skills", "scyne", "SKILL.md");
+
+  it("ships inside the PLUGIN, so it travels with an install", () => {
+    // Not `<repo>/.codex/skills/`. That works — it is where this was first
+    // proved — but it is project-scoped: install the plugin anywhere else and
+    // `$scyne` would simply not exist. A skill under the plugin ships with it.
+    expect(existsSync(skill)).toBe(true);
+  });
+
+  it("is invoked with $, not /", () => {
+    // Codex removed custom slash commands in 0.117.0 in favour of skills, and
+    // invokes a skill with `$`. Three mechanisms were tried before this one
+    // and none appeared in the composer: a plugin `commands/*.md` file (Claude
+    // Code's convention), an MCP prompt, and the command→skill migration. The
+    // heading is what a reader copies, so it must not say `/scyne`.
+    const body = readFileSync(skill, "utf8");
+    expect(body.split("\n").find((l) => l.startsWith("# "))).toBe("# $scyne");
+    // No EXAMPLE may show the slash form. Prose that mentions `/scyne` in order
+    // to say it does not exist is exactly what this file should contain, so the
+    // check is on lines that read as something to type, not on any mention.
+    const examples = body.split("\n").filter((l) => /^\s*[>|]?\s*\/scyne\b/.test(l));
+    expect(examples).toEqual([]);
+    // And it must say which prefix IS right, since three were tried.
+    expect(body).toMatch(/\$scyne/);
+    expect(body).toMatch(/`\$`, not `\/`/);
+  });
+
+  it("carries frontmatter Codex can index it by", () => {
+    const body = readFileSync(skill, "utf8");
+    expect(body.startsWith("---\n")).toBe(true);
+    expect(body).toMatch(/^name: scyne$/m);
+    // The description is the only thing shown in the `$` picker.
+    expect(body).toMatch(/^description: .{60,}/m);
+  });
+
+  it("covers the verbs the client's brief shows", () => {
+    const body = readFileSync(skill, "utf8");
+    for (const verb of ["use", "run", "status", "gate approve", "spend"]) {
+      expect(body, verb).toContain(`\`${verb}`);
+    }
+  });
+
+  it("routes upload through the large-file path, not the in-memory one", () => {
+    const body = readFileSync(skill, "utf8");
+    expect(body).toContain("ingest_document");
+    // The plugin's single hardest rule. Phrasing may change; the prohibition
+    // may not.
+    expect(body).toMatch(/never read a document yourself/i);
+  });
+
+  it("refuses to approve a gate on the user's behalf", () => {
+    // Approving publishes a wiki page and a client's backlog.
+    const body = readFileSync(skill, "utf8");
+    expect(body).toMatch(/never approve on the person's behalf/i);
+  });
+
+  it("is the ONLY skill — one $scyne, not three", () => {
+    // Was three: azure-file-processing (file plane), scyne-workspace
+    // (workspace plane) and scyne (a verb table duplicating the second). The
+    // first two were genuinely distinct; the third was duplication introduced
+    // while chasing the slash-command mechanism. Merged so there is a single
+    // thing to invoke and a single place the guidance lives.
+    const dirs = readdirSync(resolve(pluginDir, "skills"), { withFileTypes: true })
+      .filter((d) => d.isDirectory()).map((d) => d.name);
+    expect(dirs).toEqual(["scyne"]);
+  });
+
+  it("no longer ships a commands/ directory", () => {
+    // Retired once proved inert in Codex: a directory that looks like it
+    // provides a command, and does not, is worse than none.
+    expect(existsSync(resolve(pluginDir, "commands"))).toBe(false);
   });
 });
