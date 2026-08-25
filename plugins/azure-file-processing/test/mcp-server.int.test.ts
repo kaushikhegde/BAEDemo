@@ -37,9 +37,24 @@ describe("MCP over streamable HTTP", () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "create_upload_url", "delete_job", "fetch_chunks",
-      "get_result", "job_status", "search_chunks", "start_job",
+      "get_result", "job_status", "search_chunks", "start_job", "upload_file",
     ]);
     await client.close();
+  });
+
+  it("does not offer upload_file where the orchestrator cannot read the caller's disk", async () => {
+    // Absent, not present-and-throwing: a tool that always fails teaches a
+    // model to retry it, and the create_upload_url pair still does the job.
+    const cfg = { ...loadConfig(), allowLocalPathUpload: false };
+    const s2 = await startServer({ cfg, storage: getStorage(cfg) }, 0);
+    const p2 = (s2.address() as any).port;
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${p2}/mcp`)));
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).not.toContain("upload_file");
+    expect(names).toContain("create_upload_url");
+    await client.close();
+    await new Promise((r) => s2.close(r));
   });
 
   it("404s an unknown path rather than falling through to MCP", async () => {

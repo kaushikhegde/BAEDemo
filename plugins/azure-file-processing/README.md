@@ -19,22 +19,39 @@ codex plugin add azure-file-processing@scyne
 cd plugins/azure-file-processing && ./scripts/stack.sh up
 ```
 
-`stack.sh up` runs `docker compose up -d --build` (Azurite, the orchestrator,
-and two workers by default), waits for `GET /health` to answer, and prints
-the MCP URL once it does. Each service creates the containers, queue and
-table it needs on boot if they are not already there, so there is no separate
-provisioning step.
+`stack.sh up` starts Azurite and two workers in Docker, starts **the
+orchestrator natively on this machine**, waits for `GET /health` to answer,
+and prints the MCP URL once it does. Each service creates the containers,
+queue and table it needs on boot if they are not already there, so there is no
+separate provisioning step.
+
+**Why the orchestrator is not in a container.** `upload_file` takes a path on
+the caller's own filesystem and streams the bytes to storage itself — which is
+what removes the shell step, the SAS round-trip and the `shasum` from the
+model's turn. A container's filesystem is the image's, so a host path resolves
+to nothing there. Azurite and the workers stay containerised; neither ever
+touches a path the caller named. `./scripts/stack.sh up --all-docker` runs the
+old all-container stack, on which `upload_file` is simply not registered and
+`create_upload_url` + `scripts/upload.mjs` is the only way in.
 
 ## Running the stack
 
 ```bash
-./scripts/stack.sh up                # build + start, wait for /health
+./scripts/stack.sh up                # azurite + workers in Docker, orchestrator native
+./scripts/stack.sh up --all-docker   # everything in Docker — no upload_file
 ./scripts/stack.sh status            # container states + a live /health check
 ./scripts/stack.sh logs              # follow every container's logs
 ./scripts/stack.sh workers <n>       # scale the worker pool to exactly n
-./scripts/stack.sh down              # docker compose down -v — DESTROYS the Azurite
+./scripts/stack.sh down              # stops the native orchestrator, then
+                                      # docker compose down -v — DESTROYS the Azurite
                                       # volume, and with it every stored document
 ```
+
+The native orchestrator logs to `.orchestrator.log` and records its pid in
+`.orchestrator.pid` (both gitignored). `stack.sh logs` follows that file
+alongside the container logs. `tsx` re-execs, so the recorded pid can be a
+parent whose child holds the port — `down` therefore also clears the listener
+on `ORCH_PORT`, but only once `/health` has identified it as ours.
 
 `workers <n>` matters because two of the test tiers need a specific worker
 count and will give misleading results with the wrong one:
@@ -49,13 +66,16 @@ count and will give misleading results with the wrong one:
 
 ## Tools
 
-Seven MCP tools, registered as the `azure-files` server. Names and payload
+Eight MCP tools, registered as the **`scyne`** server — the key in `.mcp.json`
+is the namespace Codex prefixes each tool with, so they surface as
+`scyne__upload_file`, `scyne__search_chunks` and so on. Names and payload
 shapes are the contract the skill is written against — see
 `src/orchestrator/mcp.ts` for the exact Zod schemas.
 
 | Tool | Does |
 |---|---|
-| `create_upload_url` | Mints a `jobId` and a short-lived, write-only SAS URL for one blob. Refuses a filename with a path separator, an unsupported extension, or a size over `MAX_UPLOAD_BYTES`. |
+| `upload_file` | **The one-call path.** Takes an absolute local path, streams the file to blob storage in 8 MiB blocks (four in flight, so ~32 MiB of memory whatever the file's size), records the SHA-256 of the bytes it actually sent, and queues the job. Registered only when `ALLOW_LOCAL_PATH_UPLOAD` is on. `start: false` uploads without queueing. |
+| `create_upload_url` | The fallback, for when the file is not on the orchestrator's machine. Mints a `jobId` and a short-lived, write-only SAS URL for one blob. Refuses a filename with a path separator, an unsupported extension, or a size over `MAX_UPLOAD_BYTES`. |
 | `start_job` | Verifies the upload landed at the declared size, then queues processing. Idempotent — calling it again on a job already queued/running reports the current state rather than enqueueing twice. |
 | `job_status` | Polls `state` (`awaiting_upload → queued → running → succeeded`/`failed`/`deleted`), `phase` within `running`, and page-count progress. |
 | `get_result` | Computed facts once a job has `succeeded` — pages, words, chunk count, language, up to 50 short headings, table count — plus artifact paths. Never returns passage text; the whole response is capped under 8 KB. |
@@ -63,8 +83,11 @@ shapes are the contract the skill is written against — see
 | `fetch_chunks` | Full text of up to 10 named chunk ids, read as ranged blob reads — never a whole artifact download. Hard-capped at `FETCH_MAX_BYTES` (32 KB) per call. |
 | `delete_job` | Permanently deletes every blob under that job's upload and artifact prefixes. The job row is kept, marked `deleted`, so a later `job_status` explains the absence rather than 404ing. |
 
-Only bytes from `scripts/upload.mjs` PUT-ing straight to the SAS URL ever
-carry file content; every MCP response above is compact JSON.
+File content travels exactly two ways, neither of them a tool response:
+`upload_file` streaming disk → orchestrator process → storage, and
+`scripts/upload.mjs` PUT-ing straight to the SAS URL. Every MCP response above
+is compact JSON — `test/upload-file.int.test.ts` plants a needle in a file and
+asserts it appears nowhere in what `upload_file` returns.
 
 ## Environment
 
@@ -89,6 +112,7 @@ host) for you.
 | `DEFAULT_PAGE_WINDOW` | `25` | |
 | `MAX_DEQUEUE_COUNT` | `3` | attempts before a job is dead-lettered |
 | `TEMP_DIR` | `/tmp/afp` | worker scratch space, cleaned up per job |
+| `ALLOW_LOCAL_PATH_UPLOAD` | on, unless `MCP_BEARER_TOKEN` is set | whether `upload_file` is registered at all. It reads a path on the SERVER's filesystem, which is the point when that is also the caller's machine and a nonsense when it is not — so setting a token, the only reason for which is that the port is reachable from elsewhere, turns it off. Set it explicitly to force either way |
 | `SAS_PUBLIC_BLOB_ENDPOINT` | unset — falls back to the connection string's own blob endpoint | needed only when the orchestrator resolves Azurite by a hostname the SAS's *caller* cannot reach (exactly the Docker-Compose case above) |
 
 The design spec (§14) also lists `WORKER_CONCURRENCY` ("1, per container;
@@ -129,11 +153,11 @@ python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py \
   plugins/azure-file-processing
 codex plugin add azure-file-processing@scyne
 codex plugin list
-codex mcp get azure-files
+codex mcp get scyne
 ```
 
 `codex plugin list` should show `azure-file-processing@scyne` as
-`installed, enabled`; `codex mcp get azure-files` should show
+`installed, enabled`; `codex mcp get scyne` should show
 `enabled: true` and `url: http://127.0.0.1:8080/mcp`.
 
 **The one thing that check cannot prove is that a live Codex thread actually
@@ -153,13 +177,15 @@ fixture, three times). To run it:
    > Process ~/Downloads/some-large.pdf and tell me what section 4 says.
    > Cite the page.
 
-4. A correct run calls, in order: `create_upload_url`, then shells out to
-   `node scripts/upload.mjs`, then `start_job`, polls `job_status` until
-   `succeeded`, calls `search_chunks` for terms related to "section 4",
-   then `fetch_chunks` on the best-scoring chunk ids, and answers citing a
-   page range — **without any tool call that reads, opens or `cat`s the PDF
-   itself.** Check the thread's tool-call list, not just the prose answer;
-   that ordering is the entire deliverable.
+4. A correct run calls, in order: `upload_file` with the absolute path, polls
+   `job_status` until `succeeded`, calls `search_chunks` for terms related to
+   "section 4", then `fetch_chunks` on the best-scoring chunk ids, and answers
+   citing a page range — **without any tool call that reads, opens or `cat`s
+   the PDF itself, and without a `shasum` or an `upload.mjs` shell step.**
+   Check the thread's tool-call list, not just the prose answer; that ordering
+   is the entire deliverable. On an `--all-docker` stack the first step is
+   instead `create_upload_url` → `node scripts/upload.mjs` → `start_job`,
+   which is the same deliverable by the fallback route.
 
 ## Acceptance
 
@@ -382,13 +408,22 @@ used everywhere a message is sent or received) and `mintUploadSas`
 is contained in that one function, and nothing outside it needs to know which
 kind of SAS it is holding.
 
-**Open question, not a phase-1 blocker.** `scripts/upload.mjs` PUTs straight
-from the caller's machine to the signed URL. Locally that URL points at
-`127.0.0.1`, which is exactly what Codex's shell sandbox permits — its
-outbound network access is loopback-only. A SAS pointed at a public Azure
-endpoint would not be reachable from inside that same sandbox without either
-a sandbox network exception or moving the upload outside the Codex session
-entirely (a companion process, a pre-signed step run by the user's own
-shell, etc.). Recorded here because it changes as soon as `AZURE_STORAGE_CONNECTION_STRING`
-stops pointing at Azurite — phase 1 never hits it, since Azurite is always
-loopback.
+**The sandbox question, largely answered by `upload_file`.**
+`scripts/upload.mjs` PUTs straight from the caller's machine to the signed
+URL. Locally that URL points at `127.0.0.1`, which is exactly what Codex's
+shell sandbox permits — its outbound network access is loopback-only. A SAS
+pointed at a public Azure endpoint would not be reachable from inside that
+sandbox without a network exception. `upload_file` sidesteps this: the PUT is
+made by the orchestrator process, which is not inside the sandbox, so the
+sandbox's loopback-only rule never applies to it. The fallback path still
+carries the original constraint, which is one more reason it is the fallback.
+
+**Where `upload_file` needs more before it leaves this machine.** It is gated
+off by default the moment `MCP_BEARER_TOKEN` is set, because a path is only
+meaningful where the caller and the server share a filesystem. If a future
+deployment wants both — a token AND local paths, e.g. a per-user orchestrator
+on a workstation — the gate can be forced back on, but the tool should
+probably grow an allowlist of permitted root directories first
+(`LOCAL_UPLOAD_ROOTS`, not built). Today the only restraint beyond the gate is
+the extension whitelist, which confines it to `.pdf` / `.docx` / `.txt` /
+`.md`; that is a real limit, not a permission model.

@@ -1,6 +1,6 @@
 {
   "name": "azure-file-processing",
-  "version": "0.1.0+codex.20260825010722",
+  "version": "0.1.0+codex.20260825053949",
   "description": "Upload, process and query very large documents through Azure Blob Storage without their contents entering the model's context.",
   "author": {
     "name": "Scyne"

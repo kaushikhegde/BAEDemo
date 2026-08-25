@@ -20,12 +20,34 @@ export interface Config {
   pageWindow: number;
   maxDequeueCount: number;
   tempDir: string;
+  /** Whether `upload_file` is offered at all — the one tool that reads a path
+   *  from the caller's own filesystem. True means the orchestrator process can
+   *  open any document its user can, which is exactly the point when it runs
+   *  natively beside Codex on one machine, and exactly wrong when it is
+   *  reachable from anywhere else. Defaults OFF the moment MCP_BEARER_TOKEN is
+   *  set, since a token is the only reason to set one: the endpoint is exposed.
+   *  A remote server resolving a local path is not a lesser feature, it is a
+   *  nonsense that reads whatever happens to sit at that path on the SERVER. */
+  allowLocalPathUpload: boolean;
   /** The blob endpoint a MINTED SAS URL must carry. Inside Compose the
    *  orchestrator reaches Azurite at http://azurite:10000, but the SAS is used
    *  by curl on the HOST, where that name does not resolve. Null means "use the
    *  endpoint from the connection string", which is right when running natively. */
   publicBlobEndpoint: string | null;
 }
+
+/** Accepts the shapes an operator actually types. Anything else is a typo
+ *  worth refusing loudly rather than silently reading as false — a security
+ *  gate that mis-parses to "off" wastes an afternoon, and one that mis-parses
+ *  to "on" is worse. */
+const bool = (env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean => {
+  const raw = env[key];
+  if (raw === undefined || raw === "") return fallback;
+  const v = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  throw new Error(`${key} must be true or false, got ${raw}`);
+};
 
 const num = (env: NodeJS.ProcessEnv, key: string, fallback: number): number => {
   const raw = env[key];
@@ -48,6 +70,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => ({
   pageWindow: num(env, "DEFAULT_PAGE_WINDOW", 25),
   maxDequeueCount: num(env, "MAX_DEQUEUE_COUNT", 3),
   tempDir: env.TEMP_DIR || "/tmp/afp",
+  allowLocalPathUpload: bool(env, "ALLOW_LOCAL_PATH_UPLOAD", !env.MCP_BEARER_TOKEN),
   publicBlobEndpoint: env.SAS_PUBLIC_BLOB_ENDPOINT || null,
 });
 

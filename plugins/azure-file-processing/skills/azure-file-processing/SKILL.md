@@ -25,69 +25,43 @@ Check the backend is running:
 curl -fsS http://127.0.0.1:8080/health
 ```
 
-If that fails, the `azure-files` tools will not connect and will not appear.
-Tell the user to run `./scripts/stack.sh up` from the plugin directory (it
-waits for `/health` itself and reports when it is ready), then start a **new**
-Codex thread — tools are bound when a thread begins, so an already-open thread
-will not pick the server up even after it comes online.
+If that fails, the tools will not connect and will not appear. Tell the user
+to run `./scripts/stack.sh up` from the plugin directory (it waits for
+`/health` itself and reports when it is ready), then start a **new** Codex
+thread — tools are bound when a thread begins, so an already-open thread will
+not pick the server up even after it comes online.
 
 ## The sequence
 
-Seven tools, always called in this order (search and fetch may repeat):
-`create_upload_url` → `upload.mjs` → `start_job` → `job_status` →
-`get_result` → `search_chunks` → `fetch_chunks` → `delete_job`.
+Hand the file over with **one call**, then read what you need:
+`upload_file` → `job_status` → `get_result` → `search_chunks` →
+`fetch_chunks` → `delete_job`. Search and fetch may repeat.
 
-**1 · Mint an upload URL.** Give the real filename, its size in bytes, and its
-SHA-256 checksum, so the download can be verified once it lands. Only `.pdf`,
-`.docx`, `.txt` and `.md` are accepted.
-
-Get the checksum from the shell, never by reading the file yourself — one line
-of output, no file content reaching you:
-
-```bash
-shasum -a 256 /path/to/contract.pdf
-```
-
-Pass the 64-character hex digest (the first field) as `sha256`:
+**1 · Upload it.** Give the absolute path. That is the whole step.
 
 ```
-create_upload_url({ filename: "contract.pdf", sizeBytes: 84213760, sha256: "<64 hex chars>" })
-→ { jobId, uploadUrl, blobPath, container, expiresAt, maxSinglePutBytes }
+upload_file({ path: "/Users/you/Downloads/contract.pdf" })
+→ { jobId, state: "queued", filename, blobPath, bytes, sha256, started: true }
 ```
 
-`sha256` is optional, but skipping it skips the integrity check below —
-always compute and pass it.
+The server opens the file, streams it to storage in blocks, records the
+SHA-256 of the bytes it actually sent, and queues the job — in that one call.
+Only `.pdf`, `.docx`, `.txt` and `.md` are accepted.
 
-**2 · Send the bytes — from the shell, never through yourself.**
+**Do not** run `shasum`, **do not** run `upload.mjs`, and **do not** read one
+byte of the file to "check" it first. The checksum is computed for you and
+verified by the worker when it downloads; there is nothing left for you to
+do here, and every one of those steps is a way to put file content somewhere
+it should not be.
 
-```bash
-node scripts/upload.mjs /path/to/contract.pdf "<uploadUrl>"
-```
+Pass `start: false` if the user wants the file uploaded but not processed yet;
+`start_job({ jobId })` runs it later.
 
-The URL is write-only (it can create and write that one blob and nothing
-else — it cannot read or list anything), and it expires in fifteen minutes.
-`upload.mjs` streams the file straight to storage and stages it in blocks
-above 64 MB; it never prints file content, only a final
-`{ ok, bytes, sha256, blocks }` line as a receipt — compare it against the
-`shasum` output from step 1 if you want to double-check by eye. Never paste
-file contents into a tool call. If you passed `sha256` in step 1, the worker
-verifies the downloaded bytes against it once processing starts and fails the
-job on a mismatch (`checksum_mismatch`, see the table below) — a corrupted or
-truncated upload cannot silently produce a document made of different bytes
-than the ones you described.
+You will be told the path or asked to find one. If the user names a file
+without a full path, ask for it or resolve it with `ls`/`find` — **never**
+by reading the file.
 
-**3 · Start the job.**
-
-```
-start_job({ jobId })
-→ { jobId, state, queuedAt, alreadyStarted }
-```
-
-Optional tuning: `pipeline: { id: "extract-chunks", params: { chunkChars, overlapChars, pageWindow } }`.
-Calling this again on a job already queued or running is safe — it reports
-the current state instead of enqueueing a second run.
-
-**4 · Poll until it finishes.** Every few seconds; a large document takes
+**2 · Poll until it finishes.** Every few seconds; a large document takes
 minutes.
 
 ```
@@ -95,12 +69,11 @@ job_status({ jobId })
 → { jobId, state, phase, progress: { done, total, unit: "pages" }, attempts, ... }
 ```
 
-`state` moves `awaiting_upload → queued → running → succeeded` (or `failed`).
-`phase` narrows `running` to `downloading` / `extracting` / `chunking` /
-`uploading`. Tell the user what stage it is at rather than going quiet for
-minutes at a time.
+`state` moves `queued → running → succeeded` (or `failed`). `phase` narrows
+`running` to `downloading` / `extracting` / `chunking` / `uploading`. Tell the
+user what stage it is at rather than going quiet for minutes at a time.
 
-**5 · Get the facts.**
+**3 · Get the facts.**
 
 ```
 get_result({ jobId })
@@ -112,7 +85,7 @@ titles) is the one bounded exception, there to help you orient before you
 search. Use it to decide what to search for next, not to answer the
 question.
 
-**6 · Read only what you need.**
+**4 · Read only what you need.**
 
 ```
 search_chunks({ jobId, query: "termination", topK: 5 })
@@ -139,7 +112,7 @@ means "nothing matched":**
   cap allows in one call and some of the requested chunks were left out.
   Ask for fewer chunk ids, not more.
 
-**7 · Clean up, when the user asks — never on your own initiative.**
+**5 · Clean up, when the user asks — never on your own initiative.**
 
 ```
 delete_job({ jobId })
@@ -148,6 +121,53 @@ delete_job({ jobId })
 
 This permanently removes the uploaded file and every artifact. Only do it
 when the user asks you to, since it cannot be undone.
+
+## When `upload_file` is not offered
+
+It exists only where the server and the file are on one machine. On a stack
+whose orchestrator runs in a container, or one reachable over a network, the
+tool is **not registered at all** — if you cannot see it in your tool list,
+that is why, and it is deliberate. Fall back to the three-step path, which
+does the same job with the bytes travelling from the shell instead:
+
+**1 · Mint an upload URL.** Give the real filename, its size in bytes, and its
+SHA-256 checksum, taken from the shell — never by reading the file:
+
+```bash
+shasum -a 256 /path/to/contract.pdf
+```
+
+```
+create_upload_url({ filename: "contract.pdf", sizeBytes: 84213760, sha256: "<64 hex chars>" })
+→ { jobId, uploadUrl, blobPath, container, expiresAt, maxSinglePutBytes }
+```
+
+**2 · Send the bytes — from the shell, never through yourself.**
+
+```bash
+node scripts/upload.mjs /path/to/contract.pdf "<uploadUrl>"
+```
+
+The URL is write-only (it can create and write that one blob and nothing
+else — it cannot read or list anything), and it expires in fifteen minutes.
+`upload.mjs` streams the file straight to storage and stages it in blocks
+above 64 MB; it never prints file content, only a final
+`{ ok, bytes, sha256, blocks }` line as a receipt. Never paste file contents
+into a tool call.
+
+**3 · Start the job.**
+
+```
+start_job({ jobId })
+→ { jobId, state, queuedAt, alreadyStarted }
+```
+
+Optional tuning, on either path:
+`pipeline: { id: "extract-chunks", params: { chunkChars, overlapChars, pageWindow } }`.
+Calling `start_job` again on a job already queued or running is safe — it
+reports the current state instead of enqueueing a second run.
+
+From here the sequence rejoins at step 2 above: poll `job_status`.
 
 ## Answering questions about a document
 
@@ -168,13 +188,20 @@ terms — never fetch more and more chunks hoping to stumble on the answer.
 
 | What you see | What it means |
 |---|---|
-| `unknown job <id>` | Wrong `jobId`, or the stack was reset. Start again from `create_upload_url`. |
-| `job <id> was not uploaded` | `start_job` ran before the upload finished, or the upload failed. Re-run `upload.mjs`, then retry. |
-| `size mismatch: declared … bytes, storage holds …` | The upload was incomplete or interrupted. Re-run `upload.mjs`. |
-| `checksum_mismatch: declared …, downloaded …` | The bytes the worker downloaded do not match the `sha256` you passed to `create_upload_url`. The upload was corrupted or truncated — re-run `shasum -a 256` and `upload.mjs`, and pass the fresh digest. |
+| `path must be absolute` | You passed a relative path. It would have resolved against the *server's* working directory, not the user's. Resolve it first (`pwd`, `ls`) and pass the full path. |
+| `no such file: <path>` | The path does not exist on the machine the server runs on. Check it with `ls`, and note this tool cannot reach another machine's disk. |
+| `not a regular file` | The path is a directory (or a link to one). Name the document itself. |
+| `file is empty` | Zero bytes. Processing it would produce a document that appears to say nothing, which reads downstream as a real answer — say the file is empty instead. |
+| `upload_file is disabled` | This orchestrator does not read the caller's filesystem. Use the fallback path above. |
+| `upload failed after N of M bytes` | The stream to storage broke part-way. The job is recorded `failed` with the reason; call `upload_file` again for a fresh one. |
+| `unknown job <id>` | Wrong `jobId`, or the stack was reset. Start again from `upload_file`. |
+| `job <id> was not uploaded` | `start_job` ran before an upload finished, or the upload failed. Only reachable on the fallback path — re-run `upload.mjs`, then retry. |
+| `size mismatch: declared … bytes, storage holds …` | The upload was incomplete or interrupted, or the file changed while it was being read. Upload it again. |
+| `checksum_mismatch: declared …, downloaded …` | The bytes the worker downloaded do not match the digest recorded at upload. Upload it again. |
 | `job <id> is not ready: state is <state>` | `get_result`, `search_chunks` or `fetch_chunks` was called before the job reached `succeeded`. Poll `job_status` until it does. |
 | `unsupported extension` | Only `.pdf`, `.docx`, `.txt`, `.md` are accepted. A scanned PDF with no text layer will upload and process but yield almost no text — say so rather than guessing at what it "must" say. |
+| `file too large` | Over `MAX_UPLOAD_BYTES` (5 GiB by default). |
 | `state: "failed"` with an `error` field | Read `error` verbatim and report it. A file that keeps failing is dead-lettered after a few attempts rather than retried forever. |
-| SAS / upload URL rejected as expired | The URL lasts fifteen minutes from `create_upload_url`. Call it again for a fresh one. |
+| SAS / upload URL rejected as expired | Fallback path only: the URL lasts fifteen minutes from `create_upload_url`. Call it again for a fresh one. |
 | `at most 10 chunk ids per call` / `at most 20` topK | You asked for more than the tool allows. Split the request. |
-| No `azure-files` tools available at all | The stack is not running, or this thread started before it came up. See *Before anything else*. |
+| No tools available at all | The stack is not running, or this thread started before it came up. See *Before anything else*. |

@@ -11,6 +11,7 @@ describe("loadConfig", () => {
     expect(c.chunkChars).toBe(4000);
     expect(c.maxDequeueCount).toBe(3);
     expect(c.publicBlobEndpoint).toBeNull();
+    expect(c.allowLocalPathUpload).toBe(true);
     expect(c.connectionString).toContain("devstoreaccount1");
   });
 

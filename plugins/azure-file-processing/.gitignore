@@ -1,0 +1,4 @@
+node_modules/
+# The native orchestrator's runtime files — `scripts/stack.sh up` writes both.
+.orchestrator.log
+.orchestrator.pid

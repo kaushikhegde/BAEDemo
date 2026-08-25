@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../shared/config.js";
 import type { Storage } from "../shared/storage.js";
 import { createUploadUrl } from "./tools/create-upload-url.js";
+import { uploadFile } from "./tools/upload-file.js";
 import { startJob } from "./tools/start-job.js";
 import { jobStatus } from "./tools/job-status.js";
 import { getResult } from "./tools/get-result.js";
@@ -27,17 +28,44 @@ export const jsonResult = (value: unknown): ToolResult => ({
 });
 
 export const buildMcpServer = (ctx: Ctx): McpServer => {
-  const server = new McpServer({ name: "azure-files", version: "0.1.0" });
+  const server = new McpServer({ name: "scyne", version: "0.1.0" });
+
+  // Registered only where it can work. A tool that is present and always
+  // throws teaches a model to retry it; one that is absent is simply not an
+  // option, and the SAS pair below is still there to do the same job.
+  if (ctx.cfg.allowLocalPathUpload) {
+    server.registerTool(
+      "upload_file",
+      {
+        title: "Upload file",
+        description:
+          "Upload a local file to Azure and queue it for processing, in one call. " +
+          "Pass the absolute path; the server streams the bytes itself and returns a jobId — " +
+          "never read the file, never compute a checksum, never shell out to upload it. " +
+          "Accepts .pdf, .docx, .txt and .md. Then poll job_status.",
+        inputSchema: {
+          path: z.string().min(1),
+          pipeline: z.object({
+            id: z.string().default("extract-chunks"),
+            params: z.record(z.string(), z.number()).optional(),
+          }).optional(),
+          start: z.boolean().optional(),
+        },
+      },
+      async (args) => jsonResult(await uploadFile(ctx, args as any)),
+    );
+  }
 
   server.registerTool(
     "create_upload_url",
     {
       title: "Create upload URL",
       description:
-        "Mint a short-lived, write-only URL for one blob. Upload the file to it " +
-        "directly with scripts/upload.mjs — never read the file into the conversation. " +
-        "Pass sha256 (compute it first with `shasum -a 256 <file>` in the shell, never " +
-        "by reading the file) to have the download verified once processing starts.",
+        "FALLBACK — prefer upload_file when it is offered. Mints a short-lived, write-only " +
+        "URL for one blob, for when the file is not on this machine. Upload to it with " +
+        "scripts/upload.mjs — never read the file into the conversation. Pass sha256 " +
+        "(compute it first with `shasum -a 256 <file>` in the shell, never by reading the " +
+        "file) to have the download verified once processing starts.",
       inputSchema: {
         filename: z.string().min(1),
         sizeBytes: z.number().int().positive(),

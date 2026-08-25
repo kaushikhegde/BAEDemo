@@ -19,9 +19,12 @@ describe("codex plugin packaging", () => {
 
   it("declares the MCP server under the name the skill refers to", () => {
     const mcp = JSON.parse(readFileSync(resolve(pluginDir, ".mcp.json"), "utf8"));
-    expect(Object.keys(mcp.mcpServers)).toEqual(["azure-files"]);
-    expect(mcp.mcpServers["azure-files"].type).toBe("http");
-    expect(mcp.mcpServers["azure-files"].url).toBe("http://127.0.0.1:8080/mcp");
+    // The key is the namespace Codex prefixes every tool with, so it is the
+    // one string that decides whether a user sees scyne__upload_file or
+    // azure_files__upload_file. Asserted here rather than left to the skill.
+    expect(Object.keys(mcp.mcpServers)).toEqual(["scyne"]);
+    expect(mcp.mcpServers["scyne"].type).toBe("http");
+    expect(mcp.mcpServers["scyne"].url).toBe("http://127.0.0.1:8080/mcp");
   });
 
   it("is registered in the repo marketplace by a relative local path", () => {

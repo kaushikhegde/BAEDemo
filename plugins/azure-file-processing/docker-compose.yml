@@ -26,6 +26,12 @@ services:
         DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;
       ORCH_PORT: "8080"
       SAS_PUBLIC_BLOB_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
+      # A container's filesystem is the image's, so every path a caller names
+      # resolves to nothing (or, worse, to something unrelated that happens to
+      # exist inside). The gate's own default cannot catch this — it keys off
+      # MCP_BEARER_TOKEN, and a local Compose stack sets none — so this stack
+      # says so explicitly and upload_file is not registered here at all.
+      ALLOW_LOCAL_PATH_UPLOAD: "false"
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
