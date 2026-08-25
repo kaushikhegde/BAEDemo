@@ -1,0 +1,32 @@
+{
+  "name": "@scyne/azure-file-processing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "vitest run test/*.test.ts --exclude 'test/*.int.test.ts' --exclude 'test/*.acc.test.ts'",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:acceptance": "vitest run --config vitest.acceptance.config.ts",
+    "typecheck": "tsc --noEmit",
+    "orchestrator": "tsx src/orchestrator/server.ts",
+    "worker": "tsx src/worker/index.ts"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/storage-blob": "^12.33.0",
+    "@azure/storage-queue": "^12.31.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "sax": "^1.6.1",
+    "yauzl": "^3.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/sax": "^1.2.7",
+    "@types/yauzl": "^3.4.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

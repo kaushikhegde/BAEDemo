@@ -1,0 +1,36 @@
+{
+  "name": "azure-file-processing",
+  "version": "0.1.0+codex.20260825010722",
+  "description": "Upload, process and query very large documents through Azure Blob Storage without their contents entering the model's context.",
+  "author": {
+    "name": "Scyne"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "azure",
+    "blob",
+    "mcp",
+    "large-files",
+    "pdf",
+    "docx",
+    "chunking"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Azure File Processing",
+    "shortDescription": "Process huge files in Azure without filling the context window",
+    "longDescription": "Provides an upload-process-retrieve workflow for documents up to 5 GiB. Files travel directly from the machine into Azure Blob Storage using a short-lived, write-only SAS URL and are processed by a worker pool that streams them page by page. The model receives only compact JSON, and reads document text through a keyword search and a byte-capped fetch, so a 2 GB PDF can be questioned while only a few kilobytes ever reach the context window.",
+    "developerName": "Scyne",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Upload a large document to Azure, process it into page-mapped chunks, and answer my questions about it using only the passages that matter."
+    ],
+    "brandColor": "#464E7E",
+    "screenshots": []
+  }
+}
