@@ -1,0 +1,1545 @@
+{
+  "project": "SAPN_DEMO",
+  "title": "SA Power Networks — Process Model",
+  "generatedOn": "2026-08-25",
+  "activities": [
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Find and understand the requirement",
+      "l3": "Locate Facilities Access information and the applicable form",
+      "description": "The applicant finds the Facilities Access page on the public website and follows the outbound hyperlink to the iApply forms platform.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "sapowernetworks.com.au",
+        "iApply"
+      ],
+      "capabilityIds": [
+        "1.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Find and understand the requirement",
+      "l3": "Determine which submission type applies",
+      "description": "The applicant decides whether the request is a new Expression of Interest, a Variation, a Notification of Works or a Decommissioning. The variation form is not linked from the website, so most variations are lodged on the Expression of Interest form.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "2.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Identify the network asset",
+      "l3": "Identify the SAPN asset the request relates to",
+      "description": "The applicant identifies the pole, structure, pit, kiosk or fence, ordinarily by transcribing the asset number from the plate. Asset locations exist in GIS but are not exposed for external selection, so a desk-based applicant often works from a street view.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "Esri ArcGIS"
+      ],
+      "capabilityIds": [
+        "5.1.1",
+        "5.1.2"
+      ],
+      "sourceDocs": [
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Prepare and lodge the submission",
+      "l3": "Complete the submission form",
+      "description": "The applicant completes the online form — 38 fields for an Expression of Interest across applicant, location, equipment, attachment and declaration sections, with no conditional logic beyond three fields and no save and resume.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "1.1.1",
+        "8.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Prepare and lodge the submission",
+      "l3": "Attach supporting evidence",
+      "description": "The applicant attaches site photographs, the equipment specification sheet, engineering drawings where required, the certificate of currency for public liability insurance, and evidence of council consultation where applicable.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "6.3.1",
+        "6.3.2",
+        "8.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Prepare and lodge the submission",
+      "l3": "Submit the declaration and lodge the request",
+      "description": "The applicant signs the declaration and submits. The submission generates a PDF which is delivered by SMTP to the Facilities Access shared mailbox; oversize mail bounces from the mail server after submission.",
+      "actor": "Client",
+      "serviceTier": "All",
+      "components": [
+        "iApply",
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "1.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Prepare and lodge the submission",
+      "l3": "Lodge on the applicant's behalf where assistance is needed",
+      "description": "Where an applicant cannot complete the online form, a Facilities Access Officer or Contact Centre Agent completes it during a call. The applicant confirms the declaration verbally and this is noted.",
+      "actor": "Front office",
+      "serviceTier": "Assisted lodgement",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "1.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Discovery & Lodgement",
+      "l2": "Prepare and lodge the submission",
+      "l3": "Issue the automated acknowledgement",
+      "description": "The platform issues an auto-acknowledgement to the applicant containing the reference number. It confirms receipt only and is not authorisation to proceed.",
+      "actor": "System",
+      "serviceTier": "All",
+      "components": [
+        "iApply",
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "1.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Register the submission",
+      "l3": "Process the shared mailbox queue",
+      "description": "The Facilities Access Officer opens the shared mailbox on the next business day and works through items in order of receipt, separating new submissions from applicant replies, chasers and internal mail.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.1.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Register the submission",
+      "l3": "Record the submission in the Facilities Access Tracker",
+      "description": "The Officer creates a row recording reference, date received, applicant organisation, contact details, asset IDs, equipment type and channel of receipt, by re-keying from the PDF. Measured at 6 minutes 40 seconds per submission.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker",
+        "SharePoint Online"
+      ],
+      "capabilityIds": [
+        "2.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Register the submission",
+      "l3": "File the submission and attachments in the document library",
+      "description": "The Officer saves the submission PDF and all attachments to a folder named by reference, applicant and suburb, and sets the Tracker status to In Triage.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "SharePoint Online"
+      ],
+      "capabilityIds": [
+        "8.1.3",
+        "7.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Verify applicant identity and ABN",
+      "description": "The Officer confirms the legal entity name and that the ABN is active on ABR lookup, and that where the applicant is not the equipment owner the party they act for is named.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "ABR lookup"
+      ],
+      "capabilityIds": [
+        "2.1.2",
+        "6.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Validate each asset ID against GIS",
+      "description": "The Officer confirms each stated Asset ID in GIS. The most common failure at about one in five submissions; where the intent is clear from photographs and address the Officer identifies the correct asset and records the correction.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Esri ArcGIS"
+      ],
+      "capabilityIds": [
+        "5.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Verify insurance currency and level of cover",
+      "description": "The Officer opens the certificate of currency and checks by eye that public liability cover of at least $20,000,000 is current at the date of submission. About one in six is expired or for the wrong amount.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [],
+      "capabilityIds": [
+        "6.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Verify equipment and attachment detail is complete",
+      "description": "The Officer confirms equipment type, make, model, dimensions, mass and projected wind area, and the proposed mounting height, method and orientation. Wind area is optional on the form and is absent about 70% of the time.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [],
+      "capabilityIds": [
+        "2.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Verify third-party consent and council consultation",
+      "description": "Where the asset is on council land or the proposal has visual amenity impact, the Officer confirms evidence of council consultation is present.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [],
+      "capabilityIds": [
+        "6.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Verify the notifying party's authority to act",
+      "description": "For a Notification of Works, the Officer confirms the notifying party is the Licence Holder or is authorised by them. The form captures the party acted for as free text and there is no systematic verification; the check relies on the Officer's familiarity with the parties.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "6.1.3",
+        "3.3.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Verify completeness and validity",
+      "l3": "Classify the request and re-route where the wrong form was used",
+      "description": "The Officer determines whether the request is genuinely a new Expression of Interest, a Variation or maintenance access, and re-routes it. Approximately 60% of change requests are ultimately assessed as like-for-like.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [],
+      "capabilityIds": [
+        "2.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Manage incomplete submissions",
+      "l3": "Issue a consolidated request for information",
+      "description": "Where any check fails, the Officer emails the applicant listing every deficiency in a single message and records the date of the request. Sequential partial requests are not permitted.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "1.2.1",
+        "2.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Manage incomplete submissions",
+      "l3": "Follow up at 14 and 28 days and escalate at 90",
+      "description": "The Officer follows up where no response is received and escalates to the Team Leader for a closure decision at 90 calendar days. There is no automated closure and submissions have remained open for eleven months.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Manage incomplete submissions",
+      "l3": "Stop the turnaround clock while awaiting applicant information",
+      "description": "Time spent in Awaiting Applicant Information is excluded from SAPN turnaround measurement.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "2.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Manage incomplete submissions",
+      "l3": "Set and maintain the submission status",
+      "description": "The Officer maintains the submission's state in the Tracker, which is the record of truth for status. The status column is free text and holds 47 distinct values conflating status, assignment and blocked-reason.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "2.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Registration & Triage",
+      "l2": "Handle enquiries",
+      "l3": "Handle applicant status enquiries",
+      "description": "Applicants seeking status contact the shared mailbox or the Contact Centre. The Contact Centre has no visibility of the Tracker and can only take a message and email the Facilities Access team.",
+      "actor": "Front office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online",
+        "NICE CXONE"
+      ],
+      "capabilityIds": [
+        "1.1.3",
+        "1.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Refer and assign the assessment",
+      "l3": "Refer the complete submission to Network Standards",
+      "description": "The Officer emails the network standards mailbox with the reference number and a link to the document folder, and sets the Tracker status to Under Engineering Assessment.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.1.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Refer and assign the assessment",
+      "l3": "Claim the assessment from the shared queue",
+      "description": "Assessment is picked up from the shared queue by any available Network Standards Engineer, who records their name against the reference to prevent duplicate assessment. Two engineers occasionally assess the same submission.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "2.1.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Screen and assess the proposal",
+      "l3": "Screen the proposal against the Standard Envelope",
+      "description": "The Engineer tests the proposal against eight criteria — asset type and construction, clearance, mass under 25 kg, wind area under 0.3 square metres, fewer than three existing attachments, asset condition, distance from a substation, and no supply requirement — to decide between a desktop check and full assessment.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [],
+      "capabilityIds": [
+        "3.1.2",
+        "3.1.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Screen and assess the proposal",
+      "l3": "Retrieve all approved installations on the asset",
+      "description": "The Engineer retrieves every approved installation on the asset before assessing, so that cumulative loading is considered rather than only the incremental change. This requires a manual search of the Tracker by asset ID.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.3.1",
+        "3.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Screen and assess the proposal",
+      "l3": "Assess structural loading and clearance to live conductors",
+      "description": "The Engineer assesses structural loading against TS-220 and clearance against TS-115, determining the clearance from what is actually on the pole. Attachments are opened in separate windows and the arithmetic is performed by hand.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [],
+      "capabilityIds": [
+        "3.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Screen and assess the proposal",
+      "l3": "Conduct a site inspection where the desktop assessment is insufficient",
+      "description": "About 15% of Expressions of Interest require a physical inspection. It is arranged by email with no scheduling, and the only record is the Engineer's notes and photographs taken on a personal phone.",
+      "actor": "Back office",
+      "serviceTier": "Complex — full assessment",
+      "components": [],
+      "capabilityIds": [
+        "3.1.5"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Determine the outcome",
+      "l3": "Record the determination and categorised reason",
+      "description": "The Engineer records one of four outcomes — Approved as Proposed, Approved with Conditions, Design Change Required, or Rejected — with a categorised reason from a nine-value list plus supporting narrative for anything other than approval as proposed.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "3.2.1",
+        "7.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Determine the outcome",
+      "l3": "Select conditions from the Standard Conditions Library",
+      "description": "Conditions are selected from the fifteen-condition library wherever a standard condition fits, covering attachment height, supervision, access permits, removal on demand, labelling, inspection frequency and reinstatement.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "REG-FA-02 Standard Conditions Library"
+      ],
+      "capabilityIds": [
+        "3.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Determine the outcome",
+      "l3": "Peer-review any free-text condition before issue",
+      "description": "Free-text conditions may be added where no standard condition applies and must be reviewed by a second engineer before issue.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [],
+      "capabilityIds": [
+        "3.2.2",
+        "7.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Determine the outcome",
+      "l3": "Issue the determination to the applicant",
+      "description": "The Officer issues the outcome to the applicant. Where a design change is required, the required changes are stated specifically and the status is set to Awaiting Applicant Information.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "1.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Technical Assessment",
+      "l2": "Determine the outcome",
+      "l3": "Reassess a revised proposal as a further cycle",
+      "description": "On receipt of a revised proposal the completeness check is repeated and the submission returns to the same engineer where available. The reassessment is recorded as a further cycle against the same reference; submissions exceeding three cycles are escalated.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [],
+      "capabilityIds": [
+        "3.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Raise the applicable fees",
+      "l3": "Determine and raise the assessment fee",
+      "description": "On determination the Officer raises the assessment fee per the current Schedule of Facilities Access Fees, standard or complex according to whether a full structural assessment or site inspection was required. Assessment fees are payable regardless of outcome, including rejection.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "SAP S/4HANA",
+        "SAP IS-U"
+      ],
+      "capabilityIds": [
+        "4.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Raise the applicable fees",
+      "l3": "Approve a fee waiver where the applicant is eligible",
+      "description": "Fee waivers require Team Leader approval and are ordinarily limited to community groups, emergency services and local government non-commercial installations.",
+      "actor": "Back office",
+      "serviceTier": "Concessional",
+      "components": [],
+      "capabilityIds": [
+        "4.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Prepare and execute the licence",
+      "l3": "Request preparation of the Licence Agreement",
+      "description": "The Officer emails Legal and Commercial with the licence holder legal entity and ABN, asset IDs, equipment schedule, approved conditions, term and fee schedule.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "4.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Prepare and execute the licence",
+      "l3": "Prepare the agreement from the legal template",
+      "description": "Legal and Commercial prepare the agreement from the TMP-FA-07 Word template, reproducing the approved conditions in full. Conditions are reproduced by hand rather than merged from structured data.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest",
+      "components": [
+        "Legal contract register"
+      ],
+      "capabilityIds": [
+        "4.1.1",
+        "8.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Prepare and execute the licence",
+      "l3": "Issue the agreement for digital signature",
+      "description": "The agreement is uploaded manually and issued to the Licence Holder for execution, and the Tracker status is set to Awaiting Agreement.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest",
+      "components": [
+        "Adobe Sign"
+      ],
+      "capabilityIds": [
+        "4.1.1",
+        "8.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Prepare and execute the licence",
+      "l3": "Execute the Licence Agreement",
+      "description": "The Licence Holder executes the agreement by digital signature. This is the longest stage in the process at typically four to eight weeks, and longer where the applicant's legal representatives seek amendments to the template.",
+      "actor": "Client",
+      "serviceTier": "Expression of Interest",
+      "components": [
+        "Adobe Sign"
+      ],
+      "capabilityIds": [
+        "4.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Prepare and execute the licence",
+      "l3": "File the executed agreement and record the approval",
+      "description": "On receipt of the executed agreement the Officer files it against the reference and sets the Tracker status to Approved. The installation may then proceed.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest",
+      "components": [
+        "Facilities Access Tracker",
+        "Legal contract register"
+      ],
+      "capabilityIds": [
+        "2.2.1",
+        "4.1.3",
+        "8.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Register the resulting installation",
+      "l3": "Notify practical completion of the installation",
+      "description": "The Licence Holder is required to notify SAPN within 10 business days of completing the installation.",
+      "actor": "Client",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [],
+      "capabilityIds": [
+        "5.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Register the resulting installation",
+      "l3": "Record the completion date and create the installation record",
+      "description": "The Officer records the completion date and establishes the installation record with its asset IDs, licence holder, equipment schedule and approved conditions. Approximately 1,000 approved Expressions of Interest have no matching installation record.",
+      "actor": "Back office",
+      "serviceTier": "Expression of Interest / Variation",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.2.1",
+        "5.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Commercial & Licensing",
+      "l2": "Register the resulting installation",
+      "l3": "Commence the annual licence fee from the completion date",
+      "description": "Annual attachment licence fees commence from the date of practical completion, not the date of approval, and are indexed annually per attachment.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "SAP S/4HANA"
+      ],
+      "capabilityIds": [
+        "4.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Lodge and register the notification",
+      "l3": "Lodge the Notification of Works within the minimum lead time",
+      "description": "The Notifying Party lodges not less than 5 business days before routine works, 10 where isolation or switching is required, and 15 where traffic management on an arterial road is needed. Most notifications are lodged by contractors rather than by Licence Holders.",
+      "actor": "Third party",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "1.1.1",
+        "2.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Lodge and register the notification",
+      "l3": "Register the notification and issue the acknowledgement",
+      "description": "The Officer records the notification in the Tracker on the same business day and sends the acknowledgement template. The acknowledgement confirms receipt only and must not be capable of being read as authorisation.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Facilities Access Tracker",
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.1.1",
+        "1.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Lodge and register the notification",
+      "l3": "Check the notification against the licence and its conditions",
+      "description": "The Officer confirms the notification references a current licence in Approved status, that the asset IDs match the licence, that the works are maintenance rather than a variation, and that relevant licence conditions have been acknowledged. Conditions are held only in PDFs, so the condition check is not executable as written.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "3.3.4",
+        "3.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Lodge and register the notification",
+      "l3": "Actively pursue a deficient notification",
+      "description": "Where a validity check fails the Officer contacts the Notifying Party the same business day by phone where the start date is within 5 business days, and by email otherwise. Deficient notifications are pursued rather than queued.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Check for conflicts",
+      "l3": "Refer the valid notification to Field Services",
+      "description": "All valid notifications are referred to the Works Coordinator by email and the status is set to Under Review.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "2.1.4"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Check for conflicts",
+      "l3": "Check the notified asset and dates against the switching program",
+      "description": "The Works Coordinator checks the switching program in SODS for low voltage and ADMS for high voltage, scheduled planned interruptions, SAPN construction and maintenance work, vegetation management, and other third-party notifications on the same asset. Response is within 2 business days, or 5 where isolation is requested.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "SODS",
+        "ADMS / OMS"
+      ],
+      "capabilityIds": [
+        "3.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Check for conflicts",
+      "l3": "Resolve a clash by rescheduling or coordinated attendance",
+      "description": "Where a conflict exists the third party reschedules, SAPN work is adjusted, or both parties attend under coordination arrangements specified by the Works Coordinator, which become conditions of clearance. Where an SAPN interruption already exists, coordinated attendance is generally preferred.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [],
+      "capabilityIds": [
+        "3.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Check for conflicts",
+      "l3": "Incorporate an isolation request into the switching program",
+      "description": "Where isolation is requested the notification is referred to Network Standards and incorporated into the switching program, which is prepared on a rolling fortnightly cycle. Clearance is conditional on the switching plan being approved.",
+      "actor": "Back office",
+      "serviceTier": "Isolation required",
+      "components": [
+        "SODS",
+        "ADMS / OMS"
+      ],
+      "capabilityIds": [
+        "3.3.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Clear and complete the works",
+      "l3": "Issue clearance stating assets, dates and conditions",
+      "description": "On a clear conflict check the Officer issues clearance stating the reference, assets cleared, date range, conditions of clearance including those carried from the licence, any access permit reference, on-site contact details and the obligation to notify completion.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "3.3.2",
+        "1.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Clear and complete the works",
+      "l3": "Attend site within the cleared range",
+      "description": "Clearance is limited to the assets, dates and works described. It does not authorise attendance outside the range, works on an unlisted asset, any variation, or entry into the exclusion zone without a separately issued access permit.",
+      "actor": "Third party",
+      "serviceTier": "Notification of Works",
+      "components": [],
+      "capabilityIds": [
+        "3.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Clear and complete the works",
+      "l3": "Advise completion or non-attendance",
+      "description": "The Notifying Party is required to advise completion or non-attendance within 2 business days of the end of the cleared range. Compliance is estimated at under 50%.",
+      "actor": "Third party",
+      "serviceTier": "Notification of Works",
+      "components": [],
+      "capabilityIds": [
+        "5.3.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Clear and complete the works",
+      "l3": "Close the notification and record the access",
+      "description": "The Officer records the outcome and closes the notification as Completed or Not Attended. Where no advice is received notifications are closed administratively at month end, which degrades the accuracy of access records.",
+      "actor": "Back office",
+      "serviceTier": "Notification of Works",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.3.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Authorise emergency access",
+      "l3": "Contact Network Control on the published 24-hour number",
+      "description": "Where equipment failure has caused or will imminently cause loss of a service that cannot await standard lead time, the Notifying Party contacts Network Control directly, bypassing the Facilities Access team. Commercial inconvenience alone does not constitute an emergency.",
+      "actor": "Third party",
+      "serviceTier": "Emergency",
+      "components": [],
+      "capabilityIds": [
+        "3.3.5"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Authorise emergency access",
+      "l3": "Assess network risk and grant or refuse verbal authorisation",
+      "description": "Network Control confirms the caller's identity and the affected installation, assesses the network risk, and grants or refuses verbal authorisation, recording the time, authorising controller, party authorised, asset and any conditions in the control log.",
+      "actor": "Back office",
+      "serviceTier": "Emergency",
+      "components": [
+        "Network Control log"
+      ],
+      "capabilityIds": [
+        "3.3.5"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Authorise emergency access",
+      "l3": "Lodge the retrospective notification within 2 business days",
+      "description": "The Notifying Party is required to lodge a retrospective notification marked as emergency, referencing the verbal authorisation. Compliance is estimated at approximately 40%.",
+      "actor": "Third party",
+      "serviceTier": "Emergency",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "3.3.5"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Works Notification & Clearance",
+      "l2": "Authorise emergency access",
+      "l3": "Reconcile the control log against retrospective lodgements",
+      "description": "The Officer reconciles the control log against retrospective lodgements monthly and pursues outstanding lodgements with the Licence Holder. Persistent non-compliance is a breach of the Licence Agreement and is escalated.",
+      "actor": "Back office",
+      "serviceTier": "Emergency",
+      "components": [
+        "Network Control log",
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.3.3",
+        "7.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage a variation to an installation",
+      "l3": "Identify the parent licence and installation",
+      "description": "On receipt of a variation the Officer identifies the parent licence and installation and records the variation against it. A variation does not receive a new licence reference.",
+      "actor": "Back office",
+      "serviceTier": "Variation",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "2.3.1",
+        "5.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage a variation to an installation",
+      "l3": "Classify the variation as like-for-like, minor or major",
+      "description": "Like-for-like changes are recorded only and redirected to the works notification process. Minor variations within the Standard Envelope receive a desktop assessment; major variations, additional assets or a new power requirement receive a full assessment.",
+      "actor": "Back office",
+      "serviceTier": "Variation",
+      "components": [],
+      "capabilityIds": [
+        "2.3.1",
+        "3.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage a variation to an installation",
+      "l3": "Review and reissue amended conditions in full",
+      "description": "Where the variation affects the licence conditions they are reviewed and amended. Amended conditions supersede and must be reissued in full rather than as a delta.",
+      "actor": "Back office",
+      "serviceTier": "Variation",
+      "components": [],
+      "capabilityIds": [
+        "3.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage a variation to an installation",
+      "l3": "Issue a deed of variation where the extent changes materially",
+      "description": "Where the variation materially changes the extent of the installation, Legal and Commercial are engaged to issue a deed of variation to the Licence Agreement.",
+      "actor": "Back office",
+      "serviceTier": "Major variation",
+      "components": [
+        "Legal contract register",
+        "Adobe Sign"
+      ],
+      "capabilityIds": [
+        "4.1.2",
+        "8.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage a variation to an installation",
+      "l3": "Recalculate the annual fee from the variation completion date",
+      "description": "An assessment fee applies to minor and major variations, and the annual licence fee is recalculated where the number of attachments changes, effective from the completion date of the variation works.",
+      "actor": "Back office",
+      "serviceTier": "Variation",
+      "components": [
+        "SAP S/4HANA"
+      ],
+      "capabilityIds": [
+        "4.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Maintain the installation register",
+      "l3": "Maintain the installation register and its status",
+      "description": "The Officer maintains one row per installation recording licence reference, asset IDs, licence holder, equipment schedule, approved conditions, completion date, annual fee, status, last access date and delegated parties.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Maintain the installation register",
+      "l3": "Maintain the equipment schedule for each installation",
+      "description": "The equipment schedule is carried from the approved Expression of Interest and updated as varied, recording the individual attachments on the asset.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Maintain the installation register",
+      "l3": "Reconcile approved submissions against installation records",
+      "description": "The register is derived manually from approved Expressions of Interest and is not automatically maintained. Installations are known to exist on the network that are not in the register, principally where practical completion was never notified.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.2.1",
+        "5.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Administer external parties",
+      "l3": "Record delegation of authority to act",
+      "description": "Where a Licence Holder authorises another organisation to act on their behalf, the Officer records the delegating holder, the delegated organisation and ABN, the scope, the date range and the written evidence of authorisation.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "6.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Administer external parties",
+      "l3": "Match a new applicant organisation before creating a record",
+      "description": "The Officer checks whether the organisation already exists before creating an entry, matching on ABN first and then on name, and records the SAP business partner number where one exists. Many applicants have no business partner record.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker",
+        "SAP S/4HANA"
+      ],
+      "capabilityIds": [
+        "6.1.1",
+        "8.2.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Administer external parties",
+      "l3": "Record the party roles against the installation",
+      "description": "Up to four distinct parties may have an interest in one installation — Licence Holder, Equipment Owner, Notifying Party and Billing Party — and for a typical carrier installation on a tower company's licence all four may be different organisations.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "6.1.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Administer external parties",
+      "l3": "Process a change of Licence Holder",
+      "description": "On sale of a portfolio or corporate restructure the Officer obtains written evidence from both parties, verifies the incoming party's insurance, confirms acceptance of existing conditions, refers to Legal for novation, and advises Finance of the change of Billing Party.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Legal contract register",
+        "SAP S/4HANA"
+      ],
+      "capabilityIds": [
+        "4.1.2",
+        "6.1.2",
+        "6.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Contact affected parties before asset works",
+      "l3": "Request a Facilities Access check for planned asset works",
+      "description": "On scoping asset work the Works Coordinator requests a check by emailing the shared mailbox with the asset IDs and proposed works dates.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "5.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Contact affected parties before asset works",
+      "l3": "Search the register by asset ID to identify installations",
+      "description": "The Officer searches the Tracker by asset ID. The Tracker is a flat list ordered by submission reference with asset IDs in a free-text column, so the search is unreliable and returns false negatives. Recorded as risk CS-R-097.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.3.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Contact affected parties before asset works",
+      "l3": "Contact each affected Licence Holder with the proposed works",
+      "description": "The Officer or Works Coordinator provides the licence reference, holder, equipment description, contact details and relevant conditions, contacts each affected holder with the proposed works, dates and required action, and records the response against the installation.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "5.3.2",
+        "1.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Contact affected parties before asset works",
+      "l3": "Advise retrospectively where asset work was unplanned",
+      "description": "Where asset work is unplanned — storm damage, pole failure, emergency replacement — advance contact is not practicable and affected Licence Holders are advised as soon as reasonably possible, and in any case within 2 business days.",
+      "actor": "Back office",
+      "serviceTier": "Emergency",
+      "components": [
+        "Exchange Online"
+      ],
+      "capabilityIds": [
+        "5.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Installation Lifecycle Management",
+      "l2": "Manage unauthorised attachments",
+      "l3": "Refer apparently abandoned equipment out of the standard procedure",
+      "description": "Where equipment appears abandoned — no responsive Licence Holder, no licence record, or a holder who declines to remove — it is referred to the unauthorised attachments procedure rather than processed as a decommissioning.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [],
+      "capabilityIds": [
+        "7.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Notify removal",
+      "l3": "Lodge the Notification of Removal",
+      "description": "Decommissioning is initiated by the Licence Holder on FRM-FA-04, by SAPN where the licence is terminated for breach or the asset is being removed from service, or by SAPN following expiry of the term without renewal.",
+      "actor": "Client",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "2.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Notify removal",
+      "l3": "Register the decommissioning against the installation and licence",
+      "description": "The Officer registers the notification and sets the installation status to Decommissioning Notified, then confirms the proposed removal date.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "2.3.2",
+        "5.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Notify removal",
+      "l3": "Confirm reinstatement obligations from the licence conditions",
+      "description": "Reinstatement obligations are confirmed from the licence conditions — typically removal of all brackets and fixings, making good of any penetrations, and removal of identification labelling.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [],
+      "capabilityIds": [
+        "3.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Remove and verify",
+      "l3": "Lodge a Notification of Works for the removal",
+      "description": "Removal works are themselves a physical access and require a Notification of Works, cleared under the standard process before the removal proceeds.",
+      "actor": "Third party",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "iApply"
+      ],
+      "capabilityIds": [
+        "2.3.2",
+        "3.3.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Remove and verify",
+      "l3": "Verify removal and reinstatement",
+      "description": "On advice of completion the Officer requests verification by Field Services, by site inspection or by photographic evidence supplied by the Licence Holder, at the Works Coordinator's discretion.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [],
+      "capabilityIds": [
+        "5.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Remove and verify",
+      "l3": "Set the installation to Removed and record the removal date",
+      "description": "On verified completion the installation status is set to Removed and the removal date recorded.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "5.2.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Close the commercial record",
+      "l3": "Notify Finance to cease the annual licence fee",
+      "description": "The Officer notifies Finance by email to cease the annual licence fee effective the removal date. This is the most frequently missed step in the procedure; failure results in continued billing for a removed installation, a credit, a complaint and potential regulatory exposure.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "SAP S/4HANA",
+        "SAP IS-U"
+      ],
+      "capabilityIds": [
+        "4.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Close the commercial record",
+      "l3": "Reconcile removed installations against active fee records",
+      "description": "The Officer reconciles removed installations against active fee records quarterly, in both directions — over-billing where the fee was not ceased, and revenue leakage where equipment remains in place.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "SAP S/4HANA",
+        "Facilities Access Tracker"
+      ],
+      "capabilityIds": [
+        "4.2.2"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Close the commercial record",
+      "l3": "Terminate the licence where no installations remain",
+      "description": "Where the licence covers no other installations the Officer requests Team Leader approval to terminate it and advises Legal and Commercial.",
+      "actor": "Back office",
+      "serviceTier": "Decommissioning",
+      "components": [
+        "Legal contract register"
+      ],
+      "capabilityIds": [
+        "4.1.3"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "l1": "Decommissioning & Closure",
+      "l2": "Close the commercial record",
+      "l3": "Retain the records for the required period",
+      "description": "Submission, assessment, agreement and correspondence records are retained for the life of the installation plus seven years, and decommissioning records for seven years from removal.",
+      "actor": "Back office",
+      "serviceTier": "All",
+      "components": [
+        "SharePoint Online",
+        "Legal contract register"
+      ],
+      "capabilityIds": [
+        "7.1.1"
+      ],
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    }
+  ]
+}

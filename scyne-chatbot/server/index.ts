@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { execFile, spawn } from "node:child_process";
 import { WebSocketServer, WebSocket as WSWebSocket } from "ws";
 import { chat } from "./llm.js";
 import * as store from "./store.js";
@@ -49,6 +50,10 @@ import * as pipeline from "../../scripts/pipeline.mjs";
 // The converter's own list, imported rather than restated: what counts as a
 // document here has to be exactly what step 0 of every stage can convert.
 import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
+// A document's extraction state, computed from disk. Presence is no longer
+// readiness — see `extractionGate` below for why the gates read this instead
+// of `countProjectDocs`/`countFeatureDocs` for the capability-map path.
+import { projectState } from "../../scripts/extract-state.mjs";
 import {
   carryAuth, requireSession, login, logout, whoami,
   tokenFor, setSessionCookie, clearSessionCookie,
@@ -544,12 +549,39 @@ function stageTrigger(stage: {
         if (!satisfied) {
           return res.status(409).json({ error: stage.gateErrorCode, message: stage.gateMessage(project, feature) });
         }
+      } else if (isProject) {
+        // The capability map is the one project-level stage gated on
+        // documents rather than a prerequisite file, and it is also the one
+        // stage that hard-requires the extracts (`STAGES.capabilities.requires`
+        // in scripts/pipeline.mjs). Presence on disk is no longer enough — a
+        // document that has not been extracted contributes nothing to the map,
+        // so starting anyway produces a capability map with a silent hole.
+        const gate = await extractionGate(project);
+        if (gate.code) {
+          return res.status(409).json({
+            error: gate.code,
+            message: gate.code === "no_documents"
+              ? stage.gateMessage(project, feature)
+              : `${gate.st.ready} of ${gate.st.documents.length} documents are ready. ` +
+                `Waiting on: ${gate.st.documents.filter(d => d.state !== "ready")
+                  .slice(0, 5).map(d => `${d.docId} (${d.state})`).join(", ")}`,
+            extraction: {
+              ready: gate.st.ready, missing: gate.st.missing,
+              failed: gate.st.failed, extracting: gate.st.extracting,
+            },
+          });
+        }
       } else {
-        const docs = isProject ? await countProjectDocs(project) : await countFeatureDocs(project, feature);
+        const docs = await countFeatureDocs(project, feature);
         // `readable`, not `md`: the workflow's FIRST step converts, so a
         // `.docx` is a document. Testing `md` refused the run and therefore
         // refused the conversion, which is the only thing that could have
         // changed the answer.
+        //
+        // Feature-level document gates (UI mockups) stay presence-based:
+        // only the capability map hard-requires extracts, so a feature stage
+        // gated on raw documents must not wait on an extraction pass it does
+        // not consume.
         if (docs.readable === 0) {
           return res.status(409).json({ error: stage.gateErrorCode, ...docs, message: stage.gateMessage(project, feature, docs) });
         }
@@ -1826,14 +1858,19 @@ app.post("/api/project/bootstrap", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
-    const docs = await countProjectDocs(project);
-    if (docs.readable === 0) {
+    const gate = await extractionGate(project);
+    if (gate.code) {
       return res.status(409).json({
-        error: "no_documents",
-        ...docs,
-        message: docs.other > 0
-          ? `${project} has ${docs.other} file(s), but none is a document the agents can read — images and audio do not count as discovery material. Upload a policy, SOP or transcript (.md, .docx, .pdf, .txt all work).`
-          : `No documents for ${project} yet. Upload at least one policy, SOP or transcript first.`,
+        error: gate.code,
+        message: gate.code === "no_documents"
+          ? `No documents for ${project} yet. Upload at least one policy, SOP or transcript first.`
+          : `${gate.st.ready} of ${gate.st.documents.length} documents are ready. ` +
+            `Waiting on: ${gate.st.documents.filter(d => d.state !== "ready")
+              .slice(0, 5).map(d => `${d.docId} (${d.state})`).join(", ")}`,
+        extraction: {
+          ready: gate.st.ready, missing: gate.st.missing,
+          failed: gate.st.failed, extracting: gate.st.extracting,
+        },
       });
     }
     const description = [
@@ -2163,6 +2200,89 @@ function isSafeSegment(name: string): boolean {
   return true;
 }
 
+// The plugin-local sync CLI, invoked as a subprocess. NOT `node` — sync.mjs
+// imports the TypeScript sync engine and the plugin has no build step, so
+// bare `node` dies with ERR_MODULE_NOT_FOUND. NOT `npx tsx` either — on a
+// machine with tsx not cached, npx DOWNLOADS it, which has no place inside a
+// route that runs on every upload. This repo's own precedent is the
+// plugin-local binary (see plugins/azure-file-processing/scripts/stack.sh).
+const SYNC_TSX = path.join(WORKSPACE_PATH, "plugins/azure-file-processing/node_modules/.bin/tsx");
+const SYNC_CLI = path.join(WORKSPACE_PATH, "plugins/azure-file-processing/scripts/sync.mjs");
+
+/**
+ * Push this project's tree to blob after an upload.
+ *
+ * Fire-and-forget and non-fatal: the document is already on disk and already
+ * in the database by the time this runs, and a sync failure must not turn a
+ * successful upload into a 500. Failures are logged, exactly as `adoError` is
+ * reported rather than thrown.
+ */
+function syncProjectToBlob(project: string): void {
+  const cwd = path.join(WORKSPACE_PATH, "plugins/azure-file-processing");
+  execFile(SYNC_TSX, [SYNC_CLI, project, "--up", "--root", WORKSPACE_PATH],
+    { cwd },
+    (err, stdout) => {
+      if (err) console.warn(`[sync] ${project}: ${String(err.message).split("\n")[0]}`);
+      else console.log(`[sync] ${project}: ${stdout.trim()}`);
+    });
+}
+
+/**
+ * Start extraction for one project, without waiting.
+ *
+ * Extraction is what makes a document USABLE, not merely stored — so it
+ * starts the moment a document arrives rather than when a stage runs. Fire-
+ * and-forget because a 300 MB PDF is not something to hold an HTTP request
+ * open for; the caller polls `/api/extract-status/:project`.
+ *
+ * A spawn failure is reported and never fatal, exactly as `adoError` and
+ * `dbError` are: the file and its row are real regardless, and
+ * `extract-documents.mjs` is idempotent, so the stage's own `extract` step
+ * will pick up anything missed here.
+ */
+function startExtraction(project: string, feature?: string): { started: boolean; error: string | null } {
+  try {
+    const args = [path.join(WORKSPACE_PATH, "scripts", "extract-documents.mjs"), project, "--root", WORKSPACE_PATH];
+    if (feature) args.push("--feature", feature);
+    const child = spawn("node", args, {
+      cwd: WORKSPACE_PATH, detached: true, stdio: "ignore",
+    });
+    child.on("error", (e) => console.warn(`[extract] ${project}: spawn failed — ${e.message}`));
+    child.unref();
+    return { started: true, error: null };
+  } catch (e: any) {
+    console.warn(`[extract] ${project}: could not start extraction — ${e?.message ?? e}`);
+    return { started: false, error: e?.message ?? String(e) };
+  }
+}
+
+/**
+ * Presence is no longer readiness. A document on disk but unextracted
+ * contributes nothing to a run, so a stage that starts anyway produces a
+ * document with a silent hole in it. `no_documents` and `documents_not_ready`
+ * stay separate refusals because their fixes are different: upload something,
+ * versus wait or investigate.
+ */
+async function extractionGate(project: string): Promise<
+  { code: "no_documents" | "documents_not_ready"; st: Awaited<ReturnType<typeof projectState>> } |
+  { code: null; st: Awaited<ReturnType<typeof projectState>> }
+> {
+  const st = await projectState(WORKSPACE_PATH, project);
+  if (st.documents.length === 0) return { code: "no_documents", st };
+  if (st.ready < st.documents.length) return { code: "documents_not_ready", st };
+  return { code: null, st };
+}
+
+app.get("/api/extract-status/:project", async (req, res) => {
+  try {
+    const project = String(req.params.project);
+    if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    res.json(await projectState(WORKSPACE_PATH, project));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
@@ -2485,6 +2605,17 @@ app.post("/api/upload/project", upload.single("file"), async (req, res) => {
       console.warn(`[upload/project] ${project}: row not written for ${readableName} — ${db.reason}`);
     }
 
+    // Not awaited: the response must not wait on a blob round-trip. The
+    // document is already on disk and already in the database above, so
+    // whatever this does or does not do, the upload has already succeeded.
+    syncProjectToBlob(project);
+
+    // Extraction is what makes this document usable, not merely stored — it
+    // starts the moment it arrives, not when a stage runs. Also fire-and-
+    // forget, and after the sync call for the same reason: the document is
+    // already real on disk either way.
+    const extraction = startExtraction(project);
+
     res.json({
       kind: "file",
       scope: "project",
@@ -2495,6 +2626,7 @@ app.post("/api/upload/project", upload.single("file"), async (req, res) => {
       // does for a directory of markdown it had nothing to do.
       converted: readableName !== savedName,
       relativePath: path.relative(WORKSPACE_PATH, path.join(dir, readableName)),
+      extraction: { started: extraction.started, error: extraction.error, state: "extracting" },
     });
   } catch (e: any) {
     console.error("[upload/project] failed:", e);
@@ -2520,6 +2652,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       await fs.mkdir(targetDir, { recursive: true });
       const savedName = await uniqueName(targetDir, req.file.originalname);
       await fs.writeFile(path.join(targetDir, savedName), req.file.buffer);
+      syncProjectToBlob(project);
       return res.json({
         kind: "file",
         subfolder: `design/${sub}`,
@@ -2570,6 +2703,12 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         console.warn(`[upload] ${project}/${feature}: row not written for ${transcriptPath} — ${transcriptDb.reason}`);
       }
 
+      syncProjectToBlob(project);
+
+      // Same discipline as the other two upload paths: a transcript is a
+      // document, and starts extraction the moment it lands.
+      const transcriptExtraction = startExtraction(project, feature);
+
       return res.json({
         kind: "transcript",
         subfolder: "transcripts",
@@ -2579,6 +2718,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         db: transcriptDb,
         entryCount: transcribed.entries.length,
         modelUsed: transcribed.modelUsed,
+        extraction: { started: transcriptExtraction.started, error: transcriptExtraction.error, state: "extracting" },
       });
     }
 
@@ -2624,11 +2764,23 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       console.warn(`[upload] ${project}/${feature}: row not written for ${relPath} — ${db.reason}`);
     }
 
+    // Not awaited: the response must not wait on a blob round-trip. The
+    // document is already on disk and already in the database above, so
+    // whatever this does or does not do, the upload has already succeeded.
+    syncProjectToBlob(project);
+
+    // Extraction is what makes this document usable, not merely stored — it
+    // starts the moment it arrives, not when a stage runs. Also fire-and-
+    // forget, and after the sync call for the same reason: the document is
+    // already real on disk either way.
+    const extraction = startExtraction(project, feature);
+
     return res.json({
       kind: "file",
       subfolder: route.subfolder,
       filename: readableName,
       path: relPath,
+      extraction: { started: extraction.started, error: extraction.error, state: "extracting" },
       db,
       converted: readableName !== savedName,
       relativePath: path.relative(WORKSPACE_PATH, path.join(targetDir, readableName)),

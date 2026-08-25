@@ -91,22 +91,30 @@ root has none.
 In the root `package.json`, beside the existing `"test"`:
 
 ```json
-    "test:scripts": "node --test test/",
+    "test:scripts": "node --test \"scripts/lib/*.test.mjs\" \"test/**/*.test.mjs\"",
 ```
 
+**Two corrections applied during execution, both defects in this plan:**
+
+1. **`test:scripts` already existed**, bound to `scripts/lib/*.test.mjs` from an
+   earlier plan. This task originally claimed to be adding it. Overwriting it
+   would have silently orphaned 15 passing tests, so the glob covers both trees.
+2. **`node --test test/` does not work.** Node 24.14.0 does not walk a bare
+   directory argument — measured. The plan claimed it was verified; what was
+   actually verified was `node --test test/_probe.test.mjs`, a FILE, which is a
+   different command. Globs are required.
+
 Leave `"test"` pointing at the orchestrator package — changing what `npm test`
-means at the root would surprise every existing caller, and this plan has no
-business doing that.
+means at the root would surprise every existing caller.
 
 - [ ] **Step 2: Verify it runs**
 
 ```bash
-mkdir -p test && printf 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("runner works", () => assert.ok(true));\n' > test/_probe.test.mjs
 npm run test:scripts
-rm test/_probe.test.mjs
 ```
-Expected: 1 passing test. (Verified working on Node 24 before this plan was
-written.)
+Expected: every test under `scripts/lib/` AND `test/` runs. Confirm the count
+includes the pre-existing tests — a glob that quietly drops them is the failure
+this step exists to catch.
 
 - [ ] **Step 3: Stage**
 

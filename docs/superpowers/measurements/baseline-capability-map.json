@@ -1,0 +1,1450 @@
+{
+  "project": "SAPN_DEMO",
+  "title": "SA Power Networks — Capability Map",
+  "generatedOn": "2026-08-25",
+  "sources": [
+    "Notes/Introduction.md",
+    "Notes/Attachment 1 - SAPN Customer Conceptual Data Model - Draft V1.md",
+    "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+    "Notes/BA_Working_Notes_Facilities_Access.md",
+    "SOP/SOP-FA-001_Expression_of_Interest.md",
+    "SOP/SOP-FA-002_Notification_of_Works.md",
+    "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+    "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+    "product-summary/product-summary.md"
+  ],
+  "capabilities": [
+    {
+      "id": "1.0",
+      "name": "Customer & Partner Engagement",
+      "level": 1,
+      "parentId": null,
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "How SA Power Networks presents the Facilities Access service to external parties, receives their requests, and keeps them informed across the life of a submission.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/Introduction.md"
+      ]
+    },
+    {
+      "id": "1.1",
+      "name": "Channel & Access Management",
+      "level": 2,
+      "parentId": "1.0",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Provision and operation of the channels through which an external party can reach the Facilities Access service.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "1.1.1",
+      "name": "Digital Channel Provision",
+      "level": 3,
+      "parentId": "1.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Provision of an online lodgement channel for Facilities Access requests. Today this is a set of unauthenticated forms on the iApply platform reached by a hyperlink from the public website; the forms have no back end and their only output is an emailed PDF.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "1.1.2",
+      "name": "Assisted Lodgement",
+      "level": 3,
+      "parentId": "1.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Completion of a submission on an applicant's behalf by a Facilities Access Officer or Contact Centre Agent where the applicant cannot use the online form. Practised today but not tracked as a distinct channel, so digital adoption cannot be measured.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "1.1.3",
+      "name": "Enquiry & Contact Handling",
+      "level": 3,
+      "parentId": "1.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Handling of inbound enquiries about Facilities Access submissions. The Contact Centre has no visibility of the Facilities Access Tracker and can only take a message, producing three to four long, unresolvable calls a week.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "1.2",
+      "name": "Applicant Communication",
+      "level": 2,
+      "parentId": "1.0",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Outbound communication to applicants, licence holders and their agents across the submission and installation lifecycle.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "1.2.1",
+      "name": "Transactional Notification Management",
+      "level": 3,
+      "parentId": "1.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Issue of acknowledgements, requests for information, assessment outcomes, agreement and clearance notices from templates. All correspondence is manual email from a shared mailbox with no delivery tracking or record against the submission.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "1.2.2",
+      "name": "Communication Preference Management",
+      "level": 3,
+      "parentId": "1.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Capture and enforcement of how each contact and organisation wishes to be contacted, including SMS for time-critical clearances and organisation-level distribution addresses. SAPN's preference platform is not used by this capability.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "1.2.3",
+      "name": "Status Transparency & Self-Service Enquiry",
+      "level": 3,
+      "parentId": "1.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Ability for an applicant to see where their submission is, what happens next and what is awaited from them. Applicants are advised only at determination and at issue of the agreement; there is no status view.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "1.2.4",
+      "name": "Customer Feedback & Satisfaction Measurement",
+      "level": 3,
+      "parentId": "1.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Collection and analysis of applicant feedback on the Facilities Access experience. No survey exists for this journey and satisfaction is unmeasured.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.0",
+      "name": "Facilities Access Lifecycle Management",
+      "level": 1,
+      "parentId": null,
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "End-to-end management of the four Facilities Access submission types — Expression of Interest, Notification of Works, Variation and Decommissioning — from receipt to closure.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "2.1",
+      "name": "Submission Intake & Registration",
+      "level": 2,
+      "parentId": "2.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Receipt, registration, verification and routing of an incoming submission.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.1.1",
+      "name": "Submission Capture & Registration",
+      "level": 3,
+      "parentId": "2.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Creation of the record of a received submission. Performed by manually re-keying approximately 38 fields from an emailed PDF into a SharePoint spreadsheet, measured at 6 minutes 40 seconds per submission and about 73 minutes each morning.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.1.2",
+      "name": "Completeness & Validity Verification",
+      "level": 3,
+      "parentId": "2.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Verification of a submission against a defined checklist before it proceeds — twelve completeness checks for an Expression of Interest and twelve validity checks for a Notification of Works. The checklists are documented and consistently applied, but performed entirely by hand.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "id": "2.1.3",
+      "name": "Submission Type Classification & Routing",
+      "level": 3,
+      "parentId": "2.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Determining which of the four submission types a request actually is and routing it accordingly. The variation form is not linked from the public website, so most variations arrive as new Expressions of Interest and must be identified and re-routed during triage.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "2.1.4",
+      "name": "Work Queue & Assignment Management",
+      "level": 3,
+      "parentId": "2.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Holding work awaiting action and assigning it to the person who will perform it. The shared mailbox is the de facto queue; assessment is claimed informally from a second shared mailbox and two engineers occasionally assess the same submission.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "2.2",
+      "name": "Case Progression & Service Levels",
+      "level": 2,
+      "parentId": "2.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Tracking a submission's state, the time it takes, and the pursuit of anything outstanding.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.2.1",
+      "name": "Submission Status & State Management",
+      "level": 3,
+      "parentId": "2.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Maintaining the current state of each submission. The status column is free text and holds 47 distinct values, conflating status, assignment and blocked-reason in one field; no state machine exists.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.2.2",
+      "name": "Service Level & Turnaround Management",
+      "level": 3,
+      "parentId": "2.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Setting, measuring and meeting turnaround targets. An internal 10 business day assessment target is attained about 70% of the time, is not published to applicants, and the end-to-end figure quoted to customers is not evidence-based.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.2.3",
+      "name": "Applicant Follow-up & Dormancy Management",
+      "level": 3,
+      "parentId": "2.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Pursuit of outstanding applicant information and closure of dormant submissions. Follow-ups occur at 14 and 28 days with escalation at 90, but there is no automated closure and submissions have remained open for eleven months.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "2.3",
+      "name": "Change & Removal Request Management",
+      "level": 2,
+      "parentId": "2.0",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Management of requests to change or remove an installation that already exists on the network.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "2.3.1",
+      "name": "Variation Request Management",
+      "level": 3,
+      "parentId": "2.3",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Handling a proposed change to an approved installation as a child of the existing licence rather than as a new request. Approximately 200 variations a year are received, most on the wrong form, and processing one as an Expression of Interest creates duplicate licence records and duplicate annual fees.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "2.3.2",
+      "name": "Decommissioning Request Management",
+      "level": 3,
+      "parentId": "2.3",
+      "stage": "Decommissioning & Closure",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Handling notification that an installation is to be permanently removed. Approximately 30 a year, currently received as an email rather than on the published form.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.0",
+      "name": "Network Safety & Technical Assurance",
+      "level": 1,
+      "parentId": null,
+      "stage": "Technical Assessment",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Assurance that third-party equipment and third-party access to SAPN infrastructure do not compromise the safety, structural integrity or operability of the distribution network.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.1",
+      "name": "Engineering Assessment",
+      "level": 2,
+      "parentId": "3.0",
+      "stage": "Technical Assessment",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Technical evaluation of a proposed attachment against SAPN network standards.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.1.1",
+      "name": "Structural & Clearance Assessment",
+      "level": 3,
+      "parentId": "3.1",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Assessment of structural loading against TS-220 and clearance to live conductors against TS-115. A documented, competent engineering practice, but every calculation is performed by hand from attachments opened in separate windows.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.1.2",
+      "name": "Standard Envelope Screening",
+      "level": 3,
+      "parentId": "3.1",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Screening a proposal against eight defined criteria to determine whether it may be determined on a desktop check or requires full structural assessment. The criteria are documented and applied consistently; the screening itself is manual.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.1.3",
+      "name": "Cumulative Attachment Assessment",
+      "level": 3,
+      "parentId": "3.1",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Assessment of the aggregate load on an asset across all approved installations, not only the incremental change. Requires a manual search of the Tracker by asset ID, which is unreliable, so engineers knowingly assess with incomplete information.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.1.4",
+      "name": "Assessment Threshold & Standards Configuration",
+      "level": 3,
+      "parentId": "3.1",
+      "stage": "Technical Assessment",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Maintenance of assessment thresholds by the engineering standards owners, with version history, effective dating and a record of which version each determination was made against. Thresholds are embedded in forms and documents today; a clearance table revision took four months to reach the iApply form.",
+      "sourceDocs": [
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.1.5",
+      "name": "Site Inspection Management",
+      "level": 3,
+      "parentId": "3.1",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Scheduling, conducting and evidencing a physical site inspection where the desktop assessment is insufficient. Required for about 15% of Expressions of Interest, arranged by email with no scheduling and no record beyond the engineer's own notes and phone photographs.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.2",
+      "name": "Determination & Conditions",
+      "level": 2,
+      "parentId": "3.0",
+      "stage": "Technical Assessment",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Recording the assessment outcome, the conditions attached to it, and any reassessment cycles.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.2.1",
+      "name": "Determination & Outcome Recording",
+      "level": 3,
+      "parentId": "3.2",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Recording one of four determination outcomes with a categorised reason from a nine-value list plus supporting narrative. The taxonomy is defined in procedure; in practice reasons are conveyed as free text in email and cannot be reported on.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.2.2",
+      "name": "Conditions Management",
+      "level": 3,
+      "parentId": "3.2",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Selection, issue and enduring enforcement of the conditions imposed on an approval. Fifteen standard conditions exist in a library, but conditions are held only in approval letter and agreement PDFs, are not structured data, and are not surfaced when a later Notification of Works is lodged.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.2.3",
+      "name": "Design Change & Reassessment Cycle Management",
+      "level": 3,
+      "parentId": "3.2",
+      "stage": "Technical Assessment",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Management of the loop where a proposal is returned to the applicant for change and resubmitted. Each cycle is recorded against the same reference with escalation beyond three cycles, but cycles are not counted as a discrete record and the history is not preserved as a quality metric.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.3",
+      "name": "Works Safety Coordination",
+      "level": 2,
+      "parentId": "3.0",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Control of third-party physical access to assets carrying their equipment, so that work is authorised, competent and free of clashes with SAPN's own work.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.3.1",
+      "name": "Conflict & Clash Detection",
+      "level": 3,
+      "parentId": "3.3",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Checking a notified asset and date range against the switching program, planned interruptions, SAPN construction and maintenance work, vegetation programs and other third-party notifications. A defined check performed by manual lookup in SODS and ADMS.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md"
+      ]
+    },
+    {
+      "id": "3.3.2",
+      "name": "Access Authorisation & Clearance",
+      "level": 3,
+      "parentId": "3.3",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Issue of the clearance that authorises notified works to proceed on stated assets, dates and conditions. The procedure is explicit that acknowledgement is not clearance, but the distinction is carried only by email wording and crews have attended on the strength of an acknowledgement.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.3.3",
+      "name": "Isolation & Switching Coordination",
+      "level": 3,
+      "parentId": "3.3",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Operational",
+      "description": "Incorporation of a third-party isolation request into the rolling fortnightly switching program, with a 10 business day lead time and clearance conditional on the switching plan being approved.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "3.3.4",
+      "name": "Competency & Permit Verification",
+      "level": 3,
+      "parentId": "3.3",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Verification that the personnel attending hold current competency for the class of work and that any required Access Permit is in place. Evidence is supplied as an attachment and checked by eye; licence condition compliance at works time is not verifiable as written.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "3.3.5",
+      "name": "Emergency Access Authorisation",
+      "level": 3,
+      "parentId": "3.3",
+      "stage": "Works Notification & Clearance",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Out-of-hours authorisation of urgent access by Network Control, bypassing the standard notification process. Verbal authorisation is logged in the control room, but retrospective lodgement compliance is about 40%, so a population of network access exists with no reconciled record.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "4.0",
+      "name": "Commercial & Licence Administration",
+      "level": 1,
+      "parentId": null,
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Establishment and administration of the commercial and legal relationship governing third-party equipment on SAPN infrastructure, and the revenue arising from it.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "4.1",
+      "name": "Agreement Management",
+      "level": 2,
+      "parentId": "4.0",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Preparation, execution, variation and termination of the Facilities Access Licence Agreement.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "4.1.1",
+      "name": "Licence Agreement Preparation & Execution",
+      "level": 3,
+      "parentId": "4.1",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Preparation of the agreement from the legal template with the approved conditions reproduced in full, issue for digital signature, and filing of the executed copy. A reliable but wholly manual leg, and the longest in the process at typically four to eight weeks.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "4.1.2",
+      "name": "Licence Variation & Novation Management",
+      "level": 3,
+      "parentId": "4.1",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Issue of a deed of variation where a change materially alters the extent of an installation, and novation where an installation changes hands. Portfolio transfers may affect hundreds of installations at once and are handled as a project rather than through routine processing.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "4.1.3",
+      "name": "Licence Term & Termination Management",
+      "level": 3,
+      "parentId": "4.1",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Management of the licence term and its termination once no installations remain under it. Termination requires Team Leader approval and referral to Legal, and is dependent on a manual step that is frequently missed.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "4.2",
+      "name": "Revenue & Fee Management",
+      "level": 2,
+      "parentId": "4.0",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Determination, raising, cessation and assurance of Facilities Access fees.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "4.2.1",
+      "name": "Fee Determination & Raising",
+      "level": 3,
+      "parentId": "4.2",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Raising the assessment fee on determination and commencing the annual attachment licence fee from practical completion. The trigger to Finance is a free-text email with no reconciliation, and the fee amount is blank on 61% of rows flagged as fee-raised.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "4.2.2",
+      "name": "Fee Cessation & Revenue Assurance",
+      "level": 3,
+      "parentId": "4.2",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Ceasing the annual fee on verified removal and reconciling removed installations against active fee records. The most frequently missed step in the decommissioning procedure, producing over-billing on removed installations and revenue leakage where equipment remains.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "4.2.3",
+      "name": "Fee Waiver & Concession Management",
+      "level": 3,
+      "parentId": "4.2",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Operational",
+      "description": "Approval of fee waivers, ordinarily limited to community groups, emergency services and local government non-commercial installations, subject to Team Leader approval.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "id": "5.0",
+      "name": "Asset & Installation Information Management",
+      "level": 1,
+      "parentId": null,
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Knowing what third-party equipment is attached to which SAPN network asset, who is responsible for it, and being able to retrieve that from the asset.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "5.1",
+      "name": "Asset Identification & Reference",
+      "level": 2,
+      "parentId": "5.0",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Identifying and validating the SAPN network asset a request or installation relates to.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "5.1.1",
+      "name": "Network Asset Identification & Validation",
+      "level": 3,
+      "parentId": "5.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Resolving the applicant's stated asset to a valid SAPN Asset ID in GIS. The most common completeness failure at about one in five submissions, taking up to 11 minutes to resolve by hand and sometimes abandoned in favour of reverting to the applicant.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "5.1.2",
+      "name": "Spatial & Map-Based Asset Selection",
+      "level": 3,
+      "parentId": "5.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Allowing an external party to select the asset from a map rather than transcribing a plate number. Asset locations exist in Esri GIS and are published in aggregated form for the outage map, but no external selection capability exists and the exposure appetite is an open action.",
+      "sourceDocs": [
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "5.2",
+      "name": "Installation Register",
+      "level": 2,
+      "parentId": "5.0",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "The enduring record of what third-party equipment physically exists on the network.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "5.2.1",
+      "name": "Installation Registration & Lifecycle Tracking",
+      "level": 3,
+      "parentId": "5.2",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Maintenance of one record per installation, from practical completion to removal, as a persistent fact about the network distinct from the submission that requested it. The register holds 1,847 rows against approximately 2,900 approved Expressions of Interest and is about 35% incomplete.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "5.2.2",
+      "name": "Practical Completion Verification",
+      "level": 3,
+      "parentId": "5.2",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Confirmation that an approved installation has actually been built, and of removal and reinstatement at end of life. The Licence Holder is obliged to notify within 10 business days; where they do not, no installation record is created and the fee never starts.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "5.2.3",
+      "name": "Attachment & Equipment Inventory Management",
+      "level": 3,
+      "parentId": "5.2",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Maintenance of the equipment schedule for each installation — the individual attachments, their specification, mass, dimensions and mounting — as approved and as subsequently varied.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "id": "5.3",
+      "name": "Asset-Centric Retrieval & Proactive Contact",
+      "level": 2,
+      "parentId": "5.0",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Answering the question 'who has equipment on this asset' and acting on the answer before SAPN works on it.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "5.3.1",
+      "name": "Reverse Asset Lookup",
+      "level": 3,
+      "parentId": "5.3",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Retrieval of all installations on a given network asset. Asset IDs are held as free text with no delimiter standard and 42% of a sampled hundred rows would fail an exact match, so the search returns false negatives. Recorded as risk CS-R-097.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "5.3.2",
+      "name": "Asset-Driven Licence Holder Notification",
+      "level": 3,
+      "parentId": "5.3",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Advance contact with affected Licence Holders where SAPN proposes to replace, relocate, rebuild or de-energise an asset carrying their equipment. SAPN works have proceeded without notification, and a contractor reported discovering a pole replacement by attending and finding no pole.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "5.3.3",
+      "name": "Access History & Record Reconciliation",
+      "level": 3,
+      "parentId": "5.3",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Maintenance of a complete history of who accessed which installation and when. Completion advice compliance is under 50% and notifications are closed administratively at month end, so access records are known to be incomplete.",
+      "sourceDocs": [
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "6.0",
+      "name": "External Party & Identity Management",
+      "level": 1,
+      "parentId": null,
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Knowing who the external parties are, which role each plays in relation to an installation, and controlling what each may see and do.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.1",
+      "name": "Party & Organisation Management",
+      "level": 2,
+      "parentId": "6.0",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Maintenance of the record of external organisations and the roles they hold.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.1.1",
+      "name": "Organisation Master Data Management",
+      "level": 3,
+      "parentId": "6.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Maintenance of a controlled record of applicant and licence holder organisations. There is no master: 891 distinct organisation strings represent approximately 150 real organisations, with no key, no ABN validation and no link to SAP business partner records.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.1.2",
+      "name": "Multi-Party Role Management",
+      "level": 3,
+      "parentId": "6.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Representation of the four distinct roles a party may hold against a single installation — Licence Holder, Equipment Owner, Notifying Party and Billing Party. For a typical carrier installation on a tower company's licence all four may be different organisations, and today agent and principal are conflated in one column.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "6.1.3",
+      "name": "Delegation & Authority Management",
+      "level": 3,
+      "parentId": "6.1",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Optimised",
+      "description": "Recording that a Licence Holder has authorised another organisation to act on their behalf, and the scope and period of that authority. The delegations register holds 23 rows and was last updated in November 2023; the authority check relies on an officer recognising the organisation name. Recorded as risk CS-R-114.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "6.2",
+      "name": "External Identity & Access",
+      "level": 2,
+      "parentId": "6.0",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Authentication and authorisation of external users of the Facilities Access service.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.2.1",
+      "name": "External User Authentication",
+      "level": 3,
+      "parentId": "6.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Verified identity for external users. Lodgement is entirely anonymous — any person on the internet may submit a form claiming to be any organisation and asserting authority to act for any licence holder. PingOne is SAPN's designated external identity platform and is not used here.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.2.2",
+      "name": "External Authorisation & Portfolio Visibility",
+      "level": 3,
+      "parentId": "6.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Control of which submissions and installations an authenticated external user may see, from their own lodgements through to a licence holder's whole portfolio. No account, no submission history and no status visibility exist.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "6.2.3",
+      "name": "Customer-Managed User Administration",
+      "level": 3,
+      "parentId": "6.2",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Ability for an administrator within a customer organisation to manage their own users and to grant a contractor access to a specific installation or to all of them, without SAPN administering it on their behalf.",
+      "sourceDocs": [
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "6.3",
+      "name": "Party Compliance Evidence",
+      "level": 2,
+      "parentId": "6.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Verification and currency of the evidence external parties must hold to transact.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "6.3.1",
+      "name": "Insurance Currency Verification",
+      "level": 3,
+      "parentId": "6.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Optimised",
+      "description": "Verification that public liability cover of at least $20,000,000 is current at the date of submission and for the works period. Checked by opening the certificate and reading the expiry and amount by hand; about one in six is expired or for the wrong amount, and one contractor uploads the same certificate roughly 300 times a year.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "6.3.2",
+      "name": "Third-Party Consent & Council Approval Management",
+      "level": 3,
+      "parentId": "6.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Verification of evidence of council consultation where an asset is on council land or the proposal has visual amenity impact, and of council permits where works require lane or footpath closure.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.0",
+      "name": "Governance, Risk & Compliance",
+      "level": 1,
+      "parentId": null,
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "The controls, records, risk management and reporting that make Facilities Access determinations defensible and its obligations auditable.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "7.1",
+      "name": "Records & Audit",
+      "level": 2,
+      "parentId": "7.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Retention of the record and the ability to establish who did and saw what.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "7.1.1",
+      "name": "Records Management & Retention",
+      "level": 3,
+      "parentId": "7.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Retention of submissions, assessments, agreements and correspondence for the life of the installation plus seven years. Retention schedules are defined per record type, but enforcement is manual and correspondence retention relies on mailbox policy rather than a system control.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.1.2",
+      "name": "Access Audit & Confidential Logging",
+      "level": 3,
+      "parentId": "7.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "A confidential log of who accessed a record, including searches performed and data downloaded. No such capability exists; SharePoint version history records who edited the workbook, not who read it or what they retrieved.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "7.1.3",
+      "name": "Privacy & Personal Information Handling",
+      "level": 3,
+      "parentId": "7.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Handling of personal information across the capability, including the right to erasure. Contact details sit in an Excel file on a shared site with sensitive content occasionally in free-text notes, and there is no erasure mechanism because data is spread across mailbox, workbook and file library with no index.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "7.2",
+      "name": "Risk & Control",
+      "level": 2,
+      "parentId": "7.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Identification and management of the operational and safety risks the capability carries.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.2.1",
+      "name": "Operational Risk Management",
+      "level": 3,
+      "parentId": "7.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Operational",
+      "description": "Identification, recording and escalation of the capability's risks. Both material control weaknesses — unverifiable contractor authority and unreliable reverse asset lookup — are recorded on the Customer Solutions risk register as CS-R-114 and CS-R-097.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.2.2",
+      "name": "Unauthorised Attachment Management",
+      "level": 3,
+      "parentId": "7.2",
+      "stage": "Installation Lifecycle Management",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Handling of equipment found on the network with no responsive Licence Holder or no licence record, referred out of the standard procedure to SOP-NO-019.",
+      "sourceDocs": [
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.2.3",
+      "name": "Procedure Governance & Quality Assurance",
+      "level": 3,
+      "parentId": "7.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Operational",
+      "targetMaturity": "Operational",
+      "description": "Ownership, versioning, review cycles and quality assurance sampling of the Facilities Access procedures. The three procedures are approved, versioned, dated and carry named owners, approvers and next-review dates, with peer review of free-text conditions.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "SOP/SOP-FA-002_Notification_of_Works.md",
+        "SOP/SOP-FA-003_Variation_Decommissioning_Licence_Management.md"
+      ]
+    },
+    {
+      "id": "7.3",
+      "name": "Performance & Insight",
+      "level": 2,
+      "parentId": "7.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Reporting and analysis of the capability's volume, quality and performance.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "7.3.1",
+      "name": "Operational Reporting & Analytics",
+      "level": 3,
+      "parentId": "7.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Reporting on Facilities Access volume, turnaround, outcomes and quality. The capability publishes nothing to and consumes nothing from the enterprise data platform, so it is invisible to enterprise reporting and regulatory response.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "7.3.2",
+      "name": "Structured Reason Code & Quality Analysis",
+      "level": 3,
+      "parentId": "7.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Analysis of why submissions are rejected, returned for design change or found incomplete. A nine-value reason taxonomy is defined in procedure, but reasons are conveyed as free text so SAPN cannot state today why it rejects what it rejects.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.0",
+      "name": "Enabling Digital Capabilities",
+      "level": 1,
+      "parentId": null,
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "The platform, integration, data and service capabilities that the Facilities Access process depends on to operate at all.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/Introduction.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.1",
+      "name": "Platform & Workflow",
+      "level": 2,
+      "parentId": "8.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "The configurable application capabilities that carry the process and its documents.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "SOP/SOP-FA-001_Expression_of_Interest.md"
+      ]
+    },
+    {
+      "id": "8.1.1",
+      "name": "Business Rule & Workflow Configuration",
+      "level": 3,
+      "parentId": "8.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Configuration of business rules, routing and workflow by business users without a software release, with change approval and version history. No such capability exists; a clearance table revision took four months to reach the form.",
+      "sourceDocs": [
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/Introduction.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "8.1.2",
+      "name": "Document Generation & E-Signature",
+      "level": 3,
+      "parentId": "8.1",
+      "stage": "Commercial & Licensing",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Generation of the Licence Agreement from a template with merged data and its execution by digital signature. Adobe Sign is in use and integrated elsewhere in SAPN, but here the document is prepared in Word by hand, uploaded manually and the executed copy filed manually.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.1.3",
+      "name": "Document & Evidence Management",
+      "level": 3,
+      "parentId": "8.1",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Storage and retrieval of submission forms, photographs, specifications, drawings, certificates and agreements. Approximately 40 GB in a SharePoint library organised by a manual naming convention, protected only by site permissions.",
+      "sourceDocs": [
+        "SOP/SOP-FA-001_Expression_of_Interest.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "8.2",
+      "name": "Integration & Data",
+      "level": 2,
+      "parentId": "8.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "Movement and reconciliation of data between Facilities Access and the wider SAPN landscape.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.2.1",
+      "name": "System Integration Management",
+      "level": 3,
+      "parentId": "8.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Automated, monitored interfaces between the capability and the systems it depends on. Of fourteen identified information flows exactly one is automated, and none carries a correlation identifier, delivery guarantee, retry, dead-letter path or reconciliation.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "8.2.2",
+      "name": "Enterprise Data Platform Integration",
+      "level": 3,
+      "parentId": "8.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Optimised",
+      "description": "Publication to and consumption from ADA, SAPN's designated enterprise system of record. Facilities Access has no interface to it, and the Network Asset, Functional Location, Address and Work Notification entities it already holds are unreferenced.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/Attachment 1 - SAPN Customer Conceptual Data Model - Draft V1.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.2.3",
+      "name": "Master Data Reconciliation & Stewardship",
+      "level": 3,
+      "parentId": "8.2",
+      "stage": "Registration & Triage",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Matching a new organisation against enterprise records on creation, with a stewardship queue for anything ambiguous, so that a Facilities Access record of an organisation and a billing record of the same organisation are linked.",
+      "sourceDocs": [
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md",
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "8.3",
+      "name": "Service Continuity & Experience",
+      "level": 2,
+      "parentId": "8.0",
+      "stage": "Registration & Triage",
+      "currentMaturity": "",
+      "targetMaturity": "",
+      "description": "The resilience, accessibility and transferability of the capability as an operating service.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/Introduction.md"
+      ]
+    },
+    {
+      "id": "8.3.1",
+      "name": "Accessibility & Inclusive Design",
+      "level": 3,
+      "parentId": "8.3",
+      "stage": "Discovery & Lodgement",
+      "currentMaturity": "None",
+      "targetMaturity": "Operational",
+      "description": "Design of the lodgement experience for a broad range of users. Accessibility has never been assessed: the form runs to 38 fields with no save and resume and no tested keyboard path, against a WCAG 2.2 AA target and an explicit ESG commitment to accessible design.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/Introduction.md",
+        "Transcripts/Workshop_Transcript_Facilities_Access_RFTCRMBR26.md"
+      ]
+    },
+    {
+      "id": "8.3.2",
+      "name": "Business Continuity & Operational Resilience",
+      "level": 3,
+      "parentId": "8.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "The capability's ability to keep running. There is no application support arrangement because there is no application; continuity is the availability of two staff and their access to a spreadsheet, with no SLA, monitoring, alerting or tested restore.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md"
+      ]
+    },
+    {
+      "id": "8.3.3",
+      "name": "Knowledge & Operating Procedure Management",
+      "level": 3,
+      "parentId": "8.3",
+      "stage": "Registration & Triage",
+      "currentMaturity": "Foundational",
+      "targetMaturity": "Operational",
+      "description": "Capture and transfer of the operating knowledge the capability runs on. Fourteen undocumented personal mailbox rules route the shared mailbox and organisations are identified by an individual's recall, so significant capability is lost if one person leaves.",
+      "sourceDocs": [
+        "Notes/ARC-CX-014_Current_State_Architecture_Facilities_Access.md",
+        "Notes/BA_Working_Notes_Facilities_Access.md"
+      ]
+    }
+  ]
+}

@@ -2156,6 +2156,24 @@ git add plugins/azure-file-processing/src/workspace/tools/list-issues.ts \
 
 ## Task 11: Workspace creation, writing BOTH stores
 
+> **STOP — this task's test creates REAL Azure DevOps projects, and did.**
+> `POST /api/projects` calls `ensureAdoProject`, which creates a project AND a
+> wiki in the live `Scyne-AI-Lab` org. Running this task's test as written left
+> three of them on the client's tenant (`ExtractProof`,
+> `PLUGIN-DUALWRITE-TEST`, `PLUGIN-DUALWRITE-TEST-Two`), none of which any tool
+> here can delete.
+>
+> **Test the REFUSAL paths only** — `409 exists`, `409 slug_collision`,
+> `400 project_name_*`, `404 no_project`, `400 reserved_name`, and the
+> unauthenticated case. Every one of those creates nothing. Assert the success
+> path against a project that ALREADY exists, or set `ADO_ORG` to empty for the
+> test run so `ensureAdoProject` is skipped and only the tree and the row are
+> written — the route already handles an unset `ADO_ORG` by reporting
+> `adoError` and carrying on, which is exactly the shape this test needs.
+>
+> A test that reaches outside the repo is not a unit of work to be re-run
+> casually, and this one was written as though it were.
+
 **Files:**
 - Create: `plugins/azure-file-processing/src/workspace/chatbot.ts`, `src/workspace/tools/workspace.ts`
 - Modify: `src/shared/config.ts` (one value), `src/workspace/mcp.ts`

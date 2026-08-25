@@ -71,8 +71,13 @@ This skill runs inside its own working folder
 Architect agent passes you `<project>` in its issue description and stages the
 inputs before invoking the skill. There is **no feature** at this level.
 
-- **Documents (input):** `solutions/Capabilities/documents/<scope>/<category>/*.md`.
-  The agent copies **every `.md` the project has** here, at two levels:
+- **Extracts (primary input):** `solutions/Capabilities/extracts/*.extract.json`
+  — one per document, written by a `document-extract` pass before this skill
+  runs. This is what you read. See Step 1.
+- **Documents (verification only):** `solutions/Capabilities/documents/<scope>/<category>/*.md`.
+  The agent copies **every `.md` the project has** here, at two levels, so a
+  cited page is reachable when an extract item needs checking — not so you
+  read them from end to end:
   - `documents/project/<category>/` — the project's own `documents/` tree:
     client-wide policy, legislation, standards, current-state architecture.
     These describe the organisation and outrank any single feature's view of it.
@@ -87,7 +92,7 @@ inputs before invoking the skill. There is **no feature** at this level.
 
   `outputs/`, `solutions/` and `design/` are never staged as inputs.
 
-  **Read across all of them.** A capability the client exercises in three
+  **Read across all extracts.** A capability the client exercises in three
   features is one capability, not three — deduplicate by what the organisation
   does, and cite every feature whose documents evidenced it.
 - **Reference catalogue (optional input):**
@@ -109,43 +114,60 @@ inputs before invoking the skill. There is **no feature** at this level.
 
 ---
 
-## Step 1 — List and Read Every Document
+## Step 1 — Read the Extracts
 
-Before reading anything, list what you actually have:
+Every document has already been read, once, by a `document-extract` pass. Your
+input is those extracts, not the documents.
 
 ```bash
-ls documents/
-ls documents/*/
-ls documents/*/*/
-ls capability-reference/ 2>/dev/null
+ls extracts/*.extract.json | wc -l
 ```
 
-Read **every** `.md` file in every scope and category folder. Note each filename
-— it becomes a source tag on the capabilities and activities it supports. Note
-the scope too: `documents/project/…` is client-wide, `documents/<feature>/…`
-came from one feature's discovery, and where the two disagree the client-wide
-document wins.
+Each extract is one document, and carries eight lists:
 
-If `documents/` is empty, stop and report it — do not invent a map. If a single
-category is empty, continue and record it under **Assumptions & Gaps**.
+| Field | Becomes |
+|---|---|
+| `businessFunctions` | capabilities |
+| `processSteps` | process activities, with actor and sequence |
+| `actors` | who performs each step |
+| `serviceTiers` | variants where a step applies to some cohorts only |
+| `components` | supporting systems |
+| `maturitySignals` | current versus target maturity |
+| `lifecyclePhases` | the L1 phases — prefer these over invented ones |
+| `painPoints` | the client's own words, verbatim |
 
-For each document, extract:
+`scope` tells you where it came from: `project` is client-wide,
+anything else is one feature's discovery. **Where the two disagree, the
+client-wide extract wins.**
 
-- **Business functions** — what the organisation does, named as noun phrases
-  ("Claims Management", "Provider Coordination"). These become capabilities.
-- **Process steps and sequence** — what happens, in what order, with what
-  decision points, timeframes and SLAs. These become process activities.
-- **Actors** — who performs each step: the client/customer, front office, back
-  office, a third party, or the system itself.
-- **Service tiers / variants** — where a step only applies to some cohorts
-  (e.g. straight-through vs complex vs catastrophic).
-- **Supporting components** — named systems, modules, portals, tools or
-  features that enable a step.
-- **Maturity signals** — statements about what exists today versus what is
-  wanted ("currently manual", "to be automated", "no single view today").
-- **Lifecycle phases** — any stated end-to-end structure (a claim lifecycle, an
-  application lifecycle, a case lifecycle). Prefer the document's own phase
-  names over invented ones.
+### Verify before you assert
+
+Every item carries `src` — the pages it came from. When a capability rests on
+one ambiguous item, or two extracts appear to contradict each other, fetch
+those exact pages from `documents/` and read the real words before deciding.
+Do not settle a contradiction by picking the one that reads better.
+
+### Citations never reach the document
+
+`src` exists so you can check yourself. No citations reach the delivered
+document — `src` must **never appear** in `capability-process.md`, in
+`capability-map.json`, or anywhere a client sees. No footnotes, no
+"(Workshop_Transcript.md, p.23)". The delivered document is clean prose.
+
+### Refuse what you cannot support
+
+If you cannot point a capability back to at least one extract item, do not
+record it. An unsupported capability is an invented one, and this is the only
+point in the pipeline where that gets caught.
+
+### Coverage
+
+If any extract reports `coverage.truncated: true`, note it under
+**Assumptions & Gaps** with the document name and how much was read. A gap you
+name is a gap the reader can weigh; a gap you hide is a wrong map.
+
+If `extracts/` is empty, stop and report it — do not read the documents
+directly and do not invent a map.
 
 ---
 

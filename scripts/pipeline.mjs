@@ -81,6 +81,40 @@ export const SOURCES = {
 
 export const STAGES = {
   // ---------------------------------------------------------------- project
+  // The MAP half of the capability map's map-reduce split: one extract per
+  // document, each written by an agent that reads only that document. Runs
+  // first so `capabilities` never again has to load a client's whole corpus
+  // (~986k tokens at SAPN's real size) into one context.
+  //
+  // `produces` names the DIRECTORY rather than a file list, because the count
+  // of extracts is not known until the documents are — a project with nine
+  // documents produces nine, one with fifty produces fifty.
+  // `scripts/validate-extracts.mjs` is what asserts completeness; `stageIsDone`
+  // above only checks the directory exists.
+  extract: {
+    level: LEVEL.PROJECT,
+    order: 0,
+    label: "Document Extraction",
+    agent: "Capabilities Process Architect",
+    agentKey: "capArchitect",
+    // NO `skill:` on purpose — see `script` below. A stage carrying `skill`
+    // compiles to ONE agent step, and one agent reading every document is
+    // exactly the thing this stage exists to stop. The map phase is N agents,
+    // one per document, which the engine cannot express (it has no fan-out:
+    // `flow` exists but parent-resume-on-child-completion is not implemented,
+    // and a workflow is compiled at boot, before any document is known). So the
+    // fan-out lives in the script, and the stage compiles to an exec that runs
+    // it. `document-extract` is invoked by that script, once per document.
+    script: "node scripts/extract-documents.mjs <project>",
+    work: "solutions/Extracts",
+    titlePrefix: "Extract documents",
+    publishes: false,
+    produces: ["solutions/Extracts"],
+    requires: [],
+    enriches: [req("project", "documents", "documents"), ...discovery("features")],
+    then: "node scripts/validate-extracts.mjs <project>",
+  },
+
   capabilities: {
     level: LEVEL.PROJECT,
     order: 1,
@@ -96,7 +130,9 @@ export const STAGES = {
       "solutions/Capabilities/outputs/capability-map.json",
       "solutions/Capabilities/outputs/process-model.json",
     ],
-    requires: [],
+    // The REDUCE half reads extracts, not raw documents — hard-required so a
+    // capability map can never silently run against an unextracted corpus.
+    requires: [req("project", "solutions/Extracts", "extract")],
     enriches: [req("project", "documents", "documents"), ...discovery("features")],
     then: "node scripts/render-capability-map.mjs <project> --validate-only",
   },

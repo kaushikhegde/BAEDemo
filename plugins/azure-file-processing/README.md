@@ -383,6 +383,86 @@ here, so their absence from `acceptance.acc.test.ts` is not an oversight:
   nothing before this suite had exercised a document large enough to hit the
   ceiling.
 
+## The workspace plane
+
+A second MCP server, **`scyne-workspace`**, ships in this same plugin and does
+a different job. Where the file plane (above) moves large documents through
+Azure without filling the context window, the workspace plane fronts the
+**Scyne requirements pipeline** — the same one the chatbot drives — so a stage
+started from Codex is the SAME tracked issue the chatbot creates, visible in
+the orchestrator console, in Spend and in Actions. See
+`skills/scyne-workspace/SKILL.md` for the full method; this section covers what
+a reader needs before any of it works.
+
+**Four facts, none of them guessable:**
+
+1. **Two servers, two ports.** `scyne` on `:8080` is the file plane; the
+   workspace plane, `scyne-workspace`, listens on **`:8081`**. They are
+   independent processes — either runs without the other, and `stack.sh up`
+   starts both.
+2. **`SCYNE_ORCH_TOKEN` is required** for every workspace tool, and for
+   nothing in the file plane. Set it in the workspace-root `.env` (the same
+   `.env` the orchestrator, the chatbot and `.mcp.json` all read) to a live
+   Scyne API token — the same Bearer token the `scyne` CLI uses. Without it
+   every workspace call answers `not_authenticated`.
+3. **The workspace server needs the Scyne stack running.** `npm run dev` at
+   the repo root brings up the orchestrator on `:3100` and the chatbot on
+   `:4000` — the workspace server is only a front door to those, so
+   `start_stage`, `create_project` and everything else in it fail loudly,
+   naming what could not be reached, when the stack is down. The file plane
+   has no such dependency.
+4. **Blob is the source of truth for `projects/`; local disk is a cache.**
+   Nothing under `projects/` is ever deleted implicitly, in either direction —
+   `sync push` uploads what changed, `sync pull` downloads what changed, and a
+   file present only on one side survives every sync.
+
+### Starting it
+
+```bash
+npm run dev                    # repo root: orchestrator :3100, chatbot :4000
+cd plugins/azure-file-processing && ./scripts/stack.sh up   # this plugin, both MCP servers
+```
+
+`stack.sh up` starts Azurite, the workers and the file-plane orchestrator as it
+always has, then starts the workspace server **natively** alongside it — native
+either way, even under `--all-docker`, because it reaches the Scyne stack on
+`127.0.0.1:3100` and `127.0.0.1:4000`, neither of which is in Compose. It logs
+to `.workspace.log` and its pid is `.workspace.pid` (both gitignored, mirroring
+`.orchestrator.log` / `.orchestrator.pid`). `stack.sh status` reports both
+servers' health; `stack.sh down` stops both — remember `down` is `docker
+compose down -v` and **destroys the Azurite volume**, so never run it if the
+documents synced into blob matter.
+
+### The sync CLI
+
+Three verbs, `npm run sync -- <project> --up|--down|--status [--prefix P] [--dry-run]`
+(equivalently `./node_modules/.bin/tsx scripts/sync.mjs <project> --up|--down|--status`):
+
+| Verb | Does |
+|---|---|
+| `--status` | Compares local `projects/<p>/` against blob and reports `onlyLocal` / `onlyBlob` / `differing` / `same` — nothing is written |
+| `--up` | Uploads every local file that is new or different. Never deletes a blob a local `rm` removed |
+| `--down` | Downloads every blob file that is new or different, to a temp file renamed atomically into place. Never deletes a local file blob does not have |
+
+### A worked sequence
+
+```
+create_project { project: "Acme Insurance", description: "…" }
+→ { project: "Acme-Insurance", slugged: { from: "Acme Insurance", to: "Acme-Insurance" }, dbError: null, adoError: null }
+
+attach_document { project: "Acme-Insurance", path: "/Users/me/policy.pdf" }
+→ { filename: "policy.md", storedPath: "documents/policy.md", converted: true }
+
+start_stage { workflow: "capabilities", project: "Acme-Insurance" }
+→ { issueId: "…", state: "todo" }
+
+issue_status { issueId: "…" }
+→ { status: "in_review", gate: { id: "…" } }
+
+approve_gate { gateId: "…" }
+→ { decision: "approved" }
+```
+
 ## Moving to Azure
 
 Everything here runs against Azurite. Design spec §12 records the deltas so

@@ -1468,7 +1468,8 @@ is ready is one the chatbot will run.
 
 | # | Level | `<stage>` | Skill / script | Owner | Hard requirement |
 |---|---|---|---|---|---|
-| 1 | project | `capabilities` | `/capability-process-map` | Capabilities Process Architect | — |
+| 0 | project | `extract` | `node scripts/extract-documents.mjs` (one `document-extract` agent per document) | Capabilities Process Architect | — |
+| 1 | project | `capabilities` | `/capability-process-map` | Capabilities Process Architect | extracts |
 | 2 | project | `personas` | `/persona-journey-map` | Service Designer | capability map |
 | 3 | feature | `requirements` | `/requirement-generator` | BA | — |
 | 4 | feature | `ui` | `/ui-mockup-generator` | UX Designer | product summary |
@@ -1486,6 +1487,92 @@ name when a client wants that level of detail.
 **`ui` at position 4 is deliberate**, ahead of the data model. See *Why UI
 mockups run at position 4* above.
 
+### The `extract` stage — one agent per document, before the map reads any of them
+
+`capabilities` used to read every `.md` a project has — client-wide documents
+plus every feature's SOP/Transcripts/Notes/UI — into ONE agent's context. At
+SAPN's real size that is ~986k tokens in a single call, which is expensive,
+slow, and eventually simply will not fit. `extract` runs first (project level,
+order 0) to fix that: one `document-extract` agent per document, each reading
+**only its own document** and writing a small, structured `<hash>.extract.json`
+to `projects/<project>/solutions/Extracts/` — eight lists (business functions,
+process steps, actors, service tiers, components, maturity signals, lifecycle
+phases, pain points), each item carrying `src` (the pages it came from) so a
+later reduce can verify a claim without re-reading the whole document.
+`capability-process-map` then reduces from these extracts instead of the raw
+corpus — the method changed, the twelve-section document and both JSON output
+shapes did not.
+
+**There is no bypass.** Every project extracts at every size, including a
+project with two documents. A size threshold ("only extract over N KB") was
+considered and rejected: it would mean two code paths through the reduce that
+must independently stay correct, a fixed cliff at which behaviour silently
+changes, and a small project today that grows into the expensive path with no
+warning. One path, always taken, is simpler to reason about and cannot bit-rot
+on the branch nobody exercises.
+
+**Extracts are keyed by the source document's content hash**, not by filename
+— `scripts/extract-state.mjs`'s `extractPathFor` hashes the file and truncates
+to 16 hex characters. Editing a document changes its hash, which means it now
+asks for an extract nothing has written yet: it reads as `missing`, with no
+separate invalidation step to keep in sync, and — critically — every OTHER
+document's extract is untouched. A client replacing one SOP does not cost a
+re-extraction of the other nineteen.
+
+**Gates now refuse two different things.** `no_documents` (nothing uploaded)
+and `documents_not_ready` (documents exist but have not finished extracting, or
+one failed) are reported separately by `GET /api/extract-status/:project`,
+because the fix is different: the first needs a document, the second needs
+`node scripts/extract-documents.mjs <project>` to run or to be waited on.
+Collapsing them into one `no_documents` would send someone to upload a file
+that is already there.
+
+**The spend gap.** The map phase (`extract`) is an `exec` step, not N `agent`
+steps — the workflow engine has no fan-out primitive (`flow` exists but
+parent-resume-on-child-completion is not implemented, and a workflow is
+compiled at boot, before any document is known). So these ten, twenty or fifty
+agent runs happen inside one `exec`, get no `runs` row each, **do not appear in
+`/spend`**, and are not covered by the per-agent budget ceiling. Each extract
+records its own `usage` (input/output tokens), so the spend is recoverable by
+summing that field across a project's extracts — but it is not tracked the way
+every other agent run is. Fixing this properly needs a fan-out primitive in the
+engine; nothing here builds one.
+
+**`src` is internal only.** It exists so a reduce can verify a claim against
+the exact pages it came from — it must never reach `capability-process.md`,
+`capability-map.json`, or anything a client sees. No footnotes, no
+"(Workshop_Transcript.md, p.23)" in a delivered document.
+
+**The `extract` workflow still raises a human approval gate.** Every stage the
+compiler produces gets one — `gate` is baked into the generic
+`exec → agent → exec → attach → gate` shape `orchestrator.workflows.ts` derives
+from `scripts/pipeline.mjs`, and `extract` is compiled the same way as every
+other stage. Extraction is mechanical (one document in, one small structured
+file out) and fifty extracts are not something a human can meaningfully review
+one by one — so this gate is friction with little value, not a safeguard. It is
+flagged here as a known wart rather than special-cased away, because carving an
+exception into the compiler for one stage is exactly the kind of divergence
+that made hand-maintained workflows unreliable in the first place.
+
+**`syncDown` does not recreate empty directories.** Blob storage has no concept
+of a directory — it stores keyed objects, not folders — so a project restored
+from blob after a fresh clone or a lost workspace comes back with every FILE in
+place but without the empty scaffold folders nothing ever wrote to: an
+untouched `requirements/UI/`, an empty `documents/` before the first upload,
+and so on. Files themselves are unaffected; this was found live, restoring a
+demo project onto a machine that had never held it. Something that expects a
+directory to exist before it can write into it (a `readdir` with no
+`{recursive: true}` mkdir first) is the failure mode to watch for.
+
+**A `failed` document blocks its project, with no override.** A scanned PDF
+with no text layer will never produce a usable extract — `document-extract`
+has nothing to read — so it fails permanently, `extract-documents.mjs` exits
+non-zero, and `capabilities` (which hard-requires every document ready) never
+runs while that one file sits at `failed`. There is currently no "proceed
+without it" escape hatch: the fix is to remove the document or replace it with
+a text-bearing version. `solutions/Extracts/<hash>.extract.failed.json` names
+the reason.
+
 A full run, end to end:
 
 ```bash
@@ -1494,6 +1581,7 @@ A full run, end to end:
 # either on its own.
 npm run stage RTWSA baseline          # capability map + personas, one session
 
+npm run stage RTWSA extract           # then node scripts/extract-documents.mjs RTWSA
 npm run stage RTWSA capabilities      # then /capability-process-map in a Claude Code session
 npm run stage RTWSA personas          # then /persona-journey-map
 
@@ -2147,6 +2235,9 @@ with the registry, the registry wins.
 | A `/new` step's label is replaced by the session prompt as you type | Something wrote the label straight to stdout. readline in terminal mode redraws the whole line from ITS prompt on every edit, so the label survives until the first backspace — and the step then looks like the ordinary prompt, so the next thing typed is taken as a command. | `drawLabel()` in `cli/repl.ts` hands the label to `rl.setPrompt`. Any new prompt must go through it, not `process.stdout.write`. |
 | A pasted paragraph in `scyne` is read as several answers | The terminal is not bracketing its pastes (DECSET 2004), so `cli/paste.ts` cannot tell a pasted newline from a pressed Return — tmux and screen can be configured to strip the markers. | Paste and look: a multi-line block should collapse to `[Pasted text #1 +N lines]` before you press Return. If it does not, `/new` refuses the step rather than spreading the block across the four that follow, and `project describe <p> "…"` takes the paragraph in one go. |
 | A Codex run's transcript is empty in the console | The decoder did not recognise the event kinds — a Codex version bump. | `npm run orch -- log <runId> --raw` shows the real events; update `decodeCodexLine` in `core/transcript.ts`. Unrecognised events render as framing lines, so an empty transcript means the log itself is empty. |
+| A stage refuses `documents_not_ready` | Documents are on disk but not extracted. | `curl /api/extract-status/<project>` names which and why. `node scripts/extract-documents.mjs <project>` runs the missing ones; it is idempotent. |
+| A document sits at `failed` forever | Usually a scanned PDF with no text layer — nothing to extract. | The reason is in `solutions/Extracts/<hash>.extract.failed.json`. There is no override yet; remove the document or supply a text version. |
+| `/spend` shows nothing for a big extraction run | Correct, and a known gap: map passes get no `runs` row. | Each extract's `usage` field carries its tokens. Sum them. |
 
 ---
 

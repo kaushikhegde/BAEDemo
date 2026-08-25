@@ -305,6 +305,54 @@ function ensureAdoProjectStep(): Step {
 }
 
 /**
+ * Push a stage's outputs to blob.
+ *
+ * Blob is the source of truth for projects/; the local tree is a cache. An
+ * agent writes its artefacts to disk, so without this they exist only in the
+ * cache and a `syncDown` on another day would not restore them.
+ *
+ * An `exec` step rather than a paragraph in a prompt, for the same reason
+ * work-item creation is a step: an instruction a model may or may not
+ * follow, running beside a script that always does, is how you get half a
+ * backlog. This one is added ONCE, here, so every compiled workflow inherits
+ * it — the same "add a stage, get it for free" discipline the rest of this
+ * file relies on.
+ *
+ * Placed as the LAST step of every workflow it appears in — after `attach`
+ * (so it can never race the agent still writing) and after the publish +
+ * verify sequence where one exists (so `.published.json`, which the publish
+ * step writes, goes up too).
+ *
+ * Non-fatal by design: the staged files, the upload and this workflow's
+ * outputs are all real whether or not blob heard about it. An ordinary exec
+ * step's non-zero exit BLOCKS the issue — exactly wrong here, since a sync
+ * hiccup is not a reason to hold a client's finished artefact hostage at a
+ * step nobody can see the point of retrying. The `|| echo` fallback keeps
+ * this step's own exit code at 0 no matter what `sync.mjs` does; a real
+ * failure is still on stderr from the inner command if anyone goes looking,
+ * it just never reaches the blocking path.
+ *
+ * `--prefix "{feature}"` narrows a feature stage's push to that feature's own
+ * subtree, matching `root(s)` above — a feature stage's `produces[]` never
+ * reaches outside `projects/{project}/{feature}/`, and scoping the sync the
+ * same way keeps one feature's push from re-hashing every other feature's
+ * tree. A project stage has no feature to scope to, so it pushes the whole
+ * project.
+ */
+function syncOutputsStep(s: Stage): Step {
+  const prefix = s.level === LEVEL.FEATURE ? ` --prefix "{feature}"` : "";
+  const sync =
+    `plugins/azure-file-processing/node_modules/.bin/tsx ` +
+    `plugins/azure-file-processing/scripts/sync.mjs "{project}" --up --root "{workspace}"${prefix}`;
+  return {
+    type: "exec",
+    label: "Saving this stage's outputs",
+    cmd: `(${sync}) || echo "workspace sync skipped — continuing"`,
+    timeoutMs: 10 * MINUTES,
+  };
+}
+
+/**
  * Create the client's backlog, deterministically.
  *
  * The requirements stage is the only one whose deliverable is a page AND a set
@@ -426,6 +474,10 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   // not once at the end, which would leave the chatbot's UI tab stale for hours.
   if (key !== "app") steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
 
+  // Last, so it is after attach and after the publish + verify sequence
+  // (where one exists) unconditionally — see the doc comment above.
+  steps.push(syncOutputsStep(s));
+
   return { key, label: s.label, assignee: s.agentKey, title: `${s.label} — ${scope(s)}`, steps };
 }
 
@@ -514,6 +566,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     steps.push(verifyPublishStep(key, s, publishAt));
   }
   steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
+  steps.push(syncOutputsStep(s));
 
   // A mode of the stage it revises, not a tenth stage. The engine does not care
   // — it runs every workflow the same way — but a console listing eighteen peers
@@ -566,6 +619,9 @@ export function publishWorkflow(key: string, s: Stage): WorkflowDef {
   // agent NOT to create them — the two must agree or they are made twice.
   if (key === "requirements") steps.push(createWorkItemsStep(key, s));
   steps.push(verifyPublishStep(key, s, publishAt));
+  // Publishing writes `.published.json`, so the record of where the page
+  // went is itself an output worth pushing to blob.
+  steps.push(syncOutputsStep(s));
 
   return {
     key: `publish-${key}`,

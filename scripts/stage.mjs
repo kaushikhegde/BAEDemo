@@ -28,6 +28,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { WORK_ROOT } from "./lib/roots.mjs";
 import { convertTree, report as reportConversion, CONVERTIBLE, PLAIN_TEXT } from "./convert-to-md.mjs";
 import {
@@ -35,11 +36,21 @@ import {
   isProjectStage, projectDir, featureDir, resolveInput, exists,
   listProjects, listFeatures, stageIsDone, unmetRequirements,
 } from "./pipeline.mjs";
+import { projectState } from "./extract-state.mjs";
 
 // The project tree this run operates on. See scripts/lib/roots.mjs for why
 // this is not the same question as "where does this code live".
 const WORKSPACE = WORK_ROOT;
 const KNOWN_FLAGS = ["--force", "--no-convert", "--keep-originals", "--from-requirements"];
+
+// The plugin-local sync CLI, invoked as a subprocess. NOT `node` — sync.mjs
+// imports the TypeScript sync engine and the plugin has no build step, so
+// bare `node` dies with ERR_MODULE_NOT_FOUND. NOT `npx tsx` either — on a
+// machine with tsx not cached, npx DOWNLOADS it, putting a network fetch
+// inside a hook that runs before every stage. This repo's own precedent is
+// the plugin-local binary (see plugins/azure-file-processing/scripts/stack.sh).
+const SYNC_TSX = path.join(WORKSPACE, "plugins/azure-file-processing/node_modules/.bin/tsx");
+const SYNC_CLI = path.join(WORKSPACE, "plugins/azure-file-processing/scripts/sync.mjs");
 
 const PROJECT_STAGE_KEYS = new Set(ordered(LEVEL.PROJECT).map(([k]) => k));
 
@@ -232,7 +243,7 @@ async function stageProjectDown(ctx, work, staged, { personasInto = "project", c
 
 async function stageCapabilities(ctx) {
   const { work, staged, force } = ctx;
-  const dirs = await mkdirs(work, ["documents", "capability-reference", "outputs"]);
+  const dirs = await mkdirs(work, ["documents", "capability-reference", "extracts", "outputs"]);
 
   const n = await stageAllDocuments(ctx, dirs.documents, staged);
   if (n === 0) {
@@ -240,6 +251,29 @@ async function stageCapabilities(ctx) {
       `no .md source documents for project ${ctx.project} — nothing for the capability map to read`,
       [projectDir(WORKSPACE, ctx.project)]);
   }
+
+  // The reduce reads extracts, not documents. The documents are still staged
+  // (unchanged) because `src` verification needs them reachable.
+  //
+  // Copied via `projectState()`, NOT a raw directory listing. Extracts are
+  // keyed by content hash and never deleted when a document stops being
+  // tracked (extract-state.mjs walking only SOP/Transcripts/Notes/UI, never
+  // `requirements/project/`, is exactly that case) — the file just becomes an
+  // orphan nothing points at any more. `projectState()` is the same "what
+  // counts as a document right now" logic extract-documents.mjs and
+  // validate-extracts.mjs use, so a stale orphan (e.g. an old extract of a
+  // feature's own previous capability-process.md) is never copied in here
+  // even though it is still sitting in the Extracts directory.
+  const st = await projectState(WORKSPACE, ctx.project);
+  let extractCount = 0;
+  for (const d of st.documents) {
+    if (d.state !== "ready") continue;
+    await fs.copyFile(d.extractPath, path.join(dirs.extracts, path.basename(d.extractPath)));
+    extractCount++;
+  }
+  staged.push(extractCount
+    ? `extracts/  ← ${extractCount} file(s) from solutions/Extracts (project + every feature)`
+    : `extracts/  — none found (the extract stage should have produced these — see 'requires')`);
 
   const refs = (await fs.readdir(dirs["capability-reference"]).catch(() => [])).filter((f) => f.toLowerCase().endsWith(".md"));
   staged.push(
@@ -730,6 +764,40 @@ async function runStage(key, ctx) {
   console.log("");
 }
 
+/**
+ * Blob is the source of truth for projects/; this local tree is a cache.
+ *
+ * Shelled out rather than imported on purpose: the repo root has NO runtime
+ * dependencies, and @azure/storage-blob lives only in the plugin's
+ * node_modules. A subprocess is the seam that keeps the root install lean.
+ *
+ * Non-fatal by design, in the ORDINARY case. A developer with no Azurite
+ * running must still be able to stage from a local tree — the sync is an
+ * enrichment, not a gate — so a failure here only prints a `sync skipped:`
+ * line and lets staging carry on from whatever is already on disk.
+ *
+ * The one case this does NOT swallow: a project that exists nowhere but
+ * blob. If the pull fails and there is still no local copy afterwards,
+ * staging genuinely cannot proceed — the caller (`main`) checks for exactly
+ * that combination and fails loudly, naming the sync error, rather than
+ * reporting the generic (and in that case misleading) "no such project".
+ */
+async function syncDownFromBlob(project) {
+  try {
+    const out = execFileSync(
+      SYNC_TSX, [SYNC_CLI, project, "--down", "--root", WORKSPACE],
+      { cwd: path.join(WORKSPACE, "plugins/azure-file-processing"), encoding: "utf8" },
+    );
+    const r = JSON.parse(out.trim());
+    console.log(`  synced: pulled ${r.pulled}, skipped ${r.skipped}`);
+    return { ok: true, ...r };
+  } catch (e) {
+    const message = String(e?.message ?? e).split("\n")[0];
+    console.log(`  sync skipped: ${message}`);
+    return { ok: false, error: message };
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
@@ -741,7 +809,26 @@ async function main() {
   const [project, ...rest] = positional;
   if (!SAFE_NAME.test(project)) die("project name contains unexpected characters");
 
+  // Always work from the authoritative copy: a project that exists only in
+  // blob (created or worked on from another machine) must still be staged
+  // here. Before the existence check below, deliberately — that check is
+  // what would otherwise refuse a project this pull is about to produce.
+  const sync = await syncDownFromBlob(project);
+
   if (!(await exists(projectDir(WORKSPACE, project)))) {
+    if (!sync.ok) {
+      // The one case sync failure IS fatal: nothing local, and the one place
+      // that might have a copy could not be reached either. The generic
+      // "no such project" listing below would be actively misleading here —
+      // it reads as "this project has never existed", when the truth may be
+      // "it exists in blob and this machine could not reach it".
+      die(
+        `no such project: projects/${project}\n\n` +
+        `  This machine could not sync down from blob to check there either:\n` +
+        `    ${sync.error}\n\n` +
+        `  If the project exists only in blob storage, fix the sync (is Azurite running?) and retry.`,
+      );
+    }
     const projects = await listProjects(WORKSPACE);
     die(`no such project: projects/${project}\n\nAvailable:\n` + projects.map((p) => `  ${p}`).join("\n"));
   }

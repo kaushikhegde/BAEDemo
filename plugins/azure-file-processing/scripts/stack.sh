@@ -6,6 +6,10 @@ PORT="${ORCH_PORT:-8080}"
 ORCH_LOG=".orchestrator.log"
 ORCH_PID=".orchestrator.pid"
 
+WS_PORT="${WORKSPACE_PORT:-8081}"
+WS_LOG=".workspace.log"
+WS_PID=".workspace.pid"
+
 usage() {
   cat >&2 <<'TXT'
 usage: stack.sh {up|down|status|logs|workers <n>}
@@ -14,7 +18,11 @@ usage: stack.sh {up|down|status|logs|workers <n>}
                       machine, so upload_file can read the paths you name. Pass
                       --all-docker to run the orchestrator in a container too —
                       then upload_file is not offered and the create_upload_url
-                      + upload.mjs pair is the only way in.
+                      + upload.mjs pair is the only way in. The workspace MCP
+                      server (scyne-workspace, :8081) is always started natively
+                      alongside it — it fronts the Scyne stack on the HOST
+                      (orchestrator :3100, chatbot :4000), which is not in
+                      Compose either way.
 TXT
   exit 1
 }
@@ -57,11 +65,45 @@ orch_stop() {
   return 0
 }
 
+
+# --- the workspace MCP server ------------------------------------------------
+# A front door to the Scyne stack (orchestrator :3100, chatbot :4000), so it is
+# only useful when those are up. It is started anyway: /health answers without a
+# credential and every tool names what it could not reach, which is a far better
+# failure than a server that refused to start.
+
+ws_is_ours() {
+  curl -fsS "http://127.0.0.1:$WS_PORT/health" 2>/dev/null | grep -q '"service":"scyne-workspace"'
+}
+
+ws_running() { [ -f "$WS_PID" ] && kill -0 "$(cat "$WS_PID")" 2>/dev/null; }
+
+ws_start() {
+  if ws_running; then echo "workspace server already running (pid $(cat "$WS_PID"))"; return 0; fi
+  : > "$WS_LOG"
+  WORKSPACE_PORT="$WS_PORT" ./node_modules/.bin/tsx src/workspace/server.ts >> "$WS_LOG" 2>&1 &
+  echo $! > "$WS_PID"
+}
+
+ws_stop() {
+  [ -f "$WS_PID" ] && { kill "$(cat "$WS_PID")" 2>/dev/null || true; rm -f "$WS_PID"; }
+  # Same reasoning as orch_stop: tsx re-execs, so the recorded pid can be a
+  # parent whose child still holds the port. Only clear a listener /health has
+  # identified as ours.
+  if ws_is_ours; then
+    for pid in $(lsof -ti "tcp:$WS_PORT" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done
+  fi
+  return 0
+}
+
 wait_healthy() {
   printf 'waiting for the orchestrator'
   for _ in $(seq 1 60); do
     if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-      echo; echo "ready:  MCP at http://127.0.0.1:$PORT/mcp"; return 0
+      echo
+      echo "ready:  file plane      MCP at http://127.0.0.1:$PORT/mcp"
+      echo "        workspace plane MCP at http://127.0.0.1:$WS_PORT/mcp"
+      return 0
     fi
     printf '.'; sleep 1
   done
@@ -90,16 +132,27 @@ case "${1:-}" in
       echo "orchestrator: native (pid $(cat "$ORCH_PID" 2>/dev/null || echo unknown)), logging to $ORCH_LOG"
     fi
     wait_healthy
+    # Native either way — even under --all-docker — because it reaches
+    # 127.0.0.1:3100 and 127.0.0.1:4000, neither of which is in Compose.
+    ws_start
+    echo "workspace server: native (pid $(cat "$WS_PID" 2>/dev/null || echo unknown)), logging to $WS_LOG"
     ;;
   down)
     orch_stop
+    ws_stop
     docker compose down -v
-    rm -f "$ORCH_LOG"
+    rm -f "$ORCH_LOG" "$WS_LOG"
     ;;
   logs)
+    TAIL_PIDS=()
     if [ -f "$ORCH_LOG" ]; then
-      tail -n 50 -f "$ORCH_LOG" & TAIL_PID=$!
-      trap 'kill "$TAIL_PID" 2>/dev/null || true' EXIT
+      tail -n 50 -f "$ORCH_LOG" & TAIL_PIDS+=("$!")
+    fi
+    if [ -f "$WS_LOG" ]; then
+      tail -n 50 -f "$WS_LOG" & TAIL_PIDS+=("$!")
+    fi
+    if [ "${#TAIL_PIDS[@]}" -gt 0 ]; then
+      trap 'for p in "${TAIL_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done' EXIT
     fi
     docker compose logs -f --tail=100
     ;;
@@ -121,6 +174,9 @@ case "${1:-}" in
     fi
     echo "--- health ---"
     curl -fsS "http://127.0.0.1:$PORT/health" || echo "orchestrator unreachable"
+    echo
+    echo "--- workspace server ---"
+    curl -fsS "http://127.0.0.1:$WS_PORT/health" || echo "workspace server unreachable"
     ;;
   *) usage ;;
 esac

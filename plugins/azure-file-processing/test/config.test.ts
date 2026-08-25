@@ -13,6 +13,13 @@ describe("loadConfig", () => {
     expect(c.publicBlobEndpoint).toBeNull();
     expect(c.allowLocalPathUpload).toBe(true);
     expect(c.connectionString).toContain("devstoreaccount1");
+    // MCP server 2 (scyne-workspace) config — reaches the Scyne stack that
+    // already runs natively on this machine, not Azurite.
+    expect(c.orchUrl).toBe("http://127.0.0.1:3100");
+    expect(c.orchToken).toBeNull();
+    expect(c.chatbotUrl).toBe("http://127.0.0.1:4000");
+    expect(c.workspacePort).toBe(8081);
+    expect(c.workspaceRoot).toBe(process.cwd());
   });
 
   it("takes overrides from the environment", () => {

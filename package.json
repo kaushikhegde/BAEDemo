@@ -26,7 +26,7 @@
     "sync:docs": "node scripts/sync-documents.mjs",
     "scyne": "node cli/index.ts",
     "test:cli": "node --test \"cli/*.test.ts\"",
-    "test:scripts": "node --test \"scripts/lib/*.test.mjs\"",
+    "test:scripts": "node --test \"scripts/lib/*.test.mjs\" \"test/**/*.test.mjs\"",
     "build:cli": "node scripts/build-cli.mjs",
     "pack:cli": "node scripts/build-cli.mjs && npm pack ./dist/cli --pack-destination ./dist",
     "typecheck": "./packages/orchestrator/node_modules/.bin/tsc --noEmit -p packages/orchestrator/tsconfig.json && ./packages/orchestrator/node_modules/.bin/tsc --noEmit -p cli/tsconfig.json",

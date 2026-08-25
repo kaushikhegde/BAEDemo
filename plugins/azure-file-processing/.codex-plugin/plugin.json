@@ -1,7 +1,7 @@
 {
   "name": "azure-file-processing",
-  "version": "0.1.0+codex.20260825053949",
-  "description": "Upload, process and query very large documents through Azure Blob Storage without their contents entering the model's context.",
+  "version": "0.2.0+codex.20260825053949",
+  "description": "Upload, process and query very large documents through Azure Blob Storage without their contents entering the model's context, and drive the Scyne requirements pipeline as tracked issues.",
   "author": {
     "name": "Scyne"
   },
@@ -19,8 +19,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Azure File Processing",
-    "shortDescription": "Process huge files in Azure without filling the context window",
-    "longDescription": "Provides an upload-process-retrieve workflow for documents up to 5 GiB. Files travel directly from the machine into Azure Blob Storage using a short-lived, write-only SAS URL and are processed by a worker pool that streams them page by page. The model receives only compact JSON, and reads document text through a keyword search and a byte-capped fetch, so a 2 GB PDF can be questioned while only a few kilobytes ever reach the context window.",
+    "shortDescription": "Process huge files in Azure and run the Scyne pipeline, without filling the context window",
+    "longDescription": "Ships two MCP servers. The FILE plane provides an upload-process-retrieve workflow for documents up to 5 GiB: files travel directly from the machine into Azure Blob Storage using a short-lived, write-only SAS URL and are processed by a worker pool that streams them page by page, so a 2 GB PDF can be questioned while only a few kilobytes ever reach the context window. The WORKSPACE plane fronts the Scyne requirements pipeline: a stage started from Codex (capability map, personas, requirements, UI mockups, data model, architecture, test cases, the companion app) becomes the SAME tracked issue the chatbot creates — visible in the console, in Spend and in Actions — with its documents, projects and features synced durably to the same Azure Blob Storage the file plane uses.",
     "developerName": "Scyne",
     "category": "Developer Tools",
     "capabilities": [
@@ -28,7 +28,8 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Upload a large document to Azure, process it into page-mapped chunks, and answer my questions about it using only the passages that matter."
+      "Upload a large document to Azure, process it into page-mapped chunks, and answer my questions about it using only the passages that matter.",
+      "Run the capability map for my project and tell me when it needs approving."
     ],
     "brandColor": "#464E7E",
     "screenshots": []
