@@ -54,6 +54,7 @@ import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
 // readiness — see `extractionGate` below for why the gates read this instead
 // of `countProjectDocs`/`countFeatureDocs` for the capability-map path.
 import { projectState } from "../../scripts/extract-state.mjs";
+import { planRetry } from "./services/extractRetry.js";
 import {
   carryAuth, requireSession, login, logout, whoami,
   tokenFor, setSessionCookie, clearSessionCookie,
@@ -2348,10 +2349,13 @@ function syncProjectToBlob(project: string): void {
  * `extract-documents.mjs` is idempotent, so the stage's own `extract` step
  * will pick up anything missed here.
  */
-function startExtraction(project: string, feature?: string): { started: boolean; error: string | null } {
+function startExtraction(
+  project: string, feature?: string, extra: string[] = [],
+): { started: boolean; error: string | null } {
   try {
     const args = [path.join(WORKSPACE_PATH, "scripts", "extract-documents.mjs"), project, "--root", WORKSPACE_PATH];
     if (feature) args.push("--feature", feature);
+    args.push(...extra);
     const child = spawn("node", args, {
       cwd: WORKSPACE_PATH, detached: true, stdio: "ignore",
     });
@@ -2386,6 +2390,54 @@ app.get("/api/extract-status/:project", async (req, res) => {
     const project = String(req.params.project);
     if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
     res.json(await projectState(WORKSPACE_PATH, project));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Retry extraction for a project, or for one document in it.
+ *
+ * Extraction starts by itself on every upload, so this is the exception rather
+ * than the normal path: a document that FAILED, or one wedged at `extracting`
+ * because the pass holding its claim was killed. There was no way to ask for
+ * either — the only retry was resuming the whole issue, which re-runs the step
+ * for every document and cannot be aimed at the one that broke.
+ *
+ * Fire-and-forget, exactly as `startExtraction` is and for the same reason: a
+ * fifty-document project is not something to hold an HTTP request open for. The
+ * response carries what it is ABOUT to retry and why each one failed, so a
+ * caller who has just been told "extraction failed" learns which document and
+ * what went wrong in the same round trip, then polls
+ * `/api/extract-status/:project`.
+ */
+app.post("/api/extract-retry/:project", async (req, res) => {
+  try {
+    const project = String(req.params.project);
+    if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+
+    const doc = req.body?.doc ? String(req.body.doc).trim() : undefined;
+    const force = Boolean(req.body?.force);
+
+    const st = await projectState(WORKSPACE_PATH, project);
+    const plan = planRetry(st.documents, { doc, force });
+    if (!plan.ok) {
+      // A name that resolves to nothing is the caller's mistake; the other three
+      // are states of the project, which is the same split the stage gates draw
+      // between `bad_project` and `no_documents`.
+      return res.status(plan.error === "no_such_document" ? 400 : 409).json(plan);
+    }
+
+    const extraction = startExtraction(project, undefined, plan.args);
+    if (!extraction.started) {
+      return res.status(500).json({
+        error: "extraction_not_started", message: extraction.error,
+        retrying: plan.retrying,
+      });
+    }
+    console.log(`[extract] ${project}: retrying ${plan.retrying.length} document(s)` +
+      `${doc ? ` (${doc})` : ""}${force ? " with --force" : ""}`);
+    res.json({ ok: true, project, started: true, retrying: plan.retrying });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

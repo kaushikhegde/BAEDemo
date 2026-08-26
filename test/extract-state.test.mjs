@@ -64,6 +64,29 @@ test("a .failed file carries its reason forward", async () => {
   assert.match(s.reason, /no text layer/);
 });
 
+test("a .failed file carries how many times it has failed, and when", async () => {
+  // The reason alone cannot separate "the model had a bad night" from "this is
+  // a scanned PDF and never will extract" — which is the difference between
+  // retrying and removing the document.
+  const p = await extractPathFor(docA(), levelRoot());
+  mkdirSync(join(levelRoot(), "solutions/Extracts"), { recursive: true });
+  writeFileSync(p.replace(/\.extract\.json$/, ".extract.failed.json"),
+    JSON.stringify({
+      reason: "no text layer in PDF", doc: "documents/a.md", attempts: 4,
+      firstFailedAt: "2026-08-20T01:00:00.000Z", lastFailedAt: "2026-08-26T09:00:00.000Z",
+    }));
+  const s = await stateOf(docA(), levelRoot());
+  assert.equal(s.attempts, 4);
+  assert.equal(s.lastFailedAt, "2026-08-26T09:00:00.000Z");
+  assert.equal(s.firstFailedAt, "2026-08-20T01:00:00.000Z");
+});
+
+test("a document that never failed reports no attempt count", async () => {
+  const s = await stateOf(docA(), levelRoot());
+  assert.equal(s.state, "missing");
+  assert.equal(s.attempts, undefined, "absent, not 0 — 0 would read as 'tried and did not fail'");
+});
+
 test("editing a ready document returns it to missing", async () => {
   const p = await extractPathFor(docA(), levelRoot());
   mkdirSync(join(levelRoot(), "solutions/Extracts"), { recursive: true });

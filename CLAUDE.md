@@ -1080,6 +1080,8 @@ open http://127.0.0.1:5173
 | **GET** | **`/api/documents/content?project=&feature=&path=`** | **One document's text**, for the preview. Refuses a binary file, a path outside `documents/`, and a climb out of the project — `400 bad_path` |
 | **PUT** | **`/api/documents`** | **Replace one document** (multipart). Removes the old and its archived original FIRST, so the replacement keeps its own name instead of landing beside it as `handling (1).md` |
 | **DELETE** | **`/api/documents`** | **Remove one document** and its archived original, on disk and in the database. `404 no_document`, `400 bad_path` for anything outside `documents/` |
+| **GET** | **`/api/extract-status/:project`** | Every document's extraction state — `ready` / `missing` / `extracting` / `failed`, and for a failure its `reason`, `attempts`, `firstFailedAt` and `lastFailedAt` |
+| **POST** | **`/api/extract-retry/:project`** | **Retry a failed extraction.** `{doc?, force?}` → answers with what it is retrying and why each one failed, then runs detached. `409 no_documents` / `nothing_to_retry` / `already_ready`, `400 no_such_document` (which lists what it does know) |
 | **GET** | **`/api/staleness/:project[/:feature]`** | Artefacts generated before one of their inputs last changed, by mtime against the shared pipeline graph |
 | **GET** | **`/api/suggestions?project=&feature=`** | The composer's chips: 3–4 `{label, message}` computed from the graph and disk, so a chip can never 409 |
 | POST | `/api/brand/extract` | Fetches a URL server-side, writes the **project's** `theme.json` + `brand-source.json`, re-renders the app if one exists |
@@ -1677,14 +1679,49 @@ demo project onto a machine that had never held it. Something that expects a
 directory to exist before it can write into it (a `readdir` with no
 `{recursive: true}` mkdir first) is the failure mode to watch for.
 
-**A `failed` document blocks its project, with no override.** A scanned PDF
-with no text layer will never produce a usable extract — `document-extract`
-has nothing to read — so it fails permanently, `extract-documents.mjs` exits
-non-zero, and `capabilities` (which hard-requires every document ready) never
-runs while that one file sits at `failed`. There is currently no "proceed
-without it" escape hatch: the fix is to remove the document or replace it with
-a text-bearing version. `solutions/Extracts/<hash>.extract.failed.json` names
-the reason.
+**A `failed` document blocks its project.** `capabilities` hard-requires every
+document ready, so it never runs while one file sits at `failed`. There is
+still no "proceed without it" escape hatch — a capability map with a silent
+hole in it is worse than a refusal — but there are now two ways to act on one:
+
+**Retry it.** `POST /api/extract-retry/:project` takes an optional `doc` and
+re-runs extraction for that document alone, or for every document that is not
+ready. `retry_extraction` in the workspace MCP plane is the same thing, and
+`node scripts/extract-documents.mjs <project> --doc "<scope>/<docId>"` is the
+same thing again from a terminal. It is fire-and-forget — poll
+`/api/extract-status/:project` — because a fifty-document project is not
+something to hold a request open for.
+
+**Or read why, and stop retrying.** `solutions/Extracts/<hash>.extract.failed.json`
+carries `reason`, `doc`, `attempts`, `firstFailedAt` and `lastFailedAt`, and
+`/api/extract-status` reports all of them per document. **`attempts` is the
+field that decides.** A scanned PDF with no text layer gives `document-extract`
+nothing to read and fails identically every time; four attempts with one reason
+is not bad luck, and the fix is to remove the document or replace it with a
+text-bearing version. `attempts` said `1` on every failure until it was read
+from the previous marker before being overwritten, so nothing could tell those
+two cases apart.
+
+> **The reason used to be thrown away one layer up.** `extract-documents.mjs`
+> printed its failure summary to STDOUT and exited 1, and the engine builds an
+> `exec` step's blocking comment from STDERR — so a run blocked with *"the
+> extraction script exited with code 1 and returned no error details"* while the
+> reason sat in a file on a machine the person reading that comment could not
+> open. The script writes the failures to stderr now, and `engine.ts` falls back
+> to stdout when stderr is empty. Both halves, because either one alone leaves
+> the next script that reports on stdout in the same place.
+
+> **The `.partial` is a CLAIM, not scratch.** It is taken with `wx`, so a second
+> pass over the same document finds it held rather than truncating it. Two
+> passes overlap routinely — the chatbot fires `startExtraction` detached on
+> every upload while the workflow's own `extract` step runs the same script, and
+> two documents with identical bytes hash to one extract path. Before this, the
+> loser read a `.partial` the winner had already renamed away and recorded
+> `ENOENT: … <hash>.extract.json.partial` as that document's permanent failure
+> reason: a complete, valid extract on disk and a marker beside it saying the
+> document could not be read. A claim older than `SCYNE_EXTRACT_CLAIM_TTL_MS`
+> (25 minutes) is abandoned and taken over, because a SIGKILLed pass cannot
+> release its own; `--force` breaks one outright.
 
 A full run, end to end:
 
@@ -2353,7 +2390,9 @@ with the registry, the registry wins.
 | A pasted paragraph in `scyne` is read as several answers | The terminal is not bracketing its pastes (DECSET 2004), so `cli/paste.ts` cannot tell a pasted newline from a pressed Return — tmux and screen can be configured to strip the markers. | Paste and look: a multi-line block should collapse to `[Pasted text #1 +N lines]` before you press Return. If it does not, `/new` refuses the step rather than spreading the block across the four that follow, and `project describe <p> "…"` takes the paragraph in one go. |
 | A Codex run's transcript is empty in the console | The decoder did not recognise the event kinds — a Codex version bump. | `npm run orch -- log <runId> --raw` shows the real events; update `decodeCodexLine` in `core/transcript.ts`. Unrecognised events render as framing lines, so an empty transcript means the log itself is empty. |
 | A stage refuses `documents_not_ready` | Documents are on disk but not extracted. | `curl /api/extract-status/<project>` names which and why. `node scripts/extract-documents.mjs <project>` runs the missing ones; it is idempotent. |
-| A document sits at `failed` forever | Usually a scanned PDF with no text layer — nothing to extract. | The reason is in `solutions/Extracts/<hash>.extract.failed.json`. There is no override yet; remove the document or supply a text version. |
+| A document sits at `failed` forever | Usually a scanned PDF with no text layer — nothing to extract. | `curl /api/extract-status/<project>` names the reason and the `attempts` count. Retry one document with `POST /api/extract-retry/<project> {"doc":"<scope>/<docId>"}` (or `retry_extraction`); if `attempts` keeps rising on the same reason, retrying will not help — remove the document or supply a text version. |
+| An extraction failure blocks an issue with an empty diagnostics fence | Fixed. The script printed its reasons on stdout and the engine's blocking comment read stderr only. | `extract-documents.mjs` writes failures to stderr, and `engine.ts` falls back to stdout when stderr is empty. If a fence is still empty the command genuinely printed nothing — the comment now says so. |
+| A document is `failed` with `ENOENT: … .extract.json.partial` | Two extraction passes raced for one extract path and the loser read a file the winner had renamed away. The extract itself is usually fine. | Fixed — the `.partial` is claimed with `wx`. Clear the stale marker by retrying that document; it will find the valid extract and skip. |
 | `/spend` shows nothing for a big extraction run | Correct, and a known gap: map passes get no `runs` row. | Each extract's `usage` field carries its tokens. Sum them. |
 
 ---

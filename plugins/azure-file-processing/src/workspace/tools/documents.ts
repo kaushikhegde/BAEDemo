@@ -145,9 +145,19 @@ export const extractStatus = async (ctx: WsCtx, args: { project: string }) => {
   //
   // `docId`, `state` and `reason` are what a caller actually needs: which
   // document, whether it is ready, and why not.
+  //
+  // `attempts` comes with them, because "why not" is only half the answer. A
+  // document that has failed four times with one reason is a scanned PDF with
+  // no text layer, and retrying it a fifth time buys another agent run and the
+  // same message — that count is the difference between retrying and replacing
+  // the document. Absent rather than 0 on a document that never failed: 0 reads
+  // as "tried, did not fail".
   const documents = (raw?.documents ?? []).map((d: any) => ({
     docId: d.docId, scope: d.scope ?? null, state: d.state,
     ...(d.reason ? { reason: String(d.reason) } : {}),
+    ...(d.attempts != null ? { attempts: Number(d.attempts) } : {}),
+    ...(d.firstFailedAt ? { firstFailedAt: String(d.firstFailedAt) } : {}),
+    ...(d.lastFailedAt ? { lastFailedAt: String(d.lastFailedAt) } : {}),
   }));
 
   return {
@@ -156,3 +166,25 @@ export const extractStatus = async (ctx: WsCtx, args: { project: string }) => {
     documents,
   };
 };
+
+/**
+ * Retry extraction — for every document that is not ready, or for one named.
+ *
+ * The counterpart to `extract_status`, and deliberately the only verb here that
+ * starts extraction, because the uploads already do. It exists for the two
+ * states waiting does not fix: a document that FAILED, and one wedged at
+ * `extracting` because the pass holding its claim was killed.
+ *
+ * It answers with what it is about to retry AND why each one failed, so a
+ * caller looking at a blocked issue learns which document broke and what went
+ * wrong without a second call. The work itself is detached — a fifty-document
+ * project takes far longer than a tool call — so poll `extract_status` for the
+ * outcome; a second failure is recorded there with its reason and an attempt
+ * count that says whether retrying is worth doing again.
+ */
+export const retryExtraction = async (
+  ctx: WsCtx, args: { project: string; doc?: string; force?: boolean },
+) => chatFetch<any>(ctx.cfg, "POST", `/api/extract-retry/${encodeURIComponent(args.project)}`, {
+  ...(args.doc ? { doc: args.doc } : {}),
+  ...(args.force ? { force: true } : {}),
+});

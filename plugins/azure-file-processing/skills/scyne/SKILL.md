@@ -79,6 +79,7 @@ runnable and what is waiting on a person.
 | `upload <path> [kind]` | `ingest_document`. **The default for any document.** |
 | `docs` | `list_documents`. Report `inDb: false` rows. |
 | `extracts` | `extract_status` — are the documents ready yet? Extraction is automatic; this asks if it has finished. |
+| `retry extract [<path>]` | `retry_extraction` — for a document that FAILED, or one wedged at `extracting`. Not for one merely still running. |
 | `read <path>` | `read_document`. Short notes only. |
 | `rm <path>` | `delete_document`. **Confirm first.** |
 | `stale` | `staleness`. Report; never trigger. |
@@ -258,6 +259,17 @@ arrived by some route other than an upload (copied into the tree,
 `npm run convert`) or a spawn genuinely failed. It is idempotent, so a re-run
 costs nothing but the gate it raises. `no_documents` is the separate refusal
 that really does mean "upload something".
+
+**Two of those states never resolve on their own, and `retry_extraction` is the
+way out of both.** A document at `failed` has nothing working on it — telling
+somebody to wait is telling them to wait forever. One at `extracting` is
+normally a live pass and worth waiting for, but it looks identical to a claim
+whose owner was killed. So: `extract_status` first, and read the fields. It
+names the document, the reason, and — on a failure — `attempts`, which is the
+one that matters: a document that has failed four times with the same reason is
+a scanned PDF with no text layer, and the answer is to replace or remove it
+rather than pay for a fifth run. `retry_extraction` takes a single `doc` so one
+bad document does not cost a re-run of the other nineteen.
 
 `personas` then requires the capability map.
 

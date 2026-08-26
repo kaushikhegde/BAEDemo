@@ -18,7 +18,7 @@ import {
   staleness, extractBrand, ARTEFACTS,
 } from "./tools/artefacts.js";
 import {
-  deleteDocument, replaceDocument, readDocument, extractStatus,
+  deleteDocument, replaceDocument, readDocument, extractStatus, retryExtraction,
 } from "./tools/documents.js";
 import {
   cancelIssue, issueRuns, runTranscript, actions, history, requestChanges,
@@ -44,7 +44,7 @@ export const jsonResult = (value: unknown): ToolResult => ({
  *
  *   documents   ingest_document · attach_document · read_document ·
  *               replace_document · delete_document · list_documents ·
- *               extract_status
+ *               extract_status · retry_extraction
  *   pipeline    stages · start_stage · revise_artefact · republish_artefact ·
  *               staleness
  *   gates       approve_gate · reject_gate · request_changes
@@ -323,6 +323,27 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
       inputSchema: { project: z.string().min(1) },
     },
     async (args) => jsonResult(await extractStatus(ctx, args as any)),
+  );
+
+  server.registerTool(
+    "retry_extraction",
+    {
+      title: "Retry a failed extraction",
+      description:
+        "Re-run extraction for every document that is not ready, or for ONE named document. " +
+        "Extraction starts by itself on upload, so reach for this only when extract_status " +
+        "reports a document `failed`, or one stuck at `extracting` because the pass that " +
+        "owned it was killed — for documents merely still in progress the answer is to wait. " +
+        "Answers with what it is retrying and why each one failed; the work runs detached, so " +
+        "poll extract_status for the outcome. `force` also re-extracts documents that are " +
+        "already ready, which costs an agent run each and is rarely what you want.",
+      inputSchema: {
+        project: z.string().min(1),
+        doc: z.string().optional(),
+        force: z.boolean().optional(),
+      },
+    },
+    async (args) => jsonResult(await retryExtraction(ctx, args as any)),
   );
 
   server.registerTool(

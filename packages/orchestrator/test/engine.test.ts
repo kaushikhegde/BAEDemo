@@ -150,6 +150,35 @@ describe("engine", () => {
     expect(timeline).toContain("boom");
   });
 
+  it("falls back to what the command printed when it said nothing on stderr", async () => {
+    // A script that reports its failure on STDOUT — extract-documents.mjs prints
+    // a JSON summary there and exits 1 — used to block the issue with an empty
+    // diagnostics fence: "exited with code 1 and returned no error details",
+    // while the reason sat in the output nobody kept.
+    const quiet = async () => ({ code: 1, stdout: "2 of 10 documents failed: no text layer", stderr: "" });
+    const cfg = config(dir);
+    cfg.workflows[0].steps[0] = { type: "exec", cmd: "extract {project}", label: "Building the extracts" };
+    const engine = createEngine({ repo, config: cfg, exec: quiet });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("no text layer");
+  });
+
+  it("prefers stderr over stdout when the command wrote both", async () => {
+    const both = async () => ({ code: 1, stdout: "progress chatter", stderr: "the real reason" });
+    const cfg = config(dir);
+    cfg.workflows[0].steps[0] = { type: "exec", cmd: "stage {project}", label: "Gathering the inputs" };
+    const engine = createEngine({ repo, config: cfg, exec: both });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    const timeline = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("the real reason");
+    expect(timeline).not.toContain("progress chatter");
+  });
+
   it("blocks when an exec step exits non-zero, and does not reach the agent", async () => {
     const failing = async () => ({ code: 1, stdout: "", stderr: "boom" });
     const engine = createEngine({ repo, config: config(dir), exec: failing });

@@ -14,6 +14,10 @@ declare module "*/scripts/extract-state.mjs" {
     scope: string;
     state: "ready" | "missing" | "failed" | "extracting";
     reason?: string;
+    /** Present only on a `failed` document, from its `.extract.failed.json`. */
+    attempts?: number;
+    firstFailedAt?: string;
+    lastFailedAt?: string;
     extractPath: string;
   }
 

@@ -10,6 +10,7 @@ const EXPECTED = [
   // documents
   "ingest_document", "attach_document", "read_document",
   "replace_document", "delete_document", "list_documents", "extract_status",
+  "retry_extraction",
   // pipeline
   "stages", "start_stage", "revise_artefact", "republish_artefact", "staleness",
   // gates

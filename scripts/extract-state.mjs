@@ -35,9 +35,21 @@ export const stateOf = async (docAbsPath, levelRoot) => {
 
   const failed = await readFile(failedPath, "utf8").catch(() => null);
   if (failed !== null) {
-    let reason = "extraction failed";
-    try { reason = JSON.parse(failed).reason ?? reason; } catch { /* keep default */ }
-    return { state: "failed", reason, extractPath };
+    let marker = {};
+    try { marker = JSON.parse(failed) ?? {}; } catch { /* an unreadable marker is still a failure */ }
+    // `attempts` and the two timestamps are what separate a document worth
+    // retrying from one that never will extract — a scanned PDF with no text
+    // layer fails identically every time, and only the count says so. Spread
+    // conditionally rather than defaulting: an absent count must not arrive as
+    // 0, which reads as "tried, did not fail".
+    return {
+      state: "failed",
+      reason: marker.reason ?? "extraction failed",
+      ...(marker.attempts != null ? { attempts: Number(marker.attempts) } : {}),
+      ...(marker.firstFailedAt ? { firstFailedAt: String(marker.firstFailedAt) } : {}),
+      ...(marker.lastFailedAt ? { lastFailedAt: String(marker.lastFailedAt) } : {}),
+      extractPath,
+    };
   }
 
   const raw = await readFile(extractPath, "utf8").catch(() => null);

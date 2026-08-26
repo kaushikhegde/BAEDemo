@@ -50,6 +50,19 @@ describe("SKILL.md — one skill, both planes", () => {
     }
   });
 
+  it("names the retry for a FAILED document, beside the advice to wait", () => {
+    // "usually means wait, not re-run" is right for a document still
+    // extracting and wrong for one that failed — a scanned PDF with no text
+    // layer never becomes ready on its own. The two have to sit together, or a
+    // model that reads only the first keeps counselling patience about a
+    // document nothing is working on.
+    const wait = skill.indexOf("documents_not_ready");
+    expect(wait, "documents_not_ready missing").toBeGreaterThan(-1);
+    const retry = skill.indexOf("retry_extraction", wait);
+    expect(retry, "retry_extraction not named after the advice to wait").toBeGreaterThan(wait);
+    expect(retry - wait).toBeLessThan(900);
+  });
+
   it("tells the model never to read the file itself", () => {
     expect(skill.toLowerCase()).toMatch(/never (read|open).{0,40}(file|document)/);
   });

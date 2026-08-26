@@ -380,14 +380,23 @@ export function createEngine(deps: {
         // it through WORKSPACE_PATH in execEnv() instead.
         const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars, root));
         if (r.code !== 0) {
-          // The label in the headline, the command inside the fence with the
-          // stderr. A failure is the one moment the exact command is worth
-          // having — but it belongs in the diagnostics block a person opens,
-          // not in the sentence a client reads.
+          // The label in the headline, the command inside the fence with
+          // whatever the command said. A failure is the one moment the exact
+          // command is worth having — but it belongs in the diagnostics block a
+          // person opens, not in the sentence a client reads.
+          //
+          // stderr FIRST, stdout only when stderr is empty. A script that
+          // reports on stdout is common enough to be worth catching — this
+          // blocked on `extract-documents.mjs`, which prints a JSON summary of
+          // which documents failed and why, then exits 1 — and the comment read
+          // "exited with code 1" over an empty fence, with the only copy of the
+          // reason discarded here. Preferring stderr keeps every step that
+          // already reports properly reading exactly as it did.
+          const said = (r.stderr ?? "").trim() || (r.stdout ?? "").trim();
           const rewind = step.rewindOnFailure;
           await block(issue.id,
             `${step.label ? interpolate(step.label, vars) : "A step"} failed (exit ${r.code}).` +
-            `\n\n\`\`\`\n$ ${cmd}\n\n${r.stderr.slice(-2000)}\n\`\`\`` +
+            `\n\n\`\`\`\n$ ${cmd}\n\n${said.slice(-2000) || "(the command printed nothing)"}\n\`\`\`` +
             (rewind != null && rewind < issue.step_index
               ? `\n\nResume will re-run step ${rewind + 1}, not this one — this step ` +
                 `checks that step's work, so re-running the check cannot change the answer.`
