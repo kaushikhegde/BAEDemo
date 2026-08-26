@@ -78,6 +78,7 @@ runnable and what is waiting on a person.
 | `republish <artefact>` | `republish_artefact` — same page, no new agent run. |
 | `upload <path> [kind]` | `ingest_document`. **The default for any document.** |
 | `docs` | `list_documents`. Report `inDb: false` rows. |
+| `extracts` | `extract_status` — are the documents ready yet? Extraction is automatic; this asks if it has finished. |
 | `read <path>` | `read_document`. Short notes only. |
 | `rm <path>` | `delete_document`. **Confirm first.** |
 | `stale` | `staleness`. Report; never trigger. |
@@ -237,10 +238,32 @@ Project-level stages take no feature (`capabilities`, `personas`, `app`,
 `baseline`); feature-level stages require one (`requirements`, `ui`,
 `datamodel`, `architecture`, `qa`, `design`).
 
-The order that works: `capabilities` → `personas` at project level, then per
-feature `requirements` → `ui` → `datamodel` → `architecture` → `qa`, then `app`
-to assemble the companion page. Everything except `capabilities`, `personas` and
-`app` needs that feature's product summary, so `requirements` comes first.
+The order that works:
+
+```
+project   (extraction is automatic on upload) → capabilities → personas
+feature   requirements → ui → datamodel → architecture → qa
+project   app
+```
+
+**`extract` is not a step you run.** All three upload routes start it the moment
+a document lands — detached, fire-and-forget — so by the time `upload` returns
+the extraction is already under way. One agent runs per document, which is what
+stops the capability map ever reading the whole corpus at once.
+
+`capabilities` hard-requires every document to be ready and refuses with
+`documents_not_ready` until they are. **That refusal usually means wait, not
+re-run** — check with `extract_status`, and only `run extract` when a document
+arrived by some route other than an upload (copied into the tree,
+`npm run convert`) or a spawn genuinely failed. It is idempotent, so a re-run
+costs nothing but the gate it raises. `no_documents` is the separate refusal
+that really does mean "upload something".
+
+`personas` then requires the capability map.
+
+At feature level everything except `requirements` needs that feature's product
+summary, so `requirements` comes first. `design` is an optional side stage that
+overlaps `architecture`; run it only when asked for by name.
 
 ## Gates
 

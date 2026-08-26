@@ -109,3 +109,23 @@ export const replaceDocument = async (
  *  tool — upload it and use search_chunks, which is what the file plane is for. */
 export const readDocument = async (ctx: WsCtx, args: DocRef) =>
   chatFetch<any>(ctx.cfg, "GET", `/api/documents/content?${q(args)}`);
+
+/**
+ * Whether a project's documents have finished extracting.
+ *
+ * Extraction is NOT a step a person runs. All three upload routes start it the
+ * moment a document lands — detached and fire-and-forget, because a 300 MB PDF
+ * is not something to hold an HTTP request open for — so by the time an upload
+ * returns, the work is already under way. What a caller needs is not a verb to
+ * start it but a way to ask whether it is done, which is this.
+ *
+ * It matters because `capabilities` hard-requires every document to be ready
+ * and refuses with `documents_not_ready` otherwise. That refusal reads like a
+ * missing step and is usually just impatience: the fix is to wait, and only to
+ * re-run `extract` when a document arrived by some route other than an upload
+ * (a file copied into the tree, `npm run convert`) or a spawn genuinely failed.
+ * `no_documents` is the separate refusal that really does mean "upload
+ * something".
+ */
+export const extractStatus = async (ctx: WsCtx, args: { project: string }) =>
+  chatFetch<any>(ctx.cfg, "GET", `/api/extract-status/${encodeURIComponent(args.project)}`);

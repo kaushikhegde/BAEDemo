@@ -17,7 +17,9 @@ import {
   reviseArtefact, republishArtefact, getProjectDefinition, saveProjectDefinition,
   staleness, extractBrand, ARTEFACTS,
 } from "./tools/artefacts.js";
-import { deleteDocument, replaceDocument, readDocument } from "./tools/documents.js";
+import {
+  deleteDocument, replaceDocument, readDocument, extractStatus,
+} from "./tools/documents.js";
 import {
   cancelIssue, issueRuns, runTranscript, actions, history, requestChanges,
 } from "./tools/observe.js";
@@ -36,12 +38,13 @@ export const jsonResult = (value: unknown): ToolResult => ({
  * so a stage started from Codex is the same tracked issue a stage started
  * from the chatbot is.
  *
- * Thirty-one tools, covering what the web chat and the `scyne` CLI can each
+ * Thirty-two tools, covering what the web chat and the `scyne` CLI can each
  * do, so a person working from Codex is not driven back to a browser for an
  * ordinary operation:
  *
  *   documents   ingest_document · attach_document · read_document ·
- *               replace_document · delete_document · list_documents
+ *               replace_document · delete_document · list_documents ·
+ *               extract_status
  *   pipeline    stages · start_stage · revise_artefact · republish_artefact ·
  *               staleness
  *   gates       approve_gate · reject_gate · request_changes
@@ -300,6 +303,22 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
       },
     },
     async (args) => jsonResult(await ingestDocument(ctx, args as any)),
+  );
+
+  server.registerTool(
+    "extract_status",
+    {
+      title: "Are the documents ready",
+      description:
+        "Whether a project's documents have finished extracting. Extraction starts BY ITSELF " +
+        "the moment a document is uploaded — there is no step to run — so this answers " +
+        "'is it ready yet?', not 'has it been started?'. `capabilities` refuses with " +
+        "documents_not_ready until every document is done; that usually means wait, not " +
+        "re-run. Re-run extract only for a document that arrived outside the upload routes, " +
+        "or one that failed.",
+      inputSchema: { project: z.string().min(1) },
+    },
+    async (args) => jsonResult(await extractStatus(ctx, args as any)),
   );
 
   server.registerTool(
