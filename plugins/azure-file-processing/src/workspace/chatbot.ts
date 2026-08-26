@@ -1,4 +1,5 @@
 import type { Config } from "../shared/config.js";
+import { userError, serviceError, authError } from "../shared/errors.js";
 
 export interface WsCtx { cfg: Config }
 
@@ -7,8 +8,12 @@ export interface WsCtx { cfg: Config }
  *
  * Deliberately near-identical to orchFetch rather than shared with it: they
  * point at different services with different error vocabularies, and the one
- * thing this must do that orchFetch need not is turn a 401 into a message about
- * a TOKEN rather than about the operation.
+ * thing this must do that orchFetch need not is tell a REFUSED CREDENTIAL apart
+ * from a service that is simply down — an operator chases those two in
+ * different places.
+ *
+ * Nothing thrown from here names a host, a port, a repository command or an
+ * environment variable. See `shared/errors.ts` for why.
  */
 export const chatFetch = async <T>(
   cfg: Config, method: string, path: string, body?: unknown,
@@ -22,9 +27,10 @@ export const chatFetch = async <T>(
   try {
     res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   } catch (e: any) {
-    throw new Error(
-      `cannot reach the Scyne chatbot at ${url}: ${e?.message ?? e}. ` +
-      `\`npm run dev\` from the repo root starts it.`);
+    // The URL and the connection error are an operator's business. A caller who
+    // installed a plugin cannot start a service, and telling them which host
+    // refused only discloses where it runs.
+    throw serviceError("service_unavailable", e, { context: { service: "chatbot", method, path } });
   }
 
   const text = await res.text();
@@ -32,15 +38,19 @@ export const chatFetch = async <T>(
   try { parsed = text ? JSON.parse(text) : undefined; } catch { parsed = undefined; }
 
   if (res.status === 401) {
-    throw new Error(
-      `not_authenticated: the chatbot refused the credential for ${method} ${path}. ` +
-      `Set SCYNE_ORCH_TOKEN to a Scyne API token — the chatbot accepts the same ` +
-      `Bearer token the orchestrator does.`);
+    // The credential belongs to the INSTALLATION, not to the person calling —
+    // so there is nothing here for them to set, whatever the old message said.
+    throw authError(`chatbot refused the credential for ${method} ${path}`, { service: "chatbot", path });
   }
   if (!res.ok) {
     const code = parsed?.error ? String(parsed.error) : `http_${res.status}`;
-    const msg = parsed?.message ? ` — ${parsed.message}` : ` — ${text.slice(0, 300)}`;
-    throw new Error(`${code}${msg}`);
+    // A structured `message` is written for a person and passes through. A raw
+    // body does not: it used to be spliced in 300 characters at a time, which
+    // is a stack trace or an HTML error page as often as it is a sentence.
+    if (parsed?.message) throw userError(code, String(parsed.message));
+    throw serviceError(code, text.slice(0, 400), {
+      nothingChanged: false, context: { service: "chatbot", method, path, status: res.status },
+    });
   }
   return parsed as T;
 };

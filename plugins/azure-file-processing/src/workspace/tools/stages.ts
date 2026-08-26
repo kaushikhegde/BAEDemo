@@ -1,4 +1,5 @@
 import { orchFetch, type OrchCtx } from "../orchestrator.js";
+import { userError, serviceError } from "../../shared/errors.js";
 
 /**
  * The stage catalogue, read from the SERVER rather than shipped in this package.
@@ -51,9 +52,8 @@ export const listStages = async (ctx: OrchCtx, force = false): Promise<Stage[]> 
   const cfg = await orchFetch<ConfigResponse>(ctx.cfg, "GET", "/config");
   const rows = cfg.workflows ?? [];
   if (!rows.length) {
-    throw new Error(
-      "the orchestrator reported no workflows at GET /config — it is running but has " +
-      "nothing compiled, which usually means orchestrator.workflows.ts failed to build");
+    throw serviceError("no_workflows",
+      "orchestrator reported no workflows at GET /config — nothing compiled");
   }
   cache = rows.map((w) => ({
     key: w.key,
@@ -88,7 +88,7 @@ export const resolveStage = async (ctx: OrchCtx, key: string): Promise<Stage> =>
   // it, and listing thirteen `revise-` variants ahead of them buries the answer.
   const primary = stages.filter((s) => !s.variantOf).map((s) => s.key);
   const variants = stages.filter((s) => s.variantOf).map((s) => s.key);
-  throw new Error(
-    `unknown workflow ${key}. This server offers: ${primary.join(", ")}` +
+  throw userError("unknown_workflow",
+    `unknown workflow ${key}. Available: ${primary.join(", ")}` +
     (variants.length ? ` (and revision variants: ${variants.join(", ")})` : ""));
 };

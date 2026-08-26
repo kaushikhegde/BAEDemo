@@ -3,6 +3,7 @@ import { getJob, updateJob } from "../../shared/jobs.js";
 import { log } from "../../shared/logger.js";
 import type { Ctx } from "../mcp.js";
 import type { Storage } from "../../shared/storage.js";
+import { userError } from "../../shared/errors.js";
 
 const purge = async (s: Storage, container: string, prefix: string): Promise<number> => {
   const client = s.blob.getContainerClient(container);
@@ -16,7 +17,7 @@ const purge = async (s: Storage, container: string, prefix: string): Promise<num
 
 export const deleteJob = async (ctx: Ctx, args: { jobId: string }) => {
   const job = await getJob(ctx.storage, args.jobId);
-  if (!job) throw new Error(`unknown job ${args.jobId}`);
+  if (!job) throw userError("unknown_job", `unknown job ${args.jobId}`);
 
   // The worker uploads its artifacts and writes `state: "succeeded"`
   // unconditionally, with no check that the job it is finishing has not
@@ -26,7 +27,7 @@ export const deleteJob = async (ctx: Ctx, args: { jobId: string }) => {
   // data a client asked to be destroyed coming back on its own. Refuse
   // instead, before anything is purged.
   if (job.state === "queued" || job.state === "running") {
-    throw new Error(
+    throw userError("job_not_terminal",
       `job ${args.jobId} is ${job.state}: wait for it to reach a terminal state ` +
       `(succeeded, failed or deleted) before deleting it`);
   }

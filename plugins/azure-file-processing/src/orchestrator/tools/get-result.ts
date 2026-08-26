@@ -2,6 +2,7 @@ import { getJob } from "../../shared/jobs.js";
 import { readArtifactJson, artifactBytes } from "../artifacts.js";
 import type { JobResult } from "../../worker/artifacts.js";
 import type { Ctx } from "../mcp.js";
+import { userError } from "../../shared/errors.js";
 
 const MAX_RESPONSE_BYTES = 8192;
 
@@ -18,15 +19,15 @@ const ARTIFACTS = [
 
 export const getResult = async (ctx: Ctx, args: { jobId: string }) => {
   const job = await getJob(ctx.storage, args.jobId);
-  if (!job) throw new Error(`unknown job ${args.jobId}`);
+  if (!job) throw userError("unknown_job", `unknown job ${args.jobId}`);
   // `deleted` is terminal — unlike every other non-"succeeded" state, polling
   // again will never make it ready, so it earns its own message rather than
   // reading like the ordinary "still working" refusal below.
   if (job.state === "deleted") {
-    throw new Error(`job ${args.jobId} has been deleted; its artifacts no longer exist`);
+    throw userError("job_deleted", `job ${args.jobId} has been deleted; its artifacts no longer exist`);
   }
   if (job.state !== "succeeded") {
-    throw new Error(`job ${args.jobId} is not ready: state is ${job.state}`);
+    throw userError("job_not_ready", `job ${args.jobId} is not ready: state is ${job.state}`);
   }
 
   const result = await readArtifactJson<JobResult>(ctx.storage, args.jobId, "result.json");

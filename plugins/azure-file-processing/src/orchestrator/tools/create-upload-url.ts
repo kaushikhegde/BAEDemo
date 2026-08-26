@@ -5,6 +5,7 @@ import { createJob } from "../../shared/jobs.js";
 import { mintUploadSas } from "../../shared/sas.js";
 import { log } from "../../shared/logger.js";
 import type { Ctx } from "../mcp.js";
+import { userError } from "../../shared/errors.js";
 
 /** Everything the worker can turn into markdown — deliberately the same set
  *  `scripts/convert-to-md.mjs` accepts, because a document the Scyne pipeline
@@ -46,7 +47,7 @@ export const assertUploadable = (
   // caller write outside its own jobId prefix, which is the only thing keeping
   // one job's bytes away from another's.
   if (/[/\\]/.test(filename) || filename.includes("..") || filename.startsWith(".")) {
-    throw new Error(`filename must be a plain name with no path separators: ${filename}`);
+    throw userError("bad_filename", `filename must be a plain name with no path separators: ${filename}`);
   }
   // Beside the other refusals, before newJobId/mintUploadSas/createJob run:
   // the logger's own field cap (MAX_FIELD_CHARS, shared/logger.ts) is 512
@@ -55,14 +56,14 @@ export const assertUploadable = (
   // call, after the job row is already created and the SAS already minted —
   // an orphan row and a stack trace that names the logger, not the filename.
   if (filename.length > 512) {
-    throw new Error(`filename is too long: ${filename.length} chars, max 512`);
+    throw userError("bad_filename", `filename is too long: ${filename.length} chars, max 512`);
   }
   const ext = extname(filename).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.includes(ext as any)) {
-    throw new Error(`unsupported extension ${ext || "(none)"}; expected one of ${SUPPORTED_EXTENSIONS.join(", ")}`);
+    throw userError("unsupported_type", `unsupported extension ${ext || "(none)"}; expected one of ${SUPPORTED_EXTENSIONS.join(", ")}`);
   }
   if (sizeBytes > maxUploadBytes) {
-    throw new Error(`file too large: ${sizeBytes} bytes exceeds the ${maxUploadBytes} byte ceiling`);
+    throw userError("file_too_large", `file too large: ${sizeBytes} bytes exceeds the ${maxUploadBytes} byte ceiling`);
   }
   return ext;
 };

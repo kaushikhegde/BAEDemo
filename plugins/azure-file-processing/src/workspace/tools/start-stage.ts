@@ -1,6 +1,7 @@
 import { orchFetch, type OrchCtx } from "../orchestrator.js";
 import { resolveStage, listStages } from "./stages.js";
 import { log } from "../../shared/logger.js";
+import { userError } from "../../shared/errors.js";
 
 export interface StartStageArgs { workflow: string; project: string; feature?: string }
 
@@ -27,10 +28,10 @@ export const startStage = async (ctx: OrchCtx, args: StartStageArgs): Promise<St
   // The level comes from the workflow's own interpolated parameters, so a stage
   // that starts reading `{feature}` becomes feature-level here with no edit.
   if (stage.level === "feature" && !feature) {
-    throw new Error(`${workflow} runs per feature — pass a feature`);
+    throw userError("feature_required", `${workflow} runs per feature — pass a feature`);
   }
   if (stage.level === "project" && feature) {
-    throw new Error(`${workflow} is a project-level stage and takes no feature`);
+    throw userError("feature_not_applicable", `${workflow} is a project-level stage and takes no feature`);
   }
 
   // POST /issues answers 201 with the issue ROW, then advances in the

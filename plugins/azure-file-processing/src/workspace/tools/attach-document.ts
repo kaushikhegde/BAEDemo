@@ -1,4 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
+import { userError, serviceError, authError } from "../../shared/errors.js";
 import { basename, isAbsolute, resolve } from "node:path";
 import type { OrchCtx } from "../orchestrator.js";
 import { getStorage } from "../../shared/storage.js";
@@ -60,22 +61,25 @@ export const postDocument = async (ctx: OrchCtx, args: PostArgs): Promise<any> =
   try {
     res = await fetch(url, { method: "POST", headers, body: form });
   } catch (e: any) {
-    throw new Error(
-      `cannot reach the Scyne chatbot at ${url}: ${e?.message ?? e}. ` +
-      `Start it with \`npm run dev\` at the workspace root.`);
+    throw serviceError("service_unavailable", e, { context: { service: "chatbot", path: "/api/upload" } });
   }
   const text = await res.text();
   let body: any;
   try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
 
-  if (res.status === 401) throw new Error("not_authenticated: set SCYNE_ORCH_TOKEN");
+  if (res.status === 401) throw authError("chatbot refused the credential for an upload", { service: "chatbot" });
   if (res.status === 409 && body?.error === "ambiguous_kind") {
-    throw new Error(
-      `ambiguous_kind: ${args.filename} matches neither the SOP nor the transcript ` +
+    throw userError("ambiguous_kind",
+      `${args.filename} matches neither the SOP nor the transcript ` +
       `pattern. Pass kind: sop | transcripts | notes | ui.`);
   }
   if (!res.ok) {
-    throw new Error(`${body?.error ?? `http_${res.status}`}: ${body?.message ?? text.slice(0, 300)}`);
+    // An upload may have half-landed, so this one does NOT promise that
+    // nothing changed.
+    if (body?.message) throw userError(String(body.error ?? `http_${res.status}`), String(body.message));
+    throw serviceError(`http_${res.status}`, text.slice(0, 400), {
+      nothingChanged: false, context: { service: "chatbot", path: "/api/upload", status: res.status },
+    });
   }
   return body ?? {};
 };
@@ -96,13 +100,15 @@ export const attachDocument = async (ctx: OrchCtx, args: AttachArgs): Promise<At
   // Named refusal before the network call: "ENOENT" from inside a multipart
   // post is far harder to act on than the path that was not there.
   const st = await stat(abs).catch(() => null);
-  if (!st || !st.isFile()) throw new Error(`no such file: ${abs}`);
+  // `args.path` rather than `abs`: the caller typed the first and can act on
+  // it, while the second is a path on whichever machine serves this plane.
+  if (!st || !st.isFile()) throw userError("no_such_file", `no such file: ${args.path}`);
 
   // Refused rather than ignored: /api/upload/project has no router at all —
   // a project document always lands in `documents/` — so accepting a `kind`
   // there would teach a caller that it did something.
   if (args.kind && !args.feature) {
-    throw new Error(
+    throw userError("kind_not_applicable",
       "kind applies to a FEATURE document only; a project document always lands in documents/");
   }
 

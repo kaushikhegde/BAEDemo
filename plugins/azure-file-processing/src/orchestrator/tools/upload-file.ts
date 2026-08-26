@@ -10,6 +10,7 @@ import { log } from "../../shared/logger.js";
 import type { Ctx } from "../mcp.js";
 import { assertUploadable } from "./create-upload-url.js";
 import { startJob } from "./start-job.js";
+import { userError, serviceError } from "../../shared/errors.js";
 
 /** Streamed in 8 MiB blocks, four in flight — so the orchestrator's memory
  *  cost is ~32 MiB whether the file is 8 MiB or 5 GiB. The same bounded-memory
@@ -66,8 +67,8 @@ export interface UploadFileResult {
  *  assumption does not hold. */
 export const uploadFile = async (ctx: Ctx, args: UploadFileArgs): Promise<UploadFileResult> => {
   if (!ctx.cfg.allowLocalPathUpload) {
-    throw new Error(
-      "upload_file is disabled: this orchestrator does not read the caller's filesystem. " +
+    throw userError("upload_file_disabled",
+      "upload_file is not available here: this service does not read the caller's filesystem. " +
       "Use create_upload_url and PUT the bytes to the returned URL instead.");
   }
 
@@ -77,25 +78,25 @@ export const uploadFile = async (ctx: Ctx, args: UploadFileArgs): Promise<Upload
   // they can see. Refusing is the only answer that cannot silently upload the
   // wrong file.
   if (!isAbsolute(path)) {
-    throw new Error(`path must be absolute, got ${path}`);
+    throw userError("path_not_absolute", `path must be absolute, got ${path}`);
   }
 
   let info;
   try {
     info = await stat(path);
   } catch (e: any) {
-    if (e?.code === "ENOENT") throw new Error(`no such file: ${path}`);
-    if (e?.code === "EACCES") throw new Error(`cannot read ${path}: permission denied`);
-    throw new Error(`cannot read ${path}: ${e?.code ?? e?.message}`);
+    if (e?.code === "ENOENT") throw userError("no_such_file", `no such file: ${path}`);
+    if (e?.code === "EACCES") throw userError("permission_denied", `cannot read ${path}: permission denied`);
+    throw userError("unreadable_file", `cannot read ${path}: ${e?.code ?? "unreadable"}`);
   }
   // stat() follows symlinks, so a link to a real document is fine and a link
   // to a directory or a device is caught here rather than hanging on a read.
-  if (!info.isFile()) throw new Error(`not a regular file: ${path}`);
+  if (!info.isFile()) throw userError("not_a_file", `not a regular file: ${path}`);
 
   const filename = basename(path);
   const sizeBytes = info.size;
   const ext = assertUploadable(filename, sizeBytes, ctx.cfg.maxUploadBytes);
-  if (sizeBytes === 0) throw new Error(`file is empty: ${path}`);
+  if (sizeBytes === 0) throw userError("empty_file", `file is empty: ${path}`);
 
   const jobId = newJobId();
   const blobPath = `${jobId}/${filename}`;
@@ -136,7 +137,7 @@ export const uploadFile = async (ctx: Ctx, args: UploadFileArgs): Promise<Upload
     const why = String(e?.message ?? e).slice(0, 400);
     await updateJob(ctx.storage, jobId, { state: "failed", error: `upload_failed: ${why}` })
       .catch(() => { /* the throw below is the report that matters */ });
-    throw new Error(`upload failed after ${observed} of ${sizeBytes} bytes: ${why}`);
+    throw serviceError("upload_failed", `upload failed after ${observed} of ${sizeBytes} bytes: ${why}`, { nothingChanged: false });
   }
 
   const sha256 = hash.digest("hex");

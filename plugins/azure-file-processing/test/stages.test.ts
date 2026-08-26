@@ -41,7 +41,9 @@ describe("the stage catalogue comes from the server", () => {
       { key: "revise-capabilities", params: ["project"], variantOf: "capabilities" },
     ]);
     // Generation keys first; variants named separately so they do not bury it.
-    await expect(resolveStage(ctx, "nope")).rejects.toThrow(/This server offers: capabilities/);
+    // "Available:" rather than "This server offers:" — the reader installed a
+    // plugin and has no notion of which server answered.
+    await expect(resolveStage(ctx, "nope")).rejects.toThrow(/Available: capabilities/);
     await expect(resolveStage(ctx, "nope")).rejects.toThrow(/revise-capabilities/);
   });
 
@@ -73,6 +75,12 @@ describe("the stage catalogue comes from the server", () => {
 
   it("treats an empty workflow list as a broken server, not as 'nothing to run'", async () => {
     serveConfig([]);
-    await expect(listStages(ctx)).rejects.toThrow(/reported no workflows/);
+    // The CODE is the contract, not the prose. An installation with nothing
+    // compiled is an operator's problem — the caller gets a reference and the
+    // cause goes to the log, so asserting on "reported no workflows" would be
+    // asserting on text that deliberately no longer reaches a user.
+    await expect(listStages(ctx)).rejects.toThrow(/^no_workflows:/);
+    // And it must still not read as an empty, successful catalogue.
+    await expect(listStages(ctx)).rejects.toThrow(/could not complete/);
   });
 });

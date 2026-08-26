@@ -415,11 +415,36 @@ is filed into a project — use `$scyne upload` for that.
 
 ## 6 · When it goes wrong
 
+> **A user error says what to do; a service error says nothing and gives you a
+> reference.** This plugin is installed by end users, so nothing it throws names
+> a repository command, an environment variable, a host or a port — those told
+> a reader to act on a machine they do not have, and disclosed where it runs.
+>
+> ```
+> not_authenticated: Scyne could not complete that request. Nothing was
+> changed. Quote reference 3f9a2c11 if you contact support.
+> ```
+>
+> The cause is in the workspace server's log against that reference:
+>
+> ```bash
+> grep 3f9a2c11 <wherever you send the workspace server's stdout>
+> # {"level":"error","event":"plugin.service_error","ref":"3f9a2c11",
+> #  "code":"not_authenticated","cause":"chatbot refused the credential …"}
+> ```
+>
+> The `code:` before the colon is stable and is what the model branches on.
+> Anything a CALLER can fix still reads in full — `ambiguous_kind`,
+> `no_product_summary`, `no_such_file` are unchanged. The split is enforced by
+> `test/user-facing-errors.test.ts`, which fails on a bare `throw new Error` in
+> any tool. See `src/shared/errors.ts`.
+
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | `$scyne` not offered in Codex | Thread started before the stack came up, or the plugin is not installed | Start a new thread. `codex plugin list` should show `azure-file-processing@scyne  installed, enabled` — if it does not, or shows a stale version, §1 |
-| `not_authenticated` | `SCYNE_ORCH_TOKEN` unset in the **workspace-root** `.env` | Set it, restart the workspace server |
-| `cannot reach the orchestrator` / `the Scyne chatbot` | `npm run dev` is not running | Start it |
+| `not_authenticated` | `SCYNE_ORCH_TOKEN` unset in the **workspace-root** `.env`, or stale — a token is a database row, so pointing `DATABASE_URL` at another database invalidates every one ever minted | Set it, then **restart the workspace server**: `shared/config.ts` reads `.env` once, at import, so a running process keeps the old value |
+| `service_unavailable` | The orchestrator or chatbot is not running | `npm run dev`, then check all four ports above |
 | `documents_not_ready` | Extraction is still running, or one document failed. It starts automatically on upload | `$scyne extracts`. Usually just wait. `$scyne run extract` only if a document arrived outside the upload routes |
 | `no_documents` | Nothing uploaded, or only images/audio | `$scyne docs` to see what is actually there |
 | `no_product_summary` | A feature stage before `requirements` | `$scyne run requirements` first |

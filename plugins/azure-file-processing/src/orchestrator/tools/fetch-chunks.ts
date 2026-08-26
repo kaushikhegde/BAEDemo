@@ -2,6 +2,7 @@ import { getJob } from "../../shared/jobs.js";
 import { readArtifactJson, readArtifactRange } from "../artifacts.js";
 import type { ChunkIndexEntry } from "../../worker/artifacts.js";
 import type { Ctx } from "../mcp.js";
+import { userError } from "../../shared/errors.js";
 
 const MAX_IDS = 10;
 
@@ -9,11 +10,11 @@ export const fetchChunks = async (
   ctx: Ctx, args: { jobId: string; chunkIds: string[] },
 ) => {
   if (args.chunkIds.length > MAX_IDS) {
-    throw new Error(`at most ${MAX_IDS} chunk ids per call, got ${args.chunkIds.length}`);
+    throw userError("too_many_chunks", `at most ${MAX_IDS} chunk ids per call, got ${args.chunkIds.length}`);
   }
   const job = await getJob(ctx.storage, args.jobId);
-  if (!job) throw new Error(`unknown job ${args.jobId}`);
-  if (job.state !== "succeeded") throw new Error(`job ${args.jobId} is not ready: state is ${job.state}`);
+  if (!job) throw userError("unknown_job", `unknown job ${args.jobId}`);
+  if (job.state !== "succeeded") throw userError("job_not_ready", `job ${args.jobId} is not ready: state is ${job.state}`);
 
   const index = await readArtifactJson<Record<string, ChunkIndexEntry>>(
     ctx.storage, args.jobId, "index.json");
@@ -24,7 +25,7 @@ export const fetchChunks = async (
 
   for (const chunkId of args.chunkIds) {
     const entry = index[chunkId];
-    if (!entry) throw new Error(`unknown chunk ${chunkId} in job ${args.jobId}`);
+    if (!entry) throw userError("unknown_chunk", `unknown chunk ${chunkId} in job ${args.jobId}`);
     if (bytes + entry.byteLength > ctx.cfg.fetchMaxBytes) { truncated = true; break; }
 
     // Only these bytes leave storage — the chunk file itself is never read.

@@ -11,6 +11,7 @@ import { readArtifactJson } from "../../orchestrator/artifacts.js";
 import type { JobResult } from "../../worker/artifacts.js";
 import { log } from "../../shared/logger.js";
 import { postDocument, type DocKind } from "./attach-document.js";
+import { userError, serviceError } from "../../shared/errors.js";
 
 /** Long enough for a large PDF on a busy worker pool, short enough that a
  *  wedged job is reported rather than waited on forever. A caller who hits it
@@ -62,9 +63,9 @@ export const ingestDocument = async (
   ctx: OrchCtx, args: IngestArgs,
 ): Promise<IngestResult> => {
   const { path } = args;
-  if (!isAbsolute(path)) throw new Error(`path must be absolute, got ${path}`);
+  if (!isAbsolute(path)) throw userError("path_not_absolute", `path must be absolute, got ${path}`);
   if (args.kind && !args.feature) {
-    throw new Error(
+    throw userError("kind_not_applicable",
       "kind applies to a FEATURE document only; a project document always lands in documents/");
   }
 
@@ -84,18 +85,19 @@ export const ingestDocument = async (
   let job = await getJob(storage, up.jobId);
   while (job && (job.state === "queued" || job.state === "running")) {
     if (Date.now() > deadline) {
-      throw new Error(
+      // Actionable: the work is still going, and waiting is the answer.
+      throw userError("still_processing",
         `job ${up.jobId} is still ${job.state} after ${Math.round((args.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)}s ` +
         `(phase: ${job.phase ?? "?"}). It is still running — poll job_status and ingest again when it succeeds.`);
     }
     await sleep(POLL_MS);
     job = await getJob(storage, up.jobId);
   }
-  if (!job) throw new Error(`job ${up.jobId} vanished while it was being processed`);
+  if (!job) throw serviceError("job_lost", `job ${up.jobId} vanished while it was being processed`, { nothingChanged: false });
   if (job.state !== "succeeded") {
     // The worker's own reason, verbatim. A scanned PDF with no text layer and
     // a corrupt archive fail differently and need different fixes.
-    throw new Error(`job ${up.jobId} ${job.state}: ${job.error ?? "no reason recorded"}`);
+    throw serviceError("processing_failed", `job ${up.jobId} ${job.state}: ${job.error ?? "no reason recorded"}`, { nothingChanged: false });
   }
 
   // Which engine read the document, and how many pages it had. Recorded in
@@ -113,9 +115,9 @@ export const ingestDocument = async (
     .downloadToBuffer()
     .catch((e: any) => {
       if (e?.statusCode === 404) {
-        throw new Error(
-          `job ${up.jobId} produced no document.md. It was processed by a worker ` +
-          `predating markdown rendering — re-upload it to convert.`);
+        throw userError("no_markdown",
+          `that document produced no markdown. It was processed before markdown ` +
+          `rendering existed — upload it again to convert it.`);
       }
       throw e;
     });

@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { getJob } from "../../shared/jobs.js";
 import { artifactStream } from "../artifacts.js";
 import type { Ctx } from "../mcp.js";
+import { userError } from "../../shared/errors.js";
 
 const MAX_TOPK = 20;
 const SNIPPET_MAX = 300;
@@ -32,7 +33,7 @@ export const searchChunks = async (
   ctx: Ctx, args: { jobId: string; query: string; topK?: number },
 ) => {
   const terms = args.query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) throw new Error("query must contain at least one term");
+  if (!terms.length) throw userError("empty_query", "query must contain at least one term");
   const rawTopK = args.topK ?? 5;
   // Math.min/Math.max silently propagate a NaN or non-integer topK straight
   // through — `hits.length > NaN` is always false, so the trim below would
@@ -40,12 +41,12 @@ export const searchChunks = async (
   // exists to guarantee would quietly stop holding. Reject it here, before
   // any scanning starts, rather than let it through and clamp is asked to do
   // work it cannot do on a value this malformed.
-  if (!Number.isInteger(rawTopK)) throw new Error(`topK must be an integer, got ${args.topK}`);
+  if (!Number.isInteger(rawTopK)) throw userError("bad_topk", `topK must be an integer, got ${args.topK}`);
   const topK = Math.min(Math.max(1, rawTopK), MAX_TOPK);
 
   const job = await getJob(ctx.storage, args.jobId);
-  if (!job) throw new Error(`unknown job ${args.jobId}`);
-  if (job.state !== "succeeded") throw new Error(`job ${args.jobId} is not ready: state is ${job.state}`);
+  if (!job) throw userError("unknown_job", `unknown job ${args.jobId}`);
+  if (job.state !== "succeeded") throw userError("job_not_ready", `job ${args.jobId} is not ready: state is ${job.state}`);
 
   const stream = await artifactStream(ctx.storage, args.jobId, "chunks.jsonl");
   const lines = createInterface({ input: stream, crlfDelay: Infinity });

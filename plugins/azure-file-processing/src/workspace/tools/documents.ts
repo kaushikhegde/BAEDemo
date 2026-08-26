@@ -5,6 +5,7 @@ import type { OrchCtx } from "../orchestrator.js";
 import { getStorage } from "../../shared/storage.js";
 import { ensureWorkspaceContainer, syncUp } from "../sync.js";
 import { log } from "../../shared/logger.js";
+import { userError, serviceError } from "../../shared/errors.js";
 
 /**
  * Removing and replacing a document — the two halves of the lifecycle the
@@ -72,9 +73,9 @@ export const deleteDocument = async (ctx: OrchCtx & WsCtx, args: DocRef) => {
 export const replaceDocument = async (
   ctx: OrchCtx & WsCtx, args: DocRef & { file: string },
 ) => {
-  if (!isAbsolute(args.file)) throw new Error(`file must be an absolute path, got ${args.file}`);
+  if (!isAbsolute(args.file)) throw userError("path_not_absolute", `file must be an absolute path, got ${args.file}`);
   const st = await stat(args.file).catch(() => null);
-  if (!st || !st.isFile()) throw new Error(`no such file: ${args.file}`);
+  if (!st || !st.isFile()) throw userError("no_such_file", `no such file: ${args.file}`);
 
   const form = new FormData();
   form.set("file", new Blob([new Uint8Array(await readFile(args.file))]), basename(args.file));
@@ -87,11 +88,16 @@ export const replaceDocument = async (
   if (ctx.cfg.orchToken) headers.authorization = `Bearer ${ctx.cfg.orchToken}`;
 
   const res = await fetch(url, { method: "PUT", headers, body: form })
-    .catch((e: any) => { throw new Error(`cannot reach the Scyne chatbot at ${url}: ${e?.message ?? e}`); });
+    .catch((e: any) => { throw serviceError("service_unavailable", e, { context: { service: "chatbot", path: "/api/documents" } }); });
   const text = await res.text();
   let body: any;
   try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
-  if (!res.ok) throw new Error(`${body?.error ?? `http_${res.status}`}: ${body?.message ?? text.slice(0, 300)}`);
+    if (!res.ok) {
+    if (body?.message) throw userError(String(body.error ?? `http_${res.status}`), String(body.message));
+    throw serviceError(`http_${res.status}`, text.slice(0, 400), {
+      nothingChanged: false, context: { service: "chatbot", path: "/api/documents", status: res.status },
+    });
+  }
 
   let synced: unknown;
   try {

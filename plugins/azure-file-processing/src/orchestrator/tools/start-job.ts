@@ -2,6 +2,7 @@ import { UPLOADS_CONTAINER, JOB_QUEUE } from "../../shared/config.js";
 import { getJob, updateJob, type JobState } from "../../shared/jobs.js";
 import { log } from "../../shared/logger.js";
 import type { Ctx } from "../mcp.js";
+import { userError } from "../../shared/errors.js";
 
 export interface StartJobArgs {
   jobId: string;
@@ -14,8 +15,8 @@ export const startJob = async (ctx: Ctx, args: StartJobArgs): Promise<{
   jobId: string; state: JobState; queuedAt: string; alreadyStarted: boolean;
 }> => {
   const job = await getJob(ctx.storage, args.jobId);
-  if (!job) throw new Error(`unknown job ${args.jobId}`);
-  if (job.state === "deleted") throw new Error(`job ${args.jobId} was deleted`);
+  if (!job) throw userError("unknown_job", `unknown job ${args.jobId}`);
+  if (job.state === "deleted") throw userError("job_deleted", `job ${args.jobId} was deleted`);
 
   // Idempotent: report the current state rather than enqueueing a duplicate.
   if (job.state !== "awaiting_upload") {
@@ -28,11 +29,11 @@ export const startJob = async (ctx: Ctx, args: StartJobArgs): Promise<{
   try {
     contentLength = (await blob.getProperties()).contentLength;
   } catch (e: any) {
-    if (e?.statusCode === 404) throw new Error(`job ${job.jobId} was not uploaded`);
+    if (e?.statusCode === 404) throw userError("not_uploaded", `job ${job.jobId} was not uploaded`);
     throw e;
   }
   if (contentLength !== job.sizeBytes) {
-    throw new Error(
+    throw userError("size_mismatch",
       `size mismatch: declared ${job.sizeBytes} bytes, storage holds ${contentLength}`);
   }
   // sha256 is NOT verified here: hashing means reading every byte, and this is

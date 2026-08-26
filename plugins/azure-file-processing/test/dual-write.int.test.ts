@@ -155,14 +155,23 @@ describe("listings", () => {
     expect(r.features).toContain("Dual Write");
   });
 
-  it("lists documents and carries inDb per row", async () => {
+  it("lists documents without leaking the two-store reconciliation", async () => {
     const r = await listDocuments(ctx, { project: NAME });
     expect(Array.isArray(r.documents)).toBe(true);
     for (const d of r.documents) {
-      expect(typeof d.inDb).toBe("boolean");
+      expect(d.path).toBeTypeOf("string");
+      // `inDb` used to ride along on every row, beside a `notInDb` count and a
+      // literal `fix: "npm run sync:docs -- --apply"`. This plugin is installed
+      // by end users who have no checkout to run that in and no shell on the
+      // machine holding the tree — so it was an instruction to do something
+      // impossible about a state they cannot cause. It is logged for the
+      // operator instead.
+      expect(d).not.toHaveProperty("inDb");
     }
-    // The actionable state is surfaced, not hidden.
-    expect(r).toHaveProperty("notInDb");
-    if (r.notInDb > 0) expect(r.fix).toMatch(/sync:docs/);
+    expect(r).not.toHaveProperty("notInDb");
+    expect(r).not.toHaveProperty("fix");
+    // `stale` stays: re-running an artefact costs agent time and money, so it
+    // is genuinely the caller's decision rather than the operator's.
+    expect(r).toHaveProperty("stale");
   });
 });

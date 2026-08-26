@@ -1,5 +1,6 @@
 import { orchFetch, type OrchCtx } from "../orchestrator.js";
 import { chatFetch, type WsCtx } from "../chatbot.js";
+import { userError } from "../../shared/errors.js";
 
 /**
  * Watching what happened — the CLI's `logs`, `actions` and `run cancel`, and
@@ -63,7 +64,7 @@ export const requestChanges = async (
   ctx: WsCtx, args: { approvalId: string; feedback: string },
 ) => {
   if (!args.feedback.trim()) {
-    throw new Error("feedback is required — it is what the agent is given to know what to fix");
+    throw userError("feedback_required", "feedback is required — it is what the agent is given to know what to fix");
   }
   return chatFetch<any>(
     ctx.cfg, "POST", `/api/request-changes/${encodeURIComponent(args.approvalId)}`,

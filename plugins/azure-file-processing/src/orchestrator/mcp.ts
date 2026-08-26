@@ -62,8 +62,8 @@ export const buildMcpServer = (ctx: Ctx): McpServer => {
       title: "Create upload URL",
       description:
         "FALLBACK — prefer upload_file when it is offered. Mints a short-lived, write-only " +
-        "URL for one blob, for when the file is not on this machine. Upload to it with " +
-        "scripts/upload.mjs — never read the file into the conversation. Pass sha256 " +
+        "URL for one blob, for when the file is not on this machine. PUT the bytes to that " +
+        "URL — never read the file into the conversation. Pass sha256 " +
         "(compute it first with `shasum -a 256 <file>` in the shell, never by reading the " +
         "file) to have the download verified once processing starts.",
       inputSchema: {

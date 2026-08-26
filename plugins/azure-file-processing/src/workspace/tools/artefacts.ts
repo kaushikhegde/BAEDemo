@@ -1,5 +1,6 @@
 import { chatFetch, type WsCtx } from "../chatbot.js";
 import { log } from "../../shared/logger.js";
+import { userError } from "../../shared/errors.js";
 
 /**
  * The artefact-level operations the web chat has and the plugin did not:
@@ -38,11 +39,11 @@ export interface ReviseArgs {
  */
 export const reviseArtefact = async (ctx: WsCtx, args: ReviseArgs) => {
   if (!(ARTEFACTS as readonly string[]).includes(args.artefact)) {
-    throw new Error(
+    throw userError("unknown_artefact",
       `unknown artefact ${args.artefact}; expected one of ${ARTEFACTS.join(", ")}`);
   }
   if (!args.instruction.trim()) {
-    throw new Error(
+    throw userError("instruction_required",
       "instruction is required and is passed to the agent VERBATIM — it is the " +
       "only thing it is given to know what to change");
   }
@@ -67,7 +68,7 @@ export const republishArtefact = async (
   ctx: WsCtx, args: { project: string; feature?: string; artefact: string },
 ) => {
   if (!(ARTEFACTS as readonly string[]).includes(args.artefact)) {
-    throw new Error(
+    throw userError("unknown_artefact",
       `unknown artefact ${args.artefact}; expected one of ${ARTEFACTS.join(", ")}`);
   }
   return chatFetch<any>(ctx.cfg, "POST", "/api/republish", {
@@ -91,7 +92,7 @@ export const saveProjectDefinition = async (
   // characters, and a one-line description is worse than none — it reads as
   // authoritative and says nothing.
   if (args.description.trim().length < 40) {
-    throw new Error(
+    throw userError("description_too_short",
       `description is ${args.description.trim().length} characters; the route requires at ` +
       `least 40. Write who the client is, what they are regulated to do, and who ` +
       `their customers are — every skill reads this before any discovery document.`);

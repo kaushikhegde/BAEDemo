@@ -2,6 +2,7 @@ import { chatFetch, type WsCtx } from "../chatbot.js";
 import { getStorage } from "../../shared/storage.js";
 import { ensureWorkspaceContainer, syncUp } from "../sync.js";
 import { log } from "../../shared/logger.js";
+import { userError } from "../../shared/errors.js";
 
 /**
  * Push a project's tree to blob after a write, and report rather than throw.
@@ -46,9 +47,15 @@ export const createProject = async (ctx: WsCtx, args: CreateProjectArgs) => {
   // the project from the moment it exists rather than from its first stage run.
   const synced = await pushToBlob(ctx, res.project);
 
+  // Everything an OPERATOR needs, and nothing a caller does. The blob mirror
+  // and the database write are both this installation's plumbing: a caller
+  // cannot make either succeed, and a `synced: { error: … }` on an otherwise
+  // successful creation reads like a failure of the thing they asked for.
   log.info("workspace.project_created", {
     project: res.project,
-    dbOk: !res.dbError, adoOk: !res.adoError,
+    adoOk: !res.adoError,
+    ado: res.adoError ? String(res.adoError).slice(0, 400) : "",
+    synced: "error" in synced ? `error: ${synced.error}`.slice(0, 400) : `pushed ${synced.pushed}`,
   });
 
   return {
@@ -62,14 +69,19 @@ export const createProject = async (ctx: WsCtx, args: CreateProjectArgs) => {
     // changed, null when the caller already typed the slug.
     slugged: res.slugged ?? null,
     definitionWritten: Boolean(res.definitionWritten),
-    // Reported, never swallowed — everything that resolves a project BY NAME
-    // stays empty until the row exists.
-    db: res.db ?? null,
-    dbError: res.dbError ?? null,
+    // Where this project will publish. The client's OWN Azure DevOps project
+    // and wiki, so it is theirs to see.
     adoTarget: res.adoTarget ?? null,
-    adoError: res.adoError ?? null,
+    // A sentence, not the API's refusal text. The project is real and usable —
+    // documents, stages and gates all work — but publishing is not wired up,
+    // and that is worth knowing before someone approves a gate expecting a
+    // wiki page. The cause went to the log above.
+    publishingReady: !res.adoError,
+    publishingNote: res.adoError
+      ? "This project has no Azure DevOps target yet, so published documents and work items will not be created. Everything else works."
+      : null,
+    // The caller supplied the website, so a refusal to read it is theirs.
     brandError: res.brandError ?? null,
-    synced,
   };
 };
 
@@ -77,14 +89,10 @@ export const createFeature = async (ctx: WsCtx, args: { project: string; feature
   const res = await chatFetch<any>(ctx.cfg, "POST", "/api/features", {
     project: args.project, feature: args.feature,
   });
-  log.info("workspace.feature_created", {
-    project: args.project, feature: args.feature, dbOk: !res.dbError,
-  });
+  log.info("workspace.feature_created", { project: args.project, feature: args.feature });
   return {
     project: args.project,
     feature: res.feature ?? args.feature,
-    db: res.db ?? null,
-    dbError: res.dbError ?? null,
   };
 };
 
@@ -114,7 +122,7 @@ export const listProjects = async (ctx: WsCtx) => {
 export const listFeatures = async (ctx: WsCtx, args: { project: string }) => {
   const raw = await availableTree(ctx);
   const features = raw?.[args.project];
-  if (!features) throw new Error(`no such project: ${args.project}`);
+  if (!features) throw userError("no_such_project", `no project called "${args.project}"`);
   return {
     project: args.project,
     features: features.map((f) => f.name).sort(),
@@ -129,22 +137,33 @@ export const listDocuments = async (ctx: WsCtx, args: { project: string; feature
   if (args.feature) q.set("feature", args.feature);
   const raw = await chatFetch<any>(ctx.cfg, "GET", `/api/documents?${q}`);
 
-  const rows = [...(raw?.documents?.project ?? []), ...(raw?.documents?.feature ?? [])]
-    .map((d: any) => ({
-      path: d.path, feature: d.feature ?? null, kind: d.kind ?? null,
-      sizeBytes: d.bytes ?? null, inDb: Boolean(d.inDb),
-    }));
+  const all = [...(raw?.documents?.project ?? []), ...(raw?.documents?.feature ?? [])];
+  const rows = all.map((d: any) => ({
+    path: d.path, feature: d.feature ?? null, kind: d.kind ?? null,
+    sizeBytes: d.bytes ?? null,
+  }));
 
-  const notInDb = rows.filter((r) => !r.inDb).length;
+  // `inDb` is a reconciliation detail between two stores, and it used to be
+  // returned per document alongside `notInDb` and a literal
+  // `fix: "npm run sync:docs -- --apply"`. An end user has no checkout to run
+  // that in and no shell on the machine holding the tree, so it was an
+  // instruction to do something impossible about a state they cannot cause. It
+  // goes to the operator's log instead, where somebody can act on it.
+  const notInDb = all.filter((d: any) => !d.inDb).length;
+  if (notInDb > 0) {
+    log.warn("workspace.documents_not_in_db", {
+      project: args.project, feature: args.feature ?? "", notInDb, total: all.length,
+    });
+  }
+
   return {
     project: args.project,
     feature: args.feature ?? null,
     documents: rows,
     counts: raw?.counts ?? null,
-    // Surfaced with its fix rather than hidden: a document on disk and absent
-    // from the database is why `scyne doc list` and the Docs tab once disagreed.
-    notInDb,
-    fix: notInDb > 0 ? "npm run sync:docs -- --apply" : null,
+    // `stale` STAYS. Unlike the above it is genuinely the caller's decision —
+    // it lists artefacts that now predate their inputs, and re-running them
+    // costs agent time and money that nobody should spend on someone's behalf.
     stale: raw?.stale ?? [],
   };
 };
