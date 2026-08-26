@@ -1596,16 +1596,39 @@ the exact pages it came from — it must never reach `capability-process.md`,
 `capability-map.json`, or anything a client sees. No footnotes, no
 "(Workshop_Transcript.md, p.23)" in a delivered document.
 
-**The `extract` workflow still raises a human approval gate.** Every stage the
-compiler produces gets one — `gate` is baked into the generic
-`exec → agent → exec → attach → gate` shape `orchestrator.workflows.ts` derives
-from `scripts/pipeline.mjs`, and `extract` is compiled the same way as every
-other stage. Extraction is mechanical (one document in, one small structured
-file out) and fifty extracts are not something a human can meaningfully review
-one by one — so this gate is friction with little value, not a safeguard. It is
-flagged here as a known wart rather than special-cased away, because carving an
-exception into the compiler for one stage is exactly the kind of divergence
-that made hand-maintained workflows unreliable in the first place.
+**The `extract` workflow raises no approval gate.** It used to, because `gate`
+is part of the generic `exec → agent → exec → attach → gate` shape
+`orchestrator.workflows.ts` derives from `scripts/pipeline.mjs`. Extraction is
+mechanical — one document in, one small structured file out — and fifty
+extracts are not something a human can meaningfully review one by one, so that
+gate was friction at order 0, before any of the work worth reviewing had
+happened.
+
+It is turned off by **`gates: false` on the stage itself**, the same opt-out
+`ui` already used, rather than by an exception in the compiler. That
+distinction is the whole reason this was left alone for a while: carving a
+per-stage special case into the compiler is what makes "add a stage to
+pipeline.mjs and get a workflow for free" stop being true. A DECLARED property
+the compiler reads costs nothing. The gate is still the default — a stage
+author gets one and has to opt out deliberately.
+
+What actually guards the stage is `validate-extracts.mjs` in its `then`, which
+is a check a machine can make and a person cannot.
+
+**It does not re-render the companion app either** (`renders: false`, the same
+declared shape). Every other stage appends a render step so the chatbot's UI
+tab does not go stale for hours — but `extract` runs at order 0, so on a new
+project the renderer has nothing to show and refuses, correctly, with `nothing
+to render — no artefacts found`. As a workflow step that refusal blocked the
+FIRST stage of every new project. Extracts are internal anyway: `src` must
+never reach a client-facing page, so they are not something the app would show
+even later.
+
+That rule used to read `if (key !== "app")` inside `buildWorkflows`, which was
+right about `app` (that stage IS the render) and silently wrong about
+`extract`. Both are declared on the stage now — a growing list of key
+comparisons inside the compiler is how "add a stage, get a workflow for free"
+quietly stops being true.
 
 **`syncDown` does not recreate empty directories.** Blob storage has no concept
 of a directory — it stores keyed objects, not folders — so a project restored

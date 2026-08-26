@@ -2391,9 +2391,31 @@ app.get("/api/extract-status/:project", async (req, res) => {
   }
 });
 
+/**
+ * The largest document this server will accept, in ONE place.
+ *
+ * It is the last leg of `ingest_document`: the plugin streams a source of up to
+ * `MAX_UPLOAD_BYTES` (5 GiB by default) into Azure, a worker converts it, and
+ * the resulting MARKDOWN is posted here. Those two ceilings are three orders of
+ * magnitude apart and nothing compared them, so a 300 MB markdown was accepted,
+ * uploaded, converted, downloaded and buffered — and only then refused, as an
+ * unexplained 500.
+ *
+ * Exported through `GET /api/limits` so a caller can check before doing all
+ * that, rather than carrying a second copy of the number that drifts from this
+ * one. `orch serve`'s `limit: "100mb"` for JSON bodies is deliberately the same
+ * figure — both halves of an upload must accept the same file.
+ */
+export const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+  limits: { fileSize: UPLOAD_MAX_BYTES },
+});
+
+/** What a caller may send, so it can refuse early instead of being refused late. */
+app.get("/api/limits", (_req, res) => {
+  res.json({ uploadMaxBytes: UPLOAD_MAX_BYTES });
 });
 
 function nameError(message: string): Error & { status: number } {
@@ -2668,11 +2690,29 @@ app.put("/api/documents", upload.single("file"), async (req, res) => {
       console.warn(`[documents] ${project}: row not written for ${newPath} — ${db.reason}`);
     }
 
+    // A REPLACEMENT needs extraction as much as a first upload does, and this
+    // route was the one place that did not start it.
+    //
+    // Extracts are keyed by the source document's CONTENT HASH, so replacing a
+    // document does not invalidate anything — it asks for an extract that has
+    // never existed, while the old one becomes an orphan nothing points at. The
+    // project therefore drops straight back to `documents_not_ready` and STAYS
+    // there: every stage that hard-requires extraction refuses, and nothing on
+    // this path was ever going to fix it. That is the "why is this manual"
+    // case — uploads were automatic all along, replacements silently were not.
+    const extraction = startExtraction(project, feature || undefined);
+    if (!extraction.started) {
+      console.warn(`[documents] ${project}: replacement not extracted — ${extraction.error}`);
+    }
+
     const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
-    console.log(`[documents] replaced ${project}${feature ? "/" + feature : ""}/${docPath} with ${newPath} (db=${db.state})`);
+    console.log(`[documents] replaced ${project}${feature ? "/" + feature : ""}/${docPath} with ${newPath} (db=${db.state}, extracting=${extraction.started})`);
     res.json({
       ok: true, replaced: docPath, path: newPath, filename: readableName,
       converted: readableName !== savedName, db, stale,
+      // Same shape the upload routes answer with, so a caller does not have to
+      // know which door it came in by.
+      extraction,
     });
   } catch (e: any) {
     console.error("[documents] replace failed:", e);
@@ -3371,6 +3411,43 @@ wss.on("connection", (ws: WSWebSocket) => {
       send({ type: "error", message: `Failed to save transcript: ${err?.message ?? err}` });
     }
   }
+});
+
+/**
+ * Multer's own refusals, as JSON that says what happened.
+ *
+ * A file over the limit makes `upload.single()` call `next(LIMIT_FILE_SIZE)`,
+ * and with no handler for it Express falls back to its default: an HTML error
+ * page with status 500. That is what `ingest_document` reported as
+ * `http_500 … quote reference f7b7a280` for a 300 MB markdown — a size limit
+ * wearing the costume of a server fault, after the file had already been
+ * uploaded to Azure, converted, downloaded and buffered twice.
+ *
+ * Named sizes, both of them, for the same reason `orch serve` names both on its
+ * 413: "Payload Too Large" alone tells you neither what you sent nor what was
+ * allowed. Registered AFTER every route, which is what makes it an Express
+ * error handler rather than middleware — the four-argument signature is the
+ * whole distinction, so the unused `_next` must stay.
+ */
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({
+      error: "file_too_large",
+      maxBytes: UPLOAD_MAX_BYTES,
+      message:
+        `That file is larger than this server accepts (${Math.round(UPLOAD_MAX_BYTES / 1024 / 1024)} MB). ` +
+        `A discovery document is normally a fraction of that — if a conversion produced something ` +
+        `this big, the source is probably not a document anyone will read.`,
+    });
+  }
+  if (err?.code === "LIMIT_UNEXPECTED_FILE") {
+    return res.status(400).json({
+      error: "unexpected_field",
+      message: `Send the file as the form field "file".`,
+    });
+  }
+  console.error("[api] unhandled:", err);
+  res.status(err?.status ?? 500).json({ error: err?.message ?? String(err) });
 });
 
 server.listen(PORT, () => {

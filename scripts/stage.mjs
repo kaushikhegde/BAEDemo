@@ -482,7 +482,56 @@ async function stageApp(ctx) {
   );
 }
 
+/**
+ * `extract` — order 0, and the only stage that stages NOTHING.
+ *
+ * Its job is one agent per document, each reading ONE document and writing a
+ * small structured extract to `solutions/Extracts/`. Those documents are read
+ * IN PLACE, at their real paths, because `extract-documents.mjs` keys each
+ * extract by the source document's CONTENT HASH — copying a document into a
+ * working folder first would not change its hash, but it would create a second
+ * path for the same bytes and a second thing to keep in step. Every other
+ * stage copies its inputs in; this one deliberately does not.
+ *
+ * It existed in `scripts/pipeline.mjs` and NOT in `STAGE_FNS`, which is a
+ * combination nothing caught: `orchestrator.workflows.ts` compiles a workflow
+ * for every stage in the graph and gives each one
+ * `node scripts/stage.mjs <project> <stage>` as its first step, so the
+ * `extract` workflow crashed at step 1 of 7 with
+ *
+ *     TypeError: STAGE_FNS[key] is not a function
+ *
+ * reported as "Gathering the inputs failed (exit 1)" — a tooling bug wearing
+ * the costume of a bad input. `assertEveryStageHasAFn()` below now makes that
+ * a startup failure naming the missing key, because "add a stage to
+ * pipeline.mjs and get a workflow for free" is only true while these two agree.
+ */
+async function stageExtract(ctx) {
+  const { work, staged } = ctx;
+  await mkdirs(work, []);
+
+  // What extract-documents.mjs will actually walk — the same `projectState`
+  // every other consumer uses, so this cannot report a different set of
+  // documents from the one that gets extracted.
+  const st = await projectState(WORKSPACE, ctx.project);
+  if (st.documents.length === 0) {
+    await dieWithNoSources(ctx,
+      `no .md source documents for project ${ctx.project} — nothing to extract`,
+      [projectDir(WORKSPACE, ctx.project)]);
+  }
+
+  const by = { ready: 0, missing: 0, failed: 0, extracting: 0 };
+  for (const d of st.documents) by[d.state] = (by[d.state] ?? 0) + 1;
+
+  staged.push(`documents  ${st.documents.length} tracked, read in place (not copied — extracts are keyed by content hash)`);
+  staged.push(`extracts   ${by.ready} ready · ${by.missing} to do · ${by.extracting} in flight · ${by.failed} failed`);
+  for (const d of st.documents.filter((x) => x.state === "failed")) {
+    staged.push(`  FAILED   ${d.docId}${d.reason ? ` — ${d.reason}` : ""}`);
+  }
+}
+
 const STAGE_FNS = {
+  extract: stageExtract,
   capabilities: stageCapabilities,
   personas: stagePersonas,
   requirements: stageRequirements,
@@ -493,6 +542,29 @@ const STAGE_FNS = {
   design: stageDesign,
   app: stageApp,
 };
+
+/**
+ * Every stage in the pipeline graph must have a staging function here.
+ *
+ * Checked at startup rather than at the moment of use, because the failure it
+ * prevents is silent until somebody runs the stage: `extract` sat in
+ * `pipeline.mjs` with no entry in `STAGE_FNS` and every one of its workflow
+ * runs died at step 1 with `STAGE_FNS[key] is not a function`. The workflows
+ * are COMPILED from that graph, so a stage added there acquires a workflow
+ * whether or not anything here can stage it.
+ */
+const assertEveryStageHasAFn = () => {
+  const missing = Object.keys(STAGES).filter((k) => typeof STAGE_FNS[k] !== "function");
+  if (missing.length) {
+    console.error(
+      `[stage] INTERNAL ERROR: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} in ` +
+      `scripts/pipeline.mjs with no staging function in scripts/stage.mjs.\n` +
+      `  Every compiled workflow runs \`node scripts/stage.mjs <project> <stage>\` as its first step,\n` +
+      `  so ${missing.length === 1 ? "that stage" : "those stages"} would fail at step 1 of every run.`);
+    process.exit(1);
+  }
+};
+assertEveryStageHasAFn();
 
 // ---------------------------------------------------------------------------
 // Status

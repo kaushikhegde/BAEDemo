@@ -109,6 +109,31 @@ export const STAGES = {
     work: "solutions/Extracts",
     titlePrefix: "Extract documents",
     publishes: false,
+    // No approval gate. Extraction is MECHANICAL — one document in, one small
+    // structured file out — and a project of fifty documents produces fifty
+    // extracts that nobody can meaningfully review one by one. The gate exists
+    // to stop something IRREVERSIBLE happening on the far side of it: a page
+    // published to a client's wiki, a backlog created. Nothing here leaves the
+    // machine, every extract is keyed by its source document's content hash,
+    // and re-running is free and idempotent — so parking the run in front of a
+    // human bought nothing and cost the whole pipeline a manual step at order
+    // 0, before any of the work worth reviewing had happened.
+    //
+    // `validate-extracts.mjs` in `then` is what actually guards this stage,
+    // and it is a check a machine can make and a person cannot.
+    //
+    // Declared here rather than special-cased in the compiler, for the same
+    // reason `ui` opts out below: "add a stage to pipeline.mjs and get a
+    // workflow for free" stays true only while the compiler has no per-stage
+    // exceptions in it.
+    gates: false,
+    // Nor does it re-render the companion app. This stage runs FIRST, so on a
+    // new project there is nothing rendered yet — and extracts are internal
+    // (`src` must never reach a client-facing page), so they are not something
+    // the app would show even later. `render-companion-app.mjs` refuses with
+    // `nothing to render — no artefacts found`, correctly, and that refusal as
+    // a workflow step blocked the first stage of every new project.
+    renders: false,
     produces: ["solutions/Extracts"],
     requires: [],
     enriches: [req("project", "documents", "documents"), ...discovery("features")],
@@ -309,6 +334,11 @@ export const STAGES = {
     agentKey: "ui",
     script: "node scripts/render-companion-app.mjs <project>",
     work: "-",
+    // This stage IS the render, so it does not append one after itself. Read
+    // from here rather than tested for by key in the compiler, so the rule is
+    // one declared property with two stages using it rather than a growing
+    // list of exceptions inside `buildWorkflows`.
+    renders: false,
     titlePrefix: "Build UI",
     publishes: false,
     produces: [],

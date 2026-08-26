@@ -21,6 +21,16 @@ interface Stage {
    * does not.
    */
   gates?: boolean;
+
+  /**
+   * Whether this stage re-renders the companion app afterwards. Absent means
+   * yes — a stage author gets the render by default and opts out deliberately.
+   *
+   * Two stages do. `app` IS the render. `extract` runs at order 0 and produces
+   * only internal extracts, so on a new project the renderer has nothing to
+   * show and refuses, which as a workflow step means a blocked issue.
+   */
+  renders?: boolean;
 }
 
 const S = STAGES as unknown as Record<string, Stage>;
@@ -472,7 +482,18 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
 
   // Every stage feeds the one companion app, so it is re-rendered after each —
   // not once at the end, which would leave the chatbot's UI tab stale for hours.
-  if (key !== "app") steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
+  //
+  // `renders: false` opts a stage out, declared on the STAGE rather than
+  // tested for by key here. It used to read `key !== "app"`, which was right
+  // about `app` (that stage IS the render) and silently wrong about `extract`:
+  // extraction runs at order 0, so a new project reaches this step having
+  // produced nothing the companion app shows — extracts are internal and never
+  // reach a rendered page — and `render-companion-app.mjs` refuses by design
+  // with `nothing to render — no artefacts found`. A deliberate, correct
+  // refusal became a blocked issue on the first stage of every new project.
+  if (s.renders !== false) {
+    steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
+  }
 
   // Last, so it is after attach and after the publish + verify sequence
   // (where one exists) unconditionally — see the doc comment above.

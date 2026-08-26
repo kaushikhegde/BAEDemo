@@ -8,7 +8,7 @@
 // budget ceiling. Each extract records its own token usage so the spend is at
 // least recoverable.
 
-import { mkdir, rename, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,7 +124,26 @@ const levelRootFor = (doc) => {
     : path.join(root, "projects", project, first);
 };
 
-/** Spawn Claude Code with the prompt on stdin, as the orchestrator's runner does. */
+/**
+ * Spawn Claude Code with the prompt on stdin, as the orchestrator's runner does.
+ *
+ * An exit code says a model stopped talking; it has never said the work
+ * happened — the same lesson the requirements publish learned when 45 stories
+ * produced zero work items and the run recorded `succeeded`. Here it produced
+ * a document whose extraction was reported as
+ *
+ *     Unexpected end of JSON input
+ *
+ * which is not what went wrong: it is `JSON.parse("")` on the EMPTY `.partial`
+ * placeholder, read after a `claude` that exited 0 having written nothing. The
+ * stderr that would have said why was captured and then discarded, because it
+ * was only surfaced on a non-zero exit.
+ *
+ * So a zero exit is now checked against the artefact, and stderr is carried
+ * either way. `wroteSomething` deliberately tests for a NON-EMPTY file rather
+ * than for existence — the placeholder always exists, which is exactly how the
+ * empty case slipped through as a parse error.
+ */
 const runClaude = (docPath, outPath, meta) => new Promise((resolve, reject) => {
   const child = spawn("claude", CLAUDE_ARGS, {
     cwd: REPO, stdio: ["pipe", "pipe", "pipe"],
@@ -132,9 +151,16 @@ const runClaude = (docPath, outPath, meta) => new Promise((resolve, reject) => {
   let stderr = "";
   child.stderr.on("data", (d) => { stderr += d.toString().slice(0, 4000); });
   child.on("error", reject);
-  child.on("close", (code) => code === 0
-    ? resolve()
-    : reject(new Error(`claude exited ${code}: ${stderr.trim().slice(-500)}`)));
+  child.on("close", async (code) => {
+    const tail = stderr.trim().slice(-500);
+    if (code !== 0) return reject(new Error(`claude exited ${code}: ${tail}`));
+    const wroteSomething = await stat(outPath).then((s) => s.size > 0).catch(() => false);
+    if (!wroteSomething) {
+      return reject(new Error(
+        `claude exited 0 without writing an extract` + (tail ? `: ${tail}` : " and said nothing on stderr")));
+    }
+    resolve();
+  });
   // EPIPE if the child exits before reading — it is not an error worth failing on,
   // because `close` above carries the real outcome.
   child.stdin.on("error", () => {});
@@ -173,6 +199,14 @@ const extractOne = async (doc) => {
     const v = validateExtract(parsed);
     if (!v.ok) throw new Error(v.errors.slice(0, 5).join("; "));
     await rename(partial, out);
+    // Cleared again, AFTER the extract is in place. Clearing it only at the
+    // start of an attempt is not enough: two attempts against one document
+    // race, and a loser writing its marker after the winner renamed left a
+    // COMPLETE, schema-valid extract permanently reported as failed — which is
+    // what blocked SA-DEMO-1's capability map behind a 40 KB extract that was
+    // never actually broken. `stateOf` reads the marker before the extract, so
+    // a stale one wins every time.
+    await rm(failed, { force: true });
     return { doc, ok: true };
   } catch (e) {
     await rm(partial, { force: true });

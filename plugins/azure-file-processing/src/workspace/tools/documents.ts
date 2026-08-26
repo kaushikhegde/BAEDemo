@@ -133,5 +133,26 @@ export const readDocument = async (ctx: WsCtx, args: DocRef) =>
  * `no_documents` is the separate refusal that really does mean "upload
  * something".
  */
-export const extractStatus = async (ctx: WsCtx, args: { project: string }) =>
-  chatFetch<any>(ctx.cfg, "GET", `/api/extract-status/${encodeURIComponent(args.project)}`);
+export const extractStatus = async (ctx: WsCtx, args: { project: string }) => {
+  const raw = await chatFetch<any>(ctx.cfg, "GET", `/api/extract-status/${encodeURIComponent(args.project)}`);
+
+  // `extractPath` is dropped. It is an ABSOLUTE path on whichever machine
+  // serves this plane — the route answers
+  // `/Users/<someone>/…/projects/<p>/solutions/Extracts/<hash>.extract.json` —
+  // and an end user can neither open it nor act on it. Same class as the
+  // `npm run …` advice removed from every thrown message; this one survived
+  // because it is a RESULT field rather than an error string.
+  //
+  // `docId`, `state` and `reason` are what a caller actually needs: which
+  // document, whether it is ready, and why not.
+  const documents = (raw?.documents ?? []).map((d: any) => ({
+    docId: d.docId, scope: d.scope ?? null, state: d.state,
+    ...(d.reason ? { reason: String(d.reason) } : {}),
+  }));
+
+  return {
+    ready: raw?.ready ?? 0, missing: raw?.missing ?? 0,
+    failed: raw?.failed ?? 0, extracting: raw?.extracting ?? 0,
+    documents,
+  };
+};
