@@ -741,8 +741,45 @@ rate you corrected.
 > `applied: 1` — the whole feature, inert. The sanity ceiling was reading the
 > same absent key, so it was not checking those rows either.
 
-**Storage** is PGlite at `.orchestrator/pgdata`, with raw run logs as JSONL at
+**Storage** is Postgres for metadata and **Azure Blob Storage for every byte of
+document content**, addressed by SHA-256. Raw run logs stay as JSONL at
 `.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
+
+> **No document content lives in the database, and none lives durably on disk.**
+> `blobs.content` (bytea) was dropped by migration 011; `blobs` is now metadata
+> ABOUT content it does not hold — the hash that names it, its size, its type,
+> and `blob_path`, the locator saying where the bytes actually are.
+>
+> That removed three ceilings nobody chose: 1 GB per Postgres `bytea` field,
+> ~384 MB once a document was base64'd into a JSON body to reach the API, and
+> the 100 MB upload cap in front of both. A 300 MB document used to be streamed
+> into Azure in 8 MiB blocks, converted there, then **downloaded, buffered
+> twice and refused** — the last leg undoing the streaming every other leg did.
+>
+> The column was dropped rather than left empty, and `postgresBlobBackend`
+> deleted with it, because a column that exists is a column something
+> eventually writes to. `createDocumentStore` REQUIRES a `BlobBackend` and
+> `createOrchestrator` refuses to boot without one — `memoryBlobBackend()`
+> exists for tests and does not survive the process.
+>
+> **Disk is a SCRATCH surface, one tree per STEP.** `config.workspaces`
+> materialises a project out of the store into a temporary directory, the step
+> runs against it, what it wrote is harvested back, and the directory is
+> deleted. Per step rather than per issue because a workflow parks at a gate
+> for hours or days, and a temporary directory that must survive that is a
+> lifecycle nobody wants to own on a container that can restart. Nothing
+> survives a step, so a replica dying mid-run orphans nothing.
+>
+> A step that FAILED or was killed is released without harvesting: a
+> half-written tree must not become the record, and there is no second copy to
+> recover from any more.
+>
+> **`original-files/` is never materialised.** It is the archive of raw uploads
+> and the only part of a project that reaches gigabytes; a scratch tree is only
+> viable on a container because it holds a working set (measured: 8 MB for
+> SAPN_DEMO) rather than an archive. `materialise` also refuses above a size
+> ceiling and names the document that pushed it over, because the alternative
+> is a container filling and a run dying on ENOSPC with nothing saying why.
 
 ## The orchestrator (`packages/orchestrator/`)
 

@@ -134,14 +134,23 @@ export function createDocumentStore(db: Db, blobs: BlobBackend): DocumentStore {
         return { doc: toRef(current.rows[0]), changed: false };
       }
 
-      // Content first, and idempotently: two features uploading the same file
-      // concurrently must not race each other into a duplicate-key failure.
-      // The BACKEND decides where those bytes physically go; this only records
-      // that they were stored and under what locator.
+      // Content first, then the row that names it.
+      //
+      // The BACKEND stores bytes and returns a locator; it does not touch the
+      // database. `blobs` is metadata ABOUT content it no longer holds — the
+      // hash that names it, its size, its type, and where it actually is — and
+      // writing that row here is what keeps a backend from needing to know
+      // there is a database at all.
+      //
+      // Idempotent: two features uploading the same file concurrently are
+      // writing the same bytes under the same hash, and must not race each
+      // other into a duplicate-key failure. `documents.sha256` is a foreign key
+      // onto this row, so it has to exist before the document row does.
       const locator = await blobs.write(sha, content, input.contentType ?? null);
       await db.query(
-        `update blobs set blob_path = $2 where sha256 = $1 and blob_path is null`,
-        [sha, locator]);
+        `insert into blobs (sha256, bytes, content_type, blob_path) values ($1,$2,$3,$4)
+         on conflict (sha256) do nothing`,
+        [sha, content.length, input.contentType ?? null, locator]);
 
       // Supersede before inserting: the partial unique index permits exactly
       // one current row per path, so this ordering is load-bearing.

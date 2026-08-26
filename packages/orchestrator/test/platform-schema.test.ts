@@ -20,11 +20,16 @@ async function seed(): Promise<{ company: string; user: string; project: string;
   return { company, user, project, feature };
 }
 
+/**
+ * A blob ROW — metadata only. There is no content column to fill: 011 dropped
+ * it, and `blobs` now records the hash that names a document, its size, its
+ * type and the locator saying where the bytes actually are.
+ */
 async function putBlob(sha: string, body = "x"): Promise<void> {
   await db.query(
-    `insert into blobs (sha256, bytes, content, content_type) values ($1,$2,$3,'text/markdown')
-     on conflict (sha256) do nothing`,
-    [sha, body.length, Buffer.from(body)]);
+    `insert into blobs (sha256, bytes, content_type, blob_path)
+     values ($1,$2,'text/markdown',$3) on conflict (sha256) do nothing`,
+    [sha, body.length, `memory:${sha}`]);
 }
 
 beforeEach(async () => {
