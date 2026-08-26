@@ -1,4 +1,6 @@
 import type { DbOptions } from "./core/db.js";
+import type { BlobBackend } from "./core/blobs.js";
+import type { WorkspaceProviderFactory } from "./core/workspaces.js";
 import type { AgentSpec, Effort } from "./core/repo.js";
 import type { Runner } from "./core/runner.js";
 import { placeholdersIn } from "./core/interpolate.js";
@@ -158,6 +160,39 @@ export interface OrchestratorConfig {
    */
   skillsDir?: string;
   db: DbOptions;
+
+  /**
+   * Where document BYTES live. Omit for Postgres (`blobs.content`).
+   *
+   * Injected rather than constructed here for the same reason `adapters` is:
+   * this package declares three dependencies and an object-store client is not
+   * going to be the fourth. The consumer builds it and hands it over.
+   */
+  blobs?: BlobBackend;
+
+  /**
+   * Where ONE step's files live while it runs.
+   *
+   * Omit and every step uses `workRoot` (or `workspace`) directly, which is how
+   * this has always worked: one durable tree on disk that every run reads and
+   * writes in place.
+   *
+   * Supply one and the engine acquires a tree per STEP, and releases it
+   * afterwards. Per step rather than per issue on purpose — a workflow parks at
+   * a gate for hours or days, and a temporary directory that has to survive
+   * that is a lifecycle nobody wants to own on a container that can restart. A
+   * step is stateless: pull, work, push, discard.
+   *
+   * The engine deliberately knows nothing about what a "project" is. The
+   * consumer implements this, because resolving an issue to a project and its
+   * features is product knowledge, not engine knowledge.
+   *
+   * A FACTORY, not an instance: this config object is evaluated before the
+   * database is opened — `createOrchestrator` opens it from `config.db` — so a
+   * provider needing a connection cannot be constructed here. It is called once
+   * with the open connection, which is also what stops it opening a second one.
+   */
+  workspaces?: WorkspaceProviderFactory;
   adapters: Record<string, Runner>;   // the adapter registry
   defaults?: OrchestratorDefaults;
   theme?: Partial<Theme>;    // merged over SCYNE_THEME; see src/http/theme.ts

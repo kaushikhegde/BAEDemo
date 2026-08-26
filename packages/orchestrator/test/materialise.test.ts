@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDb, migrate, type Db } from "../src/core/db.js";
 import { createDocumentStore, type DocumentStore } from "../src/core/documents.js";
+import { memoryBlobBackend } from "../src/core/blobs.js";
 import {
   materialise, harvest, attribute, createWorkRoot, discardWorkRoot,
+  EXCLUDED_FROM_MATERIALISE,
   type Manifest,
 } from "../src/core/materialise.js";
 
@@ -21,7 +23,7 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-mat-"));
   db = await openDb({ driver: "pglite", dir });
   await migrate(db, new URL("../migrations", import.meta.url).pathname);
-  store = createDocumentStore(db);
+  store = createDocumentStore(db, memoryBlobBackend());
 
   const company = randomUUID();
   projectId = randomUUID(); featureId = randomUUID();
@@ -224,5 +226,55 @@ describe("attribute", () => {
     expect(attribute("projects/OTHER/x.md", manifest)).toBeNull();
     expect(attribute("scripts/stage.mjs", manifest)).toBeNull();
     expect(attribute("projects/RTWSA", manifest)).toBeNull();
+  });
+});
+
+
+/**
+ * A scratch tree exists on a container with 1–2 GB of ephemeral disk, so what
+ * it REFUSES to hold is as load-bearing as what it places.
+ */
+describe("what a scratch tree refuses to hold", () => {
+  const base = () => ({ store, projectId, projectName: "RTWSA", features: FEATURES(), installRoot, workRoot });
+
+  it("never places anything under original-files/", async () => {
+    // That directory is the archive of raw uploads and the only part of a
+    // project that reaches gigabytes. It lives in object storage and nothing
+    // pulls it down — a container would fill on the first restore.
+    await store.put({ projectId, featureId: null, path: "documents/policy.md", content: "kept" });
+    await store.put({
+      projectId, featureId: null,
+      path: "original-files/documents/policy.docx", content: "not kept",
+    });
+
+    const manifest = await materialise(base());
+    const placed = Object.keys(manifest.files);
+    expect(placed).toContain("projects/RTWSA/documents/policy.md");
+    expect(placed.some(f => f.includes("original-files"))).toBe(false);
+  });
+
+  it("excludes the directory itself, not merely paths beneath it", async () => {
+    // A prefix test written as `startsWith("original-files/")` alone would let
+    // a document stored at exactly `original-files` through.
+    expect(EXCLUDED_FROM_MATERIALISE).toContain("original-files");
+    await store.put({ projectId, featureId: null, path: "original-files", content: "edge" });
+    const manifest = await materialise(base());
+    expect(Object.keys(manifest.files).some(f => f.includes("original-files"))).toBe(false);
+  });
+
+  it("refuses above the ceiling, naming what it was asked to place", async () => {
+    // A loud refusal, because the alternative is a container filling and a run
+    // dying on ENOSPC with nothing saying why.
+    await store.put({ projectId, featureId: null, path: "documents/big.md", content: "x".repeat(2048) });
+    await expect(materialise({ ...base(), maxBytes: 1024 }))
+      .rejects.toThrow(/over the ceiling of 1024/);
+    await expect(materialise({ ...base(), maxBytes: 1024 }))
+      .rejects.toThrow(/documents\/big\.md/);
+  });
+
+  it("places a tree that fits, so the ceiling is not simply always fatal", async () => {
+    await store.put({ projectId, featureId: null, path: "documents/small.md", content: "x" });
+    const manifest = await materialise({ ...base(), maxBytes: 1024 });
+    expect(Object.keys(manifest.files)).toContain("projects/RTWSA/documents/small.md");
   });
 });

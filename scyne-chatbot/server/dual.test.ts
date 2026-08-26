@@ -14,7 +14,7 @@ import { createProject, createFeature, updateProject, deleteDocumentRow, createD
 
 type Route = { status: number; body?: unknown };
 
-const calls: Array<{ url: string; method: string; auth?: string; body?: any }> = [];
+const calls: Array<{ url: string; method: string; auth?: string; body?: any; bytes?: Buffer }> = [];
 const realFetch = globalThis.fetch;
 
 /** Routes are matched on `METHOD /path` substrings, longest first. */
@@ -25,7 +25,10 @@ const stub = (routes: Record<string, Route>) => {
     calls.push({
       url: u, method,
       auth: init?.headers?.authorization,
-      body: init?.body ? JSON.parse(init.body) : undefined,
+      // A document body is now RAW BYTES, not JSON — `JSON.parse` on a
+      // Uint8Array threw and took the whole call recorder with it.
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      bytes: init?.body instanceof Uint8Array ? Buffer.from(init.body) : undefined,
     });
     const hit = Object.entries(routes)
       .filter(([k]) => { const [m, p] = k.split(" "); return m === method && u.includes(p); })
@@ -262,7 +265,7 @@ describe("categoryFor", () => {
 });
 
 describe("createDocumentRow", () => {
-  it("stores the bytes base64, under a level-relative path", async () => {
+  it("sends the bytes RAW, with its level-relative path in the query string", async () => {
     stub({
       "GET /projects": { status: 200, body: [{ id: "p1", name: "SAPN" }] },
       "POST /projects/p1/documents": { status: 201, body: { id: "d1", version: 1, changed: true } },
@@ -275,13 +278,20 @@ describe("createDocumentRow", () => {
 
     expect(r.state).toBe("created");
     const [call] = posted("/projects/p1/documents");
-    expect(call.body).toMatchObject({
-      feature: "MVP", path: "requirements/SOP/handling.md", category: "sop", encoding: "base64",
-    });
-    // base64 is not an optimisation: a .docx or a screenshot cannot survive a
-    // JSON string, and corrupting one would be found much later by a model
-    // reading gibberish.
-    expect(Buffer.from(call.body.content, "base64").toString()).toBe("# sop");
+
+    // Metadata in the query string, because a request cannot have two bodies.
+    const q = new URL(call.url).searchParams;
+    expect(q.get("feature")).toBe("MVP");
+    expect(q.get("path")).toBe("requirements/SOP/handling.md");
+    expect(q.get("category")).toBe("sop");
+
+    // And the document itself, byte for byte. It used to travel base64 inside
+    // a JSON body, which inflated it by a third and put it under two ceilings:
+    // the orchestrator's 100 MB JSON limit and V8's 512 MB cap on a string. A
+    // document over roughly 75 MB failed its row while landing on disk
+    // perfectly — silently, because this write is best-effort.
+    expect(call.bytes?.toString()).toBe("# sop");
+    expect(call.body).toBeUndefined();
   });
 
   it("omits the feature for a project document", async () => {
@@ -290,7 +300,11 @@ describe("createDocumentRow", () => {
       "POST /projects/p1/documents": { status: 201, body: { id: "d1" } },
     });
     await createDocumentRow("t", { project: "SAPN", path: "documents/policy.md", content: Buffer.from("x") });
-    expect(posted("/projects/p1/documents")[0].body.feature).toBeUndefined();
+    // Absent rather than empty: `feature=` in the query string would resolve to
+    // the empty string on the far side, which is a feature name nothing holds,
+    // and the route answers 404 for a feature it cannot find.
+    const q = new URL(posted("/projects/p1/documents")[0].url).searchParams;
+    expect(q.has("feature")).toBe(false);
   });
 
   it("skips a project with no row, rather than failing the upload", async () => {

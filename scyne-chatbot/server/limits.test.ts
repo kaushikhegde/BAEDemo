@@ -14,41 +14,33 @@ import { readFile } from "node:fs/promises";
  * These assert the two halves that fix cost: one constant behind both the
  * multer limit and `/api/limits`, and an error handler that names both sizes.
  */
-describe("the upload ceiling has one source of truth", () => {
-  it("multer is configured from UPLOAD_MAX_BYTES, not a literal", async () => {
+describe("there is no upload ceiling left to have a source of truth for", () => {
+  it("multer no longer caps the file size", async () => {
+    // The cap existed because content travelled through this process's memory
+    // and then base64 through a JSON body. Bytes go to object storage now,
+    // addressed by their own hash, so the three ceilings behind it — 100 MB
+    // here, ~384 MB from V8's cap on a base64 string, 1 GB from Postgres
+    // bytea — are gone rather than raised. Two of the three were never ours to
+    // raise, which is why raising was never the fix.
     const src = await readFile("server/index.ts", "utf8");
-    expect(src).toMatch(/limits:\s*\{\s*fileSize:\s*UPLOAD_MAX_BYTES\s*\}/);
-    // A second literal would be a second ceiling to drift.
-    expect(src).not.toMatch(/fileSize:\s*100\s*\*\s*1024\s*\*\s*1024/);
+    expect(src).not.toMatch(/fileSize:/);
+    expect(src).not.toMatch(/UPLOAD_MAX_BYTES/);
+    expect(src).not.toMatch(/LIMIT_FILE_SIZE/);
   });
 
-  it("exposes it so a caller can refuse before doing the work", async () => {
-    const src = await readFile("server/index.ts", "utf8");
-    expect(src).toMatch(/app\.get\("\/api\/limits"/);
-    expect(src).toMatch(/uploadMaxBytes:\s*UPLOAD_MAX_BYTES/);
+  it("no document is base64'd into a JSON body", async () => {
+    const store = await readFile("server/store.ts", "utf8");
+    expect(store).not.toMatch(/toString\("base64"\)/);
+    // Raw bytes, metadata in the query string, because a request cannot have
+    // two bodies.
+    expect(store).toMatch(/application\/octet-stream/);
   });
 
-  it("answers an oversized upload with 413 naming both sizes, not Express's HTML 500", async () => {
+  it("keeps the wrong-field-name handler, which is still a caller error", async () => {
+    // Express's default for it is an HTML 500 — a caller error wearing the
+    // costume of a server fault.
     const src = await readFile("server/index.ts", "utf8");
-    // Anchored on the BRANCH, not on the first mention of the code — the doc
-    // comment above it names LIMIT_FILE_SIZE too, and slicing from there reads
-    // the prose instead of the handler.
-    const at = src.indexOf('if (err?.code === "LIMIT_FILE_SIZE")');
-    expect(at).toBeGreaterThan(-1);
-    const handler = src.slice(at, at + 900);
-    expect(handler).toMatch(/status\(413\)/);
-    // It must carry the ceiling, or the message cannot name it.
-    expect(handler).toMatch(/maxBytes:\s*UPLOAD_MAX_BYTES/);
-  });
-
-  it("is registered as a four-argument error handler, after the routes", async () => {
-    const src = await readFile("server/index.ts", "utf8");
-    const handlerAt = src.indexOf('if (err?.code === "LIMIT_FILE_SIZE")');
-    // Four arguments is the ONLY thing that makes Express treat it as an error
-    // handler rather than ordinary middleware; three would silently never run.
-    expect(src).toMatch(/app\.use\(\(err: any, _req: express\.Request, res: express\.Response, _next: express\.NextFunction\)/);
-    // After every upload route, or it cannot catch their errors.
-    expect(handlerAt).toBeGreaterThan(src.lastIndexOf('upload.single("file")'));
+    expect(src).toMatch(/LIMIT_UNEXPECTED_FILE/);
   });
 });
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDb, migrate, type Db } from "../src/core/db.js";
 import { createDocumentStore, sha256Of, type DocumentStore } from "../src/core/documents.js";
+import { memoryBlobBackend } from "../src/core/blobs.js";
 
 let dir: string, db: Db, store: DocumentStore;
 let project: string, featureA: string, featureB: string;
@@ -21,7 +22,7 @@ beforeEach(async () => {
   await db.query(`insert into features (id, project_id, name) values ($1,$2,'Appeals')`, [featureA, project]);
   await db.query(`insert into features (id, project_id, name) values ($1,$2,'Claims')`, [featureB, project]);
 
-  store = createDocumentStore(db);
+  store = createDocumentStore(db, memoryBlobBackend());
 });
 afterEach(async () => { await db.close(); rmSync(dir, { recursive: true, force: true }); });
 

@@ -6,12 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOrchestrator, type Orchestrator } from "../src/index.js";
 import { defineOrchestrator } from "../src/config.js";
+import { memoryBlobBackend } from "../src/core/blobs.js";
 import { createRouter } from "../src/http/router.js";
 
 const fakeRunner = { run: async () => ({ exitCode: 0, status: "succeeded" as const, stderrTail: "", usage: null }) };
 
 function config(workspace: string) {
   return defineOrchestrator({
+    blobs: memoryBlobBackend(),
     workspace,
     db: { driver: "pglite", dir: join(workspace, "pg") },
     adapters: { claude_local: fakeRunner },

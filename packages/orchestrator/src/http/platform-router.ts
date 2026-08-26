@@ -83,7 +83,11 @@ export const PLATFORM_ROUTES = [
 export function createPlatformRouter(orch: Orchestrator): Router {
   const r = Router();
   const platform: PlatformRepo = createPlatformRepo(orch.db);
-  const docs = createDocumentStore(orch.db);
+  // The backend the CONSUMER configured. There is no fallback: `blobs.content`
+  // was dropped by 011, so an install without one has nowhere to put a
+  // document — and storing them somewhere nobody chose is worse than saying so.
+  // `createOrchestrator` refuses to boot without it, so this is unreachable.
+  const docs = createDocumentStore(orch.db, orch.config.blobs!);
 
   const ok = (res: Response, body: unknown): void => { res.json(body); };
   const created = (res: Response, body: unknown): void => { res.status(201).json(body); };
@@ -490,18 +494,36 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   r.post("/projects/:id/documents", requireAuth(), wrap(async (req, res) => {
     const row = await project(req, res, "editor"); if (!row) return;
-    const { feature: featureName, path, content, category, encoding } = req.body ?? {};
+
+    // Two shapes, and the RAW one is how a document of any size should arrive.
+    //
+    // A document used to travel base64'd inside a JSON body, which inflates it
+    // by a third and put it under two ceilings: this router's 100 MB JSON limit
+    // and V8's 512 MB cap on a single string. 100 MB of document base64s to
+    // 133 MB, so anything over roughly 75 MB failed its row while landing on
+    // disk perfectly — silently, because that write is best-effort.
+    //
+    // The JSON form is kept because the CLI and older callers still send it.
+    const raw = req.headers["content-type"] === "application/octet-stream";
+    const q = req.query as Record<string, string | undefined>;
+    const featureName = raw ? q.feature : req.body?.feature;
+    const path = raw ? q.path : req.body?.path;
+    const category = raw ? q.category : req.body?.category;
+    const content = raw ? req.body : req.body?.content;
+    const encoding = raw ? undefined : req.body?.encoding;
     if (!path || content === undefined) return bad(res, "path and content are required");
 
     const feature = featureName ? await platform.getFeatureByName(row.id, String(featureName)) : null;
     if (featureName && !feature) return missing(res, "feature");
 
-    // base64 for anything that is not text — a .docx or a screenshot cannot
-    // survive a JSON string, and silently corrupting one would be discovered
-    // much later, by a model reading gibberish.
-    const bytes = encoding === "base64"
-      ? Buffer.from(String(content), "base64")
-      : Buffer.from(String(content), "utf8");
+    // base64 for anything that is not text on the JSON path — a .docx or a
+    // screenshot cannot survive a JSON string, and silently corrupting one
+    // would be discovered much later, by a model reading gibberish.
+    const bytes = raw
+      ? (Buffer.isBuffer(content) ? content : Buffer.from(content as any))
+      : encoding === "base64"
+        ? Buffer.from(String(content), "base64")
+        : Buffer.from(String(content), "utf8");
 
     const { doc, changed } = await docs.put({
       projectId: row.id, featureId: feature?.id ?? null, path: String(path),
@@ -519,6 +541,18 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const row = await project(req, res, "viewer"); if (!row) return;
     const content = await docs.read(String(req.params.docId));
     if (!content) return missing(res, "document");
+
+    // Raw bytes when asked for, JSON+base64 otherwise.
+    //
+    // The base64 form is what every existing caller reads, so it stays — but it
+    // cannot serve a large document: base64 inflates by a third and V8 refuses
+    // a string over 512 MB, so the JSON form tops out around 384 MB no matter
+    // what any limit says. Bytes are in object storage now and are not bounded
+    // by that, so a caller that wants a file gets a file.
+    if (String(req.headers.accept ?? "").includes("application/octet-stream")) {
+      res.type("application/octet-stream").send(content);
+      return;
+    }
     ok(res, { id: req.params.docId, encoding: "base64", content: content.toString("base64") });
   }));
 

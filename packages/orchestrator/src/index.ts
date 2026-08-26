@@ -37,6 +37,8 @@ export {
   createDocumentStore, sha256Of,
   type DocumentStore, type DocumentRef, type PutInput, type ListFilter,
 } from "./core/documents.js";
+export { memoryBlobBackend, type BlobBackend } from "./core/blobs.js";
+export type { WorkspaceProvider, AcquiredWorkspace } from "./core/workspaces.js";
 export {
   materialise, harvest, attribute, createWorkRoot, discardWorkRoot,
   LINKED_FROM_INSTALL, HARVESTED_ROOTS,
@@ -107,6 +109,20 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   await migrate(db, new URL("../migrations", import.meta.url).pathname);
   const repo = createRepo(db);
 
+  // A byte store is not optional. `blobs.content` was dropped by 011, so an
+  // install without one has nowhere to put a document — and the alternative to
+  // refusing is an install that accepts uploads and quietly loses them, which
+  // is discovered weeks later by an agent reading nothing.
+  //
+  // Refused at BOOT rather than at the first upload, because the first upload
+  // is somebody's afternoon and this is a line in a config file.
+  if (!config.blobs) {
+    throw new Error(
+      "config.blobs is not set: there is nowhere to store document content.\n" +
+      "  Set AZURE_STORAGE_CONNECTION_STRING, or supply a BlobBackend in the config.\n" +
+      "  `memoryBlobBackend()` exists for tests and does NOT survive the process.");
+  }
+
   // Reconcile the database to the config file: config.org is the source of
   // truth for the org chart, so every agent it declares is upserted here on
   // every startup — not only hired once and left to drift.
@@ -121,7 +137,7 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   // No runner is passed to createEngine — it resolves one per agent step
   // from config.adapters at the moment it is needed (step → agent →
   // defaults, via resolveRuntime).
-  const engine = createEngine({ repo, config });
+  const engine = createEngine({ repo, config, db });
 
   // recoverOrphans() must be called ONLY here, at process startup, before any
   // advance() traffic is accepted. repo.listUnfinishedRuns() has no age

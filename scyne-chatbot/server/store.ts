@@ -149,6 +149,35 @@ async function send(
   return { ok: res.ok, status: res.status, json };
 }
 
+/**
+ * POST raw bytes, with the metadata in the query string.
+ *
+ * A document used to travel base64'd inside a JSON body, which inflated it by a
+ * third and put it under two ceilings: the orchestrator's 100 MB JSON limit and
+ * V8's 512 MB cap on a single string. 100 MB of document base64s to 133 MB, so
+ * anything over roughly 75 MB failed its row while landing on disk perfectly —
+ * silently, because this write is best-effort and its failure is only logged.
+ *
+ * Raw bytes have neither problem. The metadata goes in the query string because
+ * a request cannot have two bodies.
+ */
+async function sendBinary(
+  token: string, path: string, content: Buffer, query: Record<string, string>,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const qs = new URLSearchParams(query).toString();
+  const res = await fetch(`${BASE}${path}?${qs}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/octet-stream",
+      accept: "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: new Uint8Array(content),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, json };
+}
+
 const failureText = (status: number, json: unknown): string =>
   (json as { message?: string; error?: string })?.message ??
   (json as { error?: string })?.error ??
@@ -286,15 +315,10 @@ export async function createDocumentRow(
     const row = (await listProjects(token)).find(p => p.name === input.project);
     if (!row) return { state: "skipped", reason: "no such project in the database" };
 
-    const r = await send(token, "POST", `/projects/${row.id}/documents`, {
+    const r = await sendBinary(token, `/projects/${row.id}/documents`, input.content, {
       ...(input.feature ? { feature: input.feature } : {}),
       path: input.path,
-      category: categoryFor(input.path),
-      // Not an optimisation — a .docx or a screenshot cannot survive a JSON
-      // string, and silently corrupting one is discovered much later, by a
-      // model reading gibberish.
-      encoding: "base64",
-      content: input.content.toString("base64"),
+      category: categoryFor(input.path) ?? "",
     });
     return r.ok ? { state: "created" } : { state: "failed", reason: failureText(r.status, r.json) };
   } catch (e) {
@@ -733,5 +757,45 @@ export async function clearProjectChat(
     return { state: "created", cleared };
   } catch (e) {
     return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/**
+ * One document's bytes, by its path within a project.
+ *
+ * The companion app used to be read straight off disk with `fs.readFile` from
+ * `generated-apps/<project>/`. Once a step works in a scratch tree that is
+ * discarded when the step ends, that directory is not there afterwards — the
+ * rendered page is in the store, attributed by `attribute()` at PROJECT level
+ * under its work-root-relative path.
+ *
+ * Two calls because the platform API addresses a document by id: list with a
+ * path filter, then read that id as raw bytes. Null rather than a throw for
+ * "not there", because a project whose app has never been rendered is an
+ * ordinary state the route reports as `not_generated`.
+ */
+export async function readDocumentByPath(
+  token: string | null, project: string, docPath: string,
+): Promise<Buffer | null> {
+  if (!token) return null;
+  try {
+    const row = (await listProjects(token)).find(p => p.name === project);
+    if (!row) return null;
+
+    const q = new URLSearchParams({ prefix: docPath, all: "true" });
+    const listed = await get<Array<{ id: string; path: string }>>(
+      token, `/projects/${row.id}/documents?${q}`, []);
+    const hit = listed.find(d => d.path === docPath);
+    if (!hit) return null;
+
+    // Raw, not base64: a companion app is megabytes and there is no reason to
+    // inflate it by a third to move it between two local processes.
+    const res = await fetch(`${BASE}/projects/${row.id}/documents/${hit.id}`, {
+      headers: { accept: "application/octet-stream", authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
   }
 }

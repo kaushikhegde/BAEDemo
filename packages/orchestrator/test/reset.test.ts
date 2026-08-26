@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, migrate, type Db } from "../src/core/db.js";
+import { memoryBlobBackend } from "../src/core/blobs.js";
 import { createRepo } from "../src/core/repo.js";
 
 let dir: string, db: Db, repo: ReturnType<typeof createRepo>, companyId: string;
@@ -81,7 +82,7 @@ describe("resetCompany --all (factory reset)", () => {
     const { createPlatformRepo } = await import("../src/core/platform.js");
     const { createDocumentStore } = await import("../src/core/documents.js");
     const platform = createPlatformRepo(db);
-    const store = createDocumentStore(db);
+    const store = createDocumentStore(db, memoryBlobBackend());
 
     const user = await platform.createUser({ companyId, email: "admin@scyne.co", role: "admin" });
     await platform.createToken(user.id, "cli");

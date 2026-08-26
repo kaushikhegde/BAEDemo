@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createOrchestrator, type Orchestrator } from "../src/index.js";
 import { defineOrchestrator } from "../src/config.js";
+import { memoryBlobBackend } from "../src/core/blobs.js";
 import { createRouter } from "../src/http/router.js";
 
 // The same fake-runner-through-the-adapter-registry pattern engine.test.ts
@@ -23,6 +24,7 @@ const fakeRunner = {
 
 function config(workspace: string) {
   return defineOrchestrator({
+    blobs: memoryBlobBackend(),
     workspace,
     db: { driver: "pglite", dir: join(workspace, "pg") },
     adapters: { claude_local: fakeRunner },
@@ -637,6 +639,7 @@ describe("router: org and budget control", () => {
   it("GET /health reports a version for codex too, not the loop-driven adapters' n/a", async () => {
     const codexDir = mkdtempSync(join(tmpdir(), "orch-http-codex-"));
     const codexOrch = await createOrchestrator(defineOrchestrator({
+    blobs: memoryBlobBackend(),
       workspace: codexDir,
       db: { driver: "pglite", dir: join(codexDir, "pg") },
       adapters: { claude_local: fakeRunner, codex: fakeRunner },

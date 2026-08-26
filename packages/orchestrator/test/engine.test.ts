@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, migrate, type Db } from "../src/core/db.js";
@@ -936,5 +936,84 @@ describe("costing a run whose CLI reports no cost", () => {
     await repo.setBudget(started.company_id, "agent", "ba", { maxCostUsd: 5 });
     await engine.advance(issue.id);
     expect((await repo.listRuns(issue.id))[0].status).toBe("succeeded");
+  });
+});
+
+/**
+ * A step works in a tree it was handed, and gives it back.
+ *
+ * Per STEP rather than per issue: a workflow parks at a gate for hours or days,
+ * and a temporary directory that must survive that is a lifecycle nobody wants
+ * to own on a container that can restart. Nothing survives a step, so nothing
+ * can be orphaned by a replica dying mid-run.
+ */
+describe("a step works in the tree it is given", () => {
+  /** Records every root handed out and how each was released. */
+  const recordingProvider = (roots: string[], released: boolean[]) => () => ({
+    async acquire() {
+      const root = mkdtempSync(join(tmpdir(), "orch-step-"));
+      mkdirSync(join(root, "outputs"), { recursive: true });
+      writeFileSync(join(root, "outputs/product-summary.md"), "# summary");
+      roots.push(root);
+      return {
+        root,
+        async release(ok: boolean) { released.push(ok); rmSync(root, { recursive: true, force: true }); },
+      };
+    },
+  });
+
+  it("acquires a fresh tree per step and releases every one", async () => {
+    const roots: string[] = [], released: boolean[] = [];
+    const cfg = { ...config(dir), workspaces: recordingProvider(roots, released) };
+    const engine = createEngine({ repo, config: cfg, exec: fakeExec, db });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    // exec, agent, attach, gate — four steps, four trees, four releases.
+    expect(roots.length).toBeGreaterThanOrEqual(3);
+    expect(released.length).toBe(roots.length);
+    // Each one is its own directory, not one shared root handed out repeatedly.
+    expect(new Set(roots).size).toBe(roots.length);
+    // And none of them survives.
+    for (const r of roots) expect(existsSync(r)).toBe(false);
+  });
+
+  it("keeps what a successful step wrote", async () => {
+    const roots: string[] = [], released: boolean[] = [];
+    const cfg = { ...config(dir), workspaces: recordingProvider(roots, released) };
+    const engine = createEngine({ repo, config: cfg, exec: fakeExec, db });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+    expect(released.every(ok => ok)).toBe(true);
+  });
+
+  it("discards WITHOUT keeping when a step fails", async () => {
+    // A failed step leaves a half-written tree, and after this change there is
+    // no second copy to recover from — so a half-written tree must never
+    // become the record.
+    const roots: string[] = [], released: boolean[] = [];
+    const failing = async (cmd: string) => { calls.push(`exec:${cmd}`); return { code: 1, stdout: "", stderr: "boom" }; };
+    const cfg = { ...config(dir), workspaces: recordingProvider(roots, released) };
+    const engine = createEngine({ repo, config: cfg, exec: failing, db });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect((await repo.getIssue(issue.id))?.status).toBe("blocked");
+    expect(released).toEqual([false]);
+    expect(existsSync(roots[0])).toBe(false);
+  });
+
+  it("falls back to the static workspace when a provider declines", async () => {
+    // An issue with no project resolves to nothing to materialise, which is a
+    // real state rather than an error — `createIssue` leaves `project_id` null
+    // rather than guessing when a name matches nothing.
+    mkdirSync(join(dir, "outputs"), { recursive: true });
+    writeFileSync(join(dir, "outputs/product-summary.md"), "# summary");
+    const cfg = { ...config(dir), workspaces: () => ({ acquire: async () => null }) };
+    const engine = createEngine({ repo, config: cfg, exec: fakeExec, db });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+    // Reached the gate, meaning attach found its file in the static tree.
+    expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
   });
 });

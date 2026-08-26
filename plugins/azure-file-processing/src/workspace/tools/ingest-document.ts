@@ -1,8 +1,6 @@
-import { stat } from "node:fs/promises";
 import { basename, extname, isAbsolute } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { OrchCtx } from "../orchestrator.js";
-import { chatFetch } from "../chatbot.js";
 import { getStorage } from "../../shared/storage.js";
 import { ensureWorkspaceContainer, syncUp } from "../sync.js";
 import { ARTIFACTS_CONTAINER } from "../../shared/config.js";
@@ -61,43 +59,6 @@ export interface IngestResult {
  *   under `uploads/<jobId>/` IS the archive, and it is the only copy that was
  *   never size-limited. `delete_job` is what disposes of it.
  */
-/**
- * What the CHATBOT will accept, asked rather than assumed.
- *
- * This leg posts the converted markdown to `/api/upload`, whose multer cap is
- * 100 MB, while the file plane above accepts 5 GiB — three orders of magnitude
- * apart, with nothing comparing them. A 300 MB document was therefore streamed
- * to Azure, converted, downloaded and buffered before anything refused it, and
- * the refusal arrived as an unexplained 500.
- *
- * Read from `GET /api/limits`, which returns the same constant multer is
- * configured with, so there is no second copy of the number here to drift.
- * A failure to read it is NOT fatal: the cap is the chatbot's to enforce and it
- * answers a proper 413 now. This check exists to save the round trip, not to be
- * the authority.
- */
-let cachedLimit: number | null = null;
-const uploadLimit = async (ctx: OrchCtx): Promise<number | null> => {
-  if (cachedLimit !== null) return cachedLimit;
-  try {
-    const r = await chatFetch<{ uploadMaxBytes?: number }>(ctx.cfg, "GET", "/api/limits");
-    if (typeof r?.uploadMaxBytes === "number" && r.uploadMaxBytes > 0) cachedLimit = r.uploadMaxBytes;
-  } catch { /* an older chatbot has no /api/limits — proceed and let it refuse */ }
-  return cachedLimit;
-};
-
-const mb = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
-
-/**
- * Extensions whose "conversion" is the identity, so the markdown that comes
- * back is the size of the source.
- *
- * Only these can be pre-checked. A 2 GB PDF may convert to 4 MB of markdown and
- * is exactly the case this plugin exists for — refusing it on its SOURCE size
- * would break the headline feature to fix a different bug. Everything else is
- * checked after conversion, when the real size is known.
- */
-const PASSTHROUGH = new Set([".md", ".markdown", ".txt", ".text"]);
 
 export const ingestDocument = async (
   ctx: OrchCtx, args: IngestArgs,
@@ -107,19 +68,6 @@ export const ingestDocument = async (
   if (args.kind && !args.feature) {
     throw userError("kind_not_applicable",
       "kind applies to a FEATURE document only; a project document always lands in documents/");
-  }
-
-  // Refused BEFORE the upload, for the one case where the converted size is
-  // predictable: a markdown or text source converts to itself.
-  if (PASSTHROUGH.has(extname(path).toLowerCase())) {
-    const limit = await uploadLimit(ctx);
-    const size = await stat(path).then((st) => st.size).catch(() => null);
-    if (limit !== null && size !== null && size > limit) {
-      throw userError("file_too_large",
-        `${basename(path)} is ${mb(size)}; a document may be at most ${mb(limit)}. ` +
-        `Nothing was uploaded. A markdown source converts to itself, so this would ` +
-        `have been refused after being streamed to Azure and converted.`);
-    }
   }
 
   const storage = getStorage(ctx.cfg);
@@ -181,19 +129,6 @@ export const ingestDocument = async (
   // appear under two names depending on which door it came in by.
   const stem = basename(up.filename, extname(up.filename));
   const mdName = `${stem}.md`;
-
-  // The size is only KNOWN here, for anything that genuinely converted. Checked
-  // before `postDocument`, which turns this buffer into a Blob — a second full
-  // copy in memory — and posts it to a route that would refuse it anyway. The
-  // job and its blob survive: `delete_job` disposes of them, and the caller may
-  // still want the extracted text by other means.
-  const limit = await uploadLimit(ctx);
-  if (limit !== null && md.length > limit) {
-    throw userError("file_too_large",
-      `${basename(up.filename)} converted to ${mb(md.length)} of markdown; a document ` +
-      `may be at most ${mb(limit)}. It was NOT filed into the project. The upload is ` +
-      `still in Azure as job ${up.jobId} — delete_job disposes of it.`);
-  }
 
   const posted = await postDocument(ctx, {
     project: args.project, feature: args.feature, kind: args.kind,

@@ -24,6 +24,7 @@ import type { RunResult } from "./runner.js";
 import { resolveRuntime } from "../config.js";
 import type { OrchestratorConfig, OrchestratorDefaults, Step, WorkflowDef } from "../config.js";
 import type { createRepo, AgentRow, IssueRow } from "./repo.js";
+import type { Db } from "./db.js";
 
 /** The shape `createRepo(db)` returns. There is no separately exported `Repo` interface (Task 2). */
 type Repo = ReturnType<typeof createRepo>;
@@ -125,6 +126,13 @@ type StepOutcome = "next" | "wait" | "blocked" | "stopped";
 
 export function createEngine(deps: {
   repo: Repo; config: OrchestratorConfig; exec?: ExecFn;
+  /**
+   * The open connection, for `config.workspaces` — which is a factory precisely
+   * because the consumer's config is built before the database exists. Optional
+   * so every existing caller and test keeps working without one; a config that
+   * supplies `workspaces` without this gets the static tree and says so.
+   */
+  db?: Db;
 }): Engine {
   const { repo, config } = deps;
   const exec = deps.exec ?? defaultExec;
@@ -146,6 +154,16 @@ export function createEngine(deps: {
   const installRoot = config.workspace;
   const workRoot = config.workRoot ?? config.workspace;
 
+  // Built once, with the engine's own connection — see WorkspaceProviderFactory.
+  // Undefined means every step uses the static tree, which is how this worked
+  // before object storage existed.
+  const workspaces = deps.db ? config.workspaces?.(deps.db) : undefined;
+  if (config.workspaces && !deps.db) {
+    // Loud, because the alternative is every run silently sharing one tree
+    // while the operator believes each step gets its own.
+    console.warn("[engine] config.workspaces is set but no db was passed to createEngine — using the static workspace.");
+  }
+
   /**
    * The environment an `exec` step's child process gets.
    *
@@ -155,10 +173,10 @@ export function createEngine(deps: {
    * scripts already read. Agent steps are the other way round (cwd = workRoot),
    * because their prompts name `projects/{project}/…` relatively.
    */
-  const execEnv = (vars: Record<string, string> = {}): NodeJS.ProcessEnv => ({
+  const execEnv = (vars: Record<string, string> = {}, root: string = workRoot): NodeJS.ProcessEnv => ({
     ...process.env,
-    WORKSPACE_PATH: workRoot,
-    SCYNE_WORK_ROOT: workRoot,
+    WORKSPACE_PATH: root,
+    SCYNE_WORK_ROOT: root,
     SCYNE_INSTALL_ROOT: installRoot,
     // How an exec step reaches an OPTIONAL param. It cannot name one in its
     // command: `interpolate` throws on a placeholder the issue does not carry,
@@ -296,6 +314,7 @@ export function createEngine(deps: {
   async function readVars(
     step: Extract<Step, { type: "agent" }>,
     vars: Record<string, string>,
+    root: string,
   ): Promise<{ vars: Record<string, string>; missing: string[] }> {
     const out: Record<string, string> = {};
     const missing: string[] = [];
@@ -304,7 +323,7 @@ export function createEngine(deps: {
       try {
         // workRoot: a `reads` entry names a project artefact
         // (`projects/{project}/…/salesforce-data-model.md`), never a library file.
-        const body = await readFile(resolve(workRoot, rel), "utf8");
+        const body = await readFile(resolve(root, rel), "utf8");
         out[name] = body.length > MAX_READ_CHARS
           ? `${body.slice(0, MAX_READ_CHARS)}\n\n[…truncated at ${MAX_READ_CHARS} characters]`
           : body;
@@ -335,7 +354,16 @@ export function createEngine(deps: {
     ].filter(Boolean).join("\n");
   }
 
-  async function runStep(step: Step, issue: IssueRow, wf: WorkflowDef, vars: Record<string, string>): Promise<StepOutcome> {
+  async function runStep(
+    step: Step, issue: IssueRow, wf: WorkflowDef, vars: Record<string, string>,
+    /**
+     * The tree THIS step works in. Threaded rather than closed over: when a
+     * `workspaces` provider is configured each step gets its own, and
+     * `advance()` runs concurrently for different issues in one process — a
+     * shared mutable would hand one issue another's tree.
+     */
+    root: string,
+  ): Promise<StepOutcome> {
     switch (step.type) {
       case "exec": {
         const cmd = interpolate(step.cmd, vars);
@@ -350,7 +378,7 @@ export function createEngine(deps: {
         // installRoot: the command says `node scripts/stage.mjs …`, and that
         // path is relative to where the scripts live. The project tree reaches
         // it through WORKSPACE_PATH in execEnv() instead.
-        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars));
+        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars, root));
         if (r.code !== 0) {
           // The label in the headline, the command inside the fence with the
           // stderr. A failure is the one moment the exact command is worth
@@ -379,7 +407,7 @@ export function createEngine(deps: {
         const agentKey = step.agent ?? wf.assignee;
         const agentRow = await repo.getAgentByKey(issue.company_id, agentKey);
 
-        const read = await readVars(step, vars);
+        const read = await readVars(step, vars, root);
         if (read.missing.length) {
           // Block BEFORE startRun(): a run row for a step that never spawned a
           // process shows in the console as a zero-token mystery failure.
@@ -486,7 +514,7 @@ export function createEngine(deps: {
             phase: step.phase,
             // workRoot: the agent's prompt names `projects/{project}/…`
             // relatively, so it must stand in the project tree.
-            cwd: workRoot,
+            cwd: root,
             logPath,
             budget,
             // installRoot: the MCP registration belongs to the install.
@@ -606,7 +634,7 @@ export function createEngine(deps: {
       case "attach": {
         const missing: string[] = [];
         for (const f of step.files) {
-          const abs = resolve(workRoot, interpolate(f, vars));
+          const abs = resolve(root, interpolate(f, vars));
           try { await access(abs); } catch { missing.push(f); }
         }
         if (missing.length) {
@@ -618,7 +646,7 @@ export function createEngine(deps: {
         }
         const titles: string[] = [];
         for (const f of step.files) {
-          const abs = resolve(workRoot, interpolate(f, vars));
+          const abs = resolve(root, interpolate(f, vars));
           const title = abs.split("/").pop() ?? abs;
           titles.push(title);
           await repo.attachWorkProduct(issue.id, {
@@ -763,18 +791,38 @@ export function createEngine(deps: {
           return;
         }
 
+        // A tree for THIS step, when a provider is configured; the static one
+        // otherwise. Per step rather than per issue because a workflow parks at
+        // a gate for hours or days, and a temporary directory that must survive
+        // that is a lifecycle nobody wants to own on a container that can
+        // restart. Pull, work, push, discard.
+        const acquired = await workspaces?.acquire(issue, issue.step_index) ?? null;
+        const root = acquired?.root ?? workRoot;
+
         const vars: Record<string, string> = {
           ...(issue.params as Record<string, string>),
-          // workRoot: `{workspace}` is interpolated into prompts and commands
-          // that go on to name `projects/…`, so it must mean the project tree.
-          workspace: workRoot,
+          // The tree in use: `{workspace}` is interpolated into prompts and
+          // commands that go on to name `projects/…`, so it must mean the
+          // project tree this step is actually working in.
+          workspace: root,
           issueId,
         };
 
         let outcome: StepOutcome;
         try {
-          outcome = await runStep(step, issue, wf, vars);
+          outcome = await runStep(step, issue, wf, vars, root);
+          // Keep what the step wrote unless it FAILED or was killed.
+          //
+          // `next` is a step that finished; `wait` is one that parked at a gate
+          // having written nothing new. `blocked` means the step failed, and
+          // `stopped` means it was killed mid-flight — in both of those the
+          // tree is half-written, and a half-written tree must not become the
+          // record. Harvest is idempotent and hash-compared, so keeping an
+          // unchanged tree costs a comparison rather than an upload.
+          await acquired?.release(outcome === "next" || outcome === "wait");
         } catch (err) {
+          // Threw: the tree's state is unknown, so nothing from it is kept.
+          await acquired?.release(false);
           // Every other failure path leaves a comment explaining what went
           // wrong before blocking (bad exec exit, missing produces file,
           // unregistered adapter, agent failure) — a step that THROWS

@@ -420,3 +420,34 @@ describe("007_model_prices schema", () => {
     expect(rows[0].model).toBeNull();
   });
 });
+
+/**
+ * Bytes leave the database.
+ *
+ * `blobs.content bytea` imposed three ceilings nobody chose — 1 GB per Postgres
+ * field, ~384 MB once a document is base64'd into a JSON body to reach the API,
+ * and a 100 MB upload cap in front of both. 010 adds the locator that lets the
+ * bytes live in object storage instead; 011 drops the column once a verified
+ * migration has moved them.
+ */
+describe("blobs carry a locator", () => {
+  it("has blob_path, and no content column at all", async () => {
+    // 010 added the locator and made `content` nullable so a database could be
+    // migrated incrementally; 011 dropped it once a verified pass had moved
+    // every blob. Dropping it is what makes the rule enforceable rather than
+    // merely stated — a column that exists is a column something eventually
+    // writes to.
+    const { rows } = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+        where table_name = 'blobs' and column_name in ('blob_path','content')`);
+    expect(rows.map(r => r.column_name)).toEqual(["blob_path"]);
+  });
+
+  it("refuses to store bytes, because there is no column left to store them in", async () => {
+    // The rule is that no document content lives in the database. This is what
+    // holds it: not a convention, but the absence of anywhere to put one.
+    await expect(db.query(
+      `insert into blobs (sha256, bytes, content) values ($1, 3, decode('616263','hex'))`,
+      ["f".repeat(64)])).rejects.toThrow(/content/);
+  });
+});

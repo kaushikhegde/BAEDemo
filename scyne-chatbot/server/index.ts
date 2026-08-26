@@ -2392,31 +2392,17 @@ app.get("/api/extract-status/:project", async (req, res) => {
 });
 
 /**
- * The largest document this server will accept, in ONE place.
+ * No size limit.
  *
- * It is the last leg of `ingest_document`: the plugin streams a source of up to
- * `MAX_UPLOAD_BYTES` (5 GiB by default) into Azure, a worker converts it, and
- * the resulting MARKDOWN is posted here. Those two ceilings are three orders of
- * magnitude apart and nothing compared them, so a 300 MB markdown was accepted,
- * uploaded, converted, downloaded and buffered — and only then refused, as an
- * unexplained 500.
- *
- * Exported through `GET /api/limits` so a caller can check before doing all
- * that, rather than carrying a second copy of the number that drifts from this
- * one. `orch serve`'s `limit: "100mb"` for JSON bodies is deliberately the same
- * figure — both halves of an upload must accept the same file.
+ * There was one — 100 MB, in `multer.memoryStorage()` — because content
+ * travelled through this process's memory and then base64 through a JSON body
+ * to reach the database. Three ceilings sat behind it: 100 MB here, ~384 MB
+ * from V8's cap on a base64 string, and 1 GB from Postgres `bytea`. Bytes go
+ * to object storage now, addressed by their own hash, so all three are gone
+ * rather than raised — raising them would only have moved the failure, since
+ * two of the three were never ours to move.
  */
-export const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: UPLOAD_MAX_BYTES },
-});
-
-/** What a caller may send, so it can refuse early instead of being refused late. */
-app.get("/api/limits", (_req, res) => {
-  res.json({ uploadMaxBytes: UPLOAD_MAX_BYTES });
-});
+const upload = multer({ storage: multer.memoryStorage() });
 
 function nameError(message: string): Error & { status: number } {
   const err = new Error(message) as Error & { status: number };
@@ -3027,20 +3013,28 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
 // canonical URL carries a trailing slash and the bare form redirects to it.
 // Without that, `mockups/scr-001.html` would resolve one segment too high and
 // 404 — silently, in an iframe.
-async function sendCompanionFile(res: express.Response, project: string, relPath: string) {
-  const root = path.join(WORKSPACE_PATH, "generated-apps", project);
-  const file = path.join(root, relPath);
-  // Defence in depth: relPath is already whitelisted by each route's pattern.
-  if (!file.startsWith(root + path.sep)) return res.status(400).json({ error: "bad_path" });
-  let html: string;
-  try {
-    html = await fs.readFile(file, "utf8");
-  } catch {
+/**
+ * One file of a project's companion app, from the STORE.
+ *
+ * It used to be `fs.readFile` against `generated-apps/<project>/`. Once a step
+ * works in a scratch tree that is discarded when the step ends, that directory
+ * is not there afterwards — the rendered page lives in the store, harvested at
+ * PROJECT level under its work-root-relative path, which is the shape
+ * `attribute()` gives it.
+ */
+async function sendCompanionFile(
+  res: express.Response, project: string, relPath: string, token: string | null,
+) {
+  // Normalised to forward slashes: `path.join` gives backslashes on Windows,
+  // and a stored path is always POSIX.
+  const docPath = `generated-apps/${project}/${relPath.split(path.sep).join("/")}`;
+  const html = await store.readDocumentByPath(token, project, docPath);
+  if (html === null) {
     return res.status(404).json({
       error: "not_generated",
       message: relPath === "index.html"
-        ? `No companion app for ${project}. Run: node scripts/render-companion-app.mjs ${project}`
-        : `${relPath} has not been rendered for ${project}. Run: node scripts/render-mockups.mjs ${project} "<feature>"`,
+        ? `No companion app for ${project} yet — run the app stage to build it.`
+        : `${relPath} is not part of ${project}'s companion app.`,
     });
   }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -3058,7 +3052,7 @@ app.get("/api/companion-app/:project", async (req, res) => {
     // directory form makes the page's relative links resolve, so send the bare
     // form there rather than serving a page whose UI tab is quietly broken.
     if (!req.path.endsWith("/")) return res.redirect(302, req.baseUrl + req.path + "/");
-    await sendCompanionFile(res, project, "index.html");
+    await sendCompanionFile(res, project, "index.html", tokenFor(req));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -3069,7 +3063,7 @@ app.get("/api/companion-app/:project/index.html", async (req, res) => {
   try {
     const { project } = req.params;
     assertSafeProject(project);
-    await sendCompanionFile(res, project, "index.html");
+    await sendCompanionFile(res, project, "index.html", tokenFor(req));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -3087,7 +3081,7 @@ app.get("/api/companion-app/:project/mockups/:feature/:file", async (req, res) =
     // The renderer slugs the feature into the directory name, so a feature with
     // spaces or capitals resolves here too.
     const dir = String(feature).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    await sendCompanionFile(res, project, path.join("mockups", dir, file));
+    await sendCompanionFile(res, project, path.join("mockups", dir, file), tokenFor(req));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -3416,30 +3410,16 @@ wss.on("connection", (ws: WSWebSocket) => {
 /**
  * Multer's own refusals, as JSON that says what happened.
  *
- * A file over the limit makes `upload.single()` call `next(LIMIT_FILE_SIZE)`,
- * and with no handler for it Express falls back to its default: an HTML error
- * page with status 500. That is what `ingest_document` reported as
- * `http_500 … quote reference f7b7a280` for a 300 MB markdown — a size limit
- * wearing the costume of a server fault, after the file had already been
- * uploaded to Azure, converted, downloaded and buffered twice.
+ * Multer still refuses a file sent under the wrong field name, and Express's
+ * default for that is an HTML error page with status 500 — a caller error
+ * wearing the costume of a server fault. There is no size branch any more:
+ * there is no size limit for it to report.
  *
- * Named sizes, both of them, for the same reason `orch serve` names both on its
- * 413: "Payload Too Large" alone tells you neither what you sent nor what was
- * allowed. Registered AFTER every route, which is what makes it an Express
- * error handler rather than middleware — the four-argument signature is the
- * whole distinction, so the unused `_next` must stay.
+ * Registered AFTER every route, which is what makes it an Express error handler
+ * rather than middleware — the four-argument signature is the whole
+ * distinction, so the unused `_next` must stay.
  */
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  if (err?.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({
-      error: "file_too_large",
-      maxBytes: UPLOAD_MAX_BYTES,
-      message:
-        `That file is larger than this server accepts (${Math.round(UPLOAD_MAX_BYTES / 1024 / 1024)} MB). ` +
-        `A discovery document is normally a fraction of that — if a conversion produced something ` +
-        `this big, the source is probably not a document anyone will read.`,
-    });
-  }
   if (err?.code === "LIMIT_UNEXPECTED_FILE") {
     return res.status(400).json({
       error: "unexpected_field",

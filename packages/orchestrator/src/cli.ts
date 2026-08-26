@@ -164,6 +164,13 @@ async function main(): Promise<void> {
     // now accept the same file rather than one accepting what the other
     // refuses. It is a ceiling, not a buffer: Express reads only what is sent.
     app.use(express.json({ limit: "100mb" }));
+    // Document bytes, sent raw with their metadata in the query string.
+    //
+    // The JSON limit above cannot serve this: base64 inflates a document by a
+    // third, so a 100 MB body carried only ~75 MB of file — and V8 refuses a
+    // string over 512 MB regardless of what any limit here says. Raw bytes have
+    // neither problem, so the ceiling is set where the storage backend's is.
+    app.use(express.raw({ type: "application/octet-stream", limit: "5gb" }));
     // Body-parser failures are thrown, not routed, so without this they reach
     // Express's default handler and come back as an HTML page — which the CLI
     // deliberately refuses to print, leaving `Payload Too Large` and no numbers.

@@ -10,6 +10,8 @@ import {
   createGeminiProvider, createAzureProvider, type Runner,
 } from "./packages/orchestrator/src/index.js";
 import { ORG, buildWorkflows } from "./orchestrator.workflows.js";
+import { azureBlobBackend } from "./storage/azure-blobs.js";
+import { scratchWorkspaces } from "./storage/scratch-workspaces.js";
 
 const installRoot = process.env.SCYNE_INSTALL_ROOT ?? process.cwd();
 
@@ -196,12 +198,45 @@ if (!registry[defaultAdapter]) {
     `  AZURE_AI_TOKEN (az account get-access-token --scope https://ai.azure.com/.default) or AZURE_AI_API_KEY.`);
 }
 
+/**
+ * Built once and referenced twice — by `blobs` and by `workspaces`, which must
+ * be the same backend or a step would materialise from one store and harvest
+ * into another.
+ */
+const blobs = process.env.AZURE_STORAGE_CONNECTION_STRING
+  ? azureBlobBackend({
+      connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+      container: process.env.AZURE_DOCUMENTS_CONTAINER ?? "documents",
+    })
+  : undefined;
+
 export default defineOrchestrator({
   workspace: installRoot,
   company: "Scyne",
   db: process.env.DATABASE_URL
     ? { driver: "external", url: process.env.DATABASE_URL }
     : { driver: "pglite", dir: ".orchestrator/pgdata" },
+
+  // Where document BYTES live. Azure when a connection string is present,
+  // Postgres (`blobs.content`) otherwise.
+  //
+  // Absent is the safe default: an install that has not migrated its blobs
+  // keeps working exactly as before, and setting this is the one step that
+  // changes where content is read from. Run `npm run migrate:blobs -- --apply`
+  // FIRST on an install that already holds documents, or every existing
+  // document reads back as absent.
+  blobs,
+
+  // A scratch tree per STEP, materialised out of the store and harvested back,
+  // when bytes live in object storage. Disk is then working space rather than
+  // the record: nothing survives a step, so a replica dying mid-run leaves
+  // nothing orphaned.
+  //
+  // Off when blobs are still in Postgres — that install's tree on disk IS the
+  // working copy and there is nothing to pull it from.
+  workspaces: blobs
+    ? ((db) => scratchWorkspaces({ db, installRoot, blobs }))
+    : undefined,
 
   // The SOURCE of truth, not `.claude/skills` — that is a directory of symlinks
   // pointing here, so editing this is what the team maintains and what

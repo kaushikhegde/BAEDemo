@@ -44,6 +44,27 @@ export const LINKED_FROM_INSTALL = [
 /** Real (non-linked) top-level directories that belong to the project and are harvested. */
 export const HARVESTED_ROOTS = ["projects", "generated-apps"] as const;
 
+/**
+ * Never pulled into a scratch tree.
+ *
+ * `original-files/` is the archive of raw uploads — the one part of a project
+ * that reaches gigabytes, and the reason a scratch tree is viable at all on a
+ * container with 1–2 GB of ephemeral disk. Measured: a real project's working
+ * set is 8 MB; its archive is unbounded. It lives in object storage and nothing
+ * pulls it down.
+ *
+ * Enforced here rather than left to convention, because the failure is a
+ * container filling and a run dying on ENOSPC with nothing naming the cause.
+ */
+export const EXCLUDED_FROM_MATERIALISE = ["original-files"] as const;
+
+/**
+ * Default ceiling for one scratch tree. Generous against a measured 8 MB
+ * working set, and low enough that a document nobody expected cannot fill a
+ * container before anything notices.
+ */
+export const DEFAULT_MAX_MATERIALISE_BYTES = 512 * 1024 * 1024;
+
 export interface FeatureRef { id: string; name: string }
 
 export interface MaterialiseInput {
@@ -53,6 +74,8 @@ export interface MaterialiseInput {
   features: FeatureRef[];
   installRoot: string;
   workRoot: string;
+  /** Refuse rather than fill the disk. Defaults to DEFAULT_MAX_MATERIALISE_BYTES. */
+  maxBytes?: number;
 }
 
 /**
@@ -106,12 +129,26 @@ export async function materialise(input: MaterialiseInput): Promise<Manifest> {
   const files: Record<string, string> = {};
   const byId = new Map(features.map(f => [f.id, f.name]));
 
+  const ceiling = input.maxBytes ?? DEFAULT_MAX_MATERIALISE_BYTES;
+  let placedBytes = 0;
+
   for (const ref of await store.list(projectId, { anyLevel: true })) {
+    // The archive is not working material. See EXCLUDED_FROM_MATERIALISE.
+    if (EXCLUDED_FROM_MATERIALISE.some(d => ref.path === d || ref.path.startsWith(`${d}/`))) continue;
+
     // A document naming a feature this project no longer has cannot be placed.
     // Skipping is right — but silently skipping is not, so it is left out of
     // the manifest, which makes it show up as `missing` rather than vanishing.
     const featureName = ref.featureId ? byId.get(ref.featureId) : null;
     if (ref.featureId && !featureName) continue;
+
+    placedBytes += ref.bytes;
+    if (placedBytes > ceiling) {
+      throw new Error(
+        `materialising ${projectName} needs at least ${placedBytes} bytes, over the ceiling of ` +
+        `${ceiling}. Raise maxBytes, or find the document that does not belong in a working ` +
+        `tree — the last one counted was ${ref.path}.`);
+    }
 
     const abs = join(levelDir(workRoot, projectName, featureName ?? null), ref.path);
     const got = await store.get(projectId, ref.featureId, ref.path);

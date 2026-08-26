@@ -1,0 +1,18 @@
+-- The bytes are in object storage. This column is the second copy.
+--
+-- Deliberately separate from 010, and deliberately last. 010 added the locator
+-- and made this nullable so a database could be migrated incrementally and
+-- rolled back; this is the point of no return, and it is only safe once
+-- `scripts/migrate-blobs-to-azure.mjs` has completed a verified pass and no row
+-- still carries a `pg:` locator.
+--
+-- Dropping it is what makes the rule enforceable rather than merely stated. A
+-- column that exists is a column something eventually writes to — so
+-- `postgresBlobBackend` was deleted with it, and `createDocumentStore` now
+-- REQUIRES a backend rather than defaulting to one. There is no longer a code
+-- path that could put a document in the database, which is a stronger promise
+-- than a convention that everybody agrees to.
+--
+-- After this, `blobs` is metadata ABOUT content it does not hold: the hash that
+-- names it, its size, its type, and where it actually is.
+alter table blobs drop column content;

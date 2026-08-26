@@ -20,6 +20,7 @@
 
 import { createHash } from "node:crypto";
 import type { Db } from "./db.js";
+import type { BlobBackend } from "./blobs.js";
 import { newId } from "./ids.js";
 
 export interface DocumentRef {
@@ -79,18 +80,6 @@ export function sha256Of(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-/**
- * PGlite hands `bytea` back as a Uint8Array, node-postgres as a Buffer. Both
- * satisfy the same reads, but callers expect a Buffer — normalise once here
- * rather than at every call site.
- */
-function toBuffer(v: unknown): Buffer {
-  if (Buffer.isBuffer(v)) return v;
-  if (v instanceof Uint8Array) return Buffer.from(v);
-  if (typeof v === "string") return Buffer.from(v, "utf8");
-  return Buffer.alloc(0);
-}
-
 interface DocRow {
   id: string; project_id: string; feature_id: string | null; path: string;
   category: string | null; stage: string | null; sha256: string; version: number;
@@ -118,7 +107,12 @@ const SELECT = `d.id, d.project_id, d.feature_id, d.path, d.category, d.stage,
                 d.sha256, d.version, d.is_current, d.created_at,
                 b.bytes, b.content_type`;
 
-export function createDocumentStore(db: Db): DocumentStore {
+/**
+ * `blobs` is REQUIRED. There is no default any more — the Postgres one was the
+ * default until 011 dropped the column it wrote to, and a silent fallback to
+ * anything else would mean an install storing documents somewhere nobody chose.
+ */
+export function createDocumentStore(db: Db, blobs: BlobBackend): DocumentStore {
   return {
     async put(input) {
       const content = typeof input.content === "string" ? Buffer.from(input.content, "utf8") : input.content;
@@ -142,10 +136,12 @@ export function createDocumentStore(db: Db): DocumentStore {
 
       // Content first, and idempotently: two features uploading the same file
       // concurrently must not race each other into a duplicate-key failure.
+      // The BACKEND decides where those bytes physically go; this only records
+      // that they were stored and under what locator.
+      const locator = await blobs.write(sha, content, input.contentType ?? null);
       await db.query(
-        `insert into blobs (sha256, bytes, content, content_type) values ($1,$2,$3,$4)
-         on conflict (sha256) do nothing`,
-        [sha, content.length, content, input.contentType ?? null]);
+        `update blobs set blob_path = $2 where sha256 = $1 and blob_path is null`,
+        [sha, locator]);
 
       // Supersede before inserting: the partial unique index permits exactly
       // one current row per path, so this ordering is load-bearing.
@@ -186,19 +182,25 @@ export function createDocumentStore(db: Db): DocumentStore {
       const params: unknown[] = [projectId];
       const pred = levelPredicate(featureId, params);
       params.push(path);
-      const { rows } = await db.query<DocRow & { content: unknown }>(
-        `select ${SELECT}, b.content from documents d join blobs b on b.sha256 = d.sha256
+      const { rows } = await db.query<DocRow & { blob_path: string | null }>(
+        `select ${SELECT}, b.blob_path from documents d join blobs b on b.sha256 = d.sha256
           where d.project_id = $1 and d.${pred} and d.path = $${params.length} and d.is_current`,
         params);
       if (!rows[0]) return null;
-      return { ref: toRef(rows[0]), content: toBuffer(rows[0].content) };
+      const content = rows[0].blob_path ? await blobs.read(rows[0].blob_path) : null;
+      // A row whose bytes are not where its locator says is a real state — a
+      // store restored without its container — and is reported as absent
+      // rather than as an empty document.
+      if (content === null) return null;
+      return { ref: toRef(rows[0]), content };
     },
 
     async read(documentId) {
-      const { rows } = await db.query<{ content: unknown }>(
-        `select b.content from documents d join blobs b on b.sha256 = d.sha256 where d.id = $1`,
+      const { rows } = await db.query<{ blob_path: string | null }>(
+        `select b.blob_path from documents d join blobs b on b.sha256 = d.sha256 where d.id = $1`,
         [documentId]);
-      return rows[0] ? toBuffer(rows[0].content) : null;
+      if (!rows[0]?.blob_path) return null;
+      return blobs.read(rows[0].blob_path);
     },
 
     async list(projectId, filter = {}) {

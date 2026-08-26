@@ -25,6 +25,7 @@
     "backfill:definitions": "node scripts/backfill-project-definitions.mjs",
     "sync:docs": "node scripts/sync-documents.mjs",
     "backfill:ado": "node scripts/backfill-ado-target.mjs",
+    "migrate:blobs": "./packages/orchestrator/node_modules/.bin/tsx scripts/migrate-blobs-to-azure.mjs",
     "scyne": "node cli/index.ts",
     "test:cli": "node --test \"cli/*.test.ts\"",
     "test:scripts": "node --test \"scripts/lib/*.test.mjs\" \"test/**/*.test.mjs\"",
@@ -40,5 +41,8 @@
   },
   "bin": {
     "scyne": "./cli/index.ts"
+  },
+  "dependencies": {
+    "@azure/storage-blob": "^12.33.0"
   }
 }
