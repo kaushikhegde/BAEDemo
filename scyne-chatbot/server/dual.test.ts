@@ -10,7 +10,7 @@
 // could not be reached at all because there was no id.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createProject, createFeature, deleteDocumentRow, createDocumentRow, categoryFor } from "./store.js";
+import { createProject, createFeature, updateProject, deleteDocumentRow, createDocumentRow, categoryFor } from "./store.js";
 
 type Route = { status: number; body?: unknown };
 
@@ -306,5 +306,96 @@ describe("createDocumentRow", () => {
     const r = await createDocumentRow(null, { project: "SAPN", path: "x.md", content: Buffer.from("x") });
     expect(r.state).toBe("skipped");
     expect(calls).toHaveLength(0);
+  });
+});
+
+/**
+ * The row is the record now, so the caller needs it back.
+ *
+ * `POST /api/projects` writes the row FIRST and then patches the Azure DevOps
+ * target and the extracted theme onto it as each resolves — so it needs the
+ * id. While the folder tree was the record, a caller only had to know whether
+ * the write had happened.
+ */
+describe("createProject returns the row", () => {
+  it("carries the created project back", async () => {
+    stub({ "POST /projects": { status: 201, body: { id: "p1", name: "SA-Demo", ado_target: null } } });
+    const r = await createProject("t", { name: "SA-Demo" });
+    expect(r.state).toBe("created");
+    expect(r.project?.id).toBe("p1");
+  });
+
+  it("carries the EXISTING row back on a 409 in this organisation", async () => {
+    // The completing-an-incomplete-project path depends on this: the route has
+    // to patch a target onto a row it did not just create.
+    stub({
+      "POST /projects": { status: 409 },
+      "GET /projects": { status: 200, body: [{ id: "p9", name: "SA-Demo", ado_target: null }] },
+    });
+    const r = await createProject("t", { name: "SA-Demo" });
+    expect(r.state).toBe("exists");
+    expect(r.project?.id).toBe("p9");
+  });
+
+  it("carries NO row when the name is held by another organisation", async () => {
+    // Project names are unique across the install, so a 409 can name a project
+    // this caller cannot list. The route turns a missing row here into
+    // `409 name_taken` rather than `502 db_unavailable` — the database is fine.
+    stub({ "POST /projects": { status: 409 }, "GET /projects": { status: 200, body: [] } });
+    const r = await createProject("t", { name: "SA-Demo" });
+    expect(r.state).toBe("exists");
+    expect(r.project).toBeUndefined();
+    expect(r.reason).toMatch(/another organisation/);
+  });
+
+  it("carries no row when the write genuinely failed", async () => {
+    stub({ "POST /projects": { status: 500, body: { message: "boom" } } });
+    const r = await createProject("t", { name: "SA-Demo" });
+    expect(r.state).toBe("failed");
+    expect(r.project).toBeUndefined();
+  });
+});
+
+/**
+ * Two values that were written to a FILE and to nothing else.
+ *
+ * `adoTarget` lived only in `projects/<p>/.published.json`; `projects.theme`
+ * has been a supported jsonb column since 002_platform and nothing ever wrote
+ * it, so every project in the database carried `{}` while its real palette sat
+ * on disk.
+ */
+describe("updateProject", () => {
+  it("patches the Azure DevOps target onto the row", async () => {
+    stub({ "PATCH /projects/p1": { status: 200, body: { id: "p1", name: "SA-Demo" } } });
+    const target = { org: "Scyne-AI-Lab", project: "SA-Demo", workItemType: "User Story" };
+    expect((await updateProject("t", "p1", { adoTarget: target })).state).toBe("created");
+    expect(patched("/projects/p1")[0].body).toEqual({ adoTarget: target });
+  });
+
+  it("patches the theme", async () => {
+    stub({ "PATCH /projects/p1": { status: 200, body: { id: "p1" } } });
+    await updateProject("t", "p1", { theme: { brand: "#464e7e" } });
+    expect(patched("/projects/p1")[0].body).toEqual({ theme: { brand: "#464e7e" } });
+  });
+
+  it("forwards the CALLER's token, never a service credential", async () => {
+    stub({ "PATCH /projects/p1": { status: 200, body: {} } });
+    await updateProject("caller-token", "p1", { theme: {} });
+    expect(patched("/projects/p1")[0].auth).toBe("Bearer caller-token");
+  });
+
+  it("reports rather than throws when the patch is refused", async () => {
+    // Not fatal at the call site: the Azure DevOps project genuinely exists by
+    // then. What is lost is the route's ability to recognise that on a re-post.
+    stub({ "PATCH /projects/p1": { status: 403, body: { message: "needs editor" } } });
+    const r = await updateProject("t", "p1", { adoTarget: {} });
+    expect(r.state).toBe("failed");
+    expect(r.reason).toBe("needs editor");
+  });
+
+  it("does nothing without a session", async () => {
+    stub({});
+    expect((await updateProject(null, "p1", { theme: {} })).state).toBe("skipped");
+    expect(patched("/projects/p1")).toHaveLength(0);
   });
 });

@@ -24,6 +24,13 @@ export interface Project {
   id: string;
   name: string;
   description?: string | null;
+  /**
+   * Where this project publishes, or null when Azure DevOps setup has not
+   * succeeded yet. Null is what makes a project INCOMPLETE rather than taken,
+   * which is the distinction `POST /api/projects` acts on — it used to read
+   * `projects/<p>/.published.json` off disk to find it out.
+   */
+  ado_target?: Record<string, unknown> | null;
 }
 
 export interface Feature { id: string; name: string }
@@ -116,6 +123,15 @@ export async function saveDescription(
 export interface WriteResult {
   state: "created" | "exists" | "failed" | "skipped";
   reason?: string;
+  /**
+   * The row, when the call produced or found one.
+   *
+   * `POST /api/projects` needs the id: it writes the row FIRST and then patches
+   * the Azure DevOps target and the theme onto it as each is resolved. While
+   * the folder tree was the record, a caller only needed to know whether the
+   * write had happened, so this carried nothing back.
+   */
+  project?: Project;
 }
 
 async function send(
@@ -139,7 +155,7 @@ const failureText = (status: number, json: unknown): string =>
   `orchestrator said ${status}`;
 
 /**
- * The project row, having written the folder tree.
+ * The project row. This IS the creation now, not the second half of one.
  *
  * A 409 means one of two very different things — the project is already in YOUR
  * organisation, or the name is held by ANOTHER one, since the folder tree is
@@ -157,7 +173,7 @@ export async function createProject(
       description: input.description?.trim() || null,
       website: input.website?.trim() || null,
     });
-    if (r.ok) return { state: "created" };
+    if (r.ok) return { state: "created", project: r.json as Project };
     if (r.status !== 409) return { state: "failed", reason: failureText(r.status, r.json) };
 
     const row = (await listProjects(token)).find(p => p.name === input.name);
@@ -171,10 +187,40 @@ export async function createProject(
         description: input.description.trim(),
       });
       return patch.ok
-        ? { state: "exists", reason: "already in the database — definition updated on it" }
-        : { state: "exists", reason: `already in the database; definition not updated (${failureText(patch.status, patch.json)})` };
+        ? { state: "exists", project: patch.json as Project, reason: "already in the database — definition updated on it" }
+        : { state: "exists", project: row, reason: `already in the database; definition not updated (${failureText(patch.status, patch.json)})` };
     }
-    return { state: "exists", reason: "already in the database" };
+    return { state: "exists", project: row, reason: "already in the database" };
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+}
+
+/**
+ * Patch a project row — the Azure DevOps target, the theme, the website.
+ *
+ * Both of the first two used to be written to a FILE and nowhere else:
+ * `adoTarget` into `projects/<p>/.published.json`, and the extracted palette
+ * into `design/style-guides/theme.json`. `projects.theme` has been a fully
+ * supported jsonb column since 002_platform and nothing ever wrote it, so
+ * every project in the database carried the default `{}` while its real
+ * palette sat on a disk no API could read.
+ *
+ * Best-effort like every other write here, and the caller reports the reason:
+ * a project that exists with no target is incomplete and repairable, which is
+ * a much better state to be in than no project at all.
+ */
+export async function updateProject(
+  token: string | null,
+  projectId: string,
+  patch: { description?: string; website?: string; theme?: Record<string, unknown>; adoTarget?: Record<string, unknown> | null },
+): Promise<WriteResult> {
+  if (!token) return { state: "skipped", reason: "not signed in" };
+  try {
+    const r = await send(token, "PATCH", `/projects/${projectId}`, patch);
+    return r.ok
+      ? { state: "created", project: r.json as Project }
+      : { state: "failed", reason: failureText(r.status, r.json) };
   } catch (e) {
     return { state: "failed", reason: (e as Error).message };
   }

@@ -24,6 +24,7 @@
     "check:workflows": "tsx scripts/check-workflows.mts",
     "backfill:definitions": "node scripts/backfill-project-definitions.mjs",
     "sync:docs": "node scripts/sync-documents.mjs",
+    "backfill:ado": "node scripts/backfill-ado-target.mjs",
     "scyne": "node cli/index.ts",
     "test:cli": "node --test \"cli/*.test.ts\"",
     "test:scripts": "node --test \"scripts/lib/*.test.mjs\" \"test/**/*.test.mjs\"",

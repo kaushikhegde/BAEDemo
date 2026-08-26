@@ -389,7 +389,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
   r.post("/projects", requireAuth(), wrap(async (req, res) => {
     const u = req.principal!.user;
     if (u.role === "viewer") return denied(res, "a viewer cannot create projects");
-    const { name, description, website } = req.body ?? {};
+    const { name, description, website, adoTarget } = req.body ?? {};
     if (!name) return bad(res, "name is required");
     if (await platform.projectNameTaken(String(name))) {
       res.status(409).json({
@@ -401,7 +401,7 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     }
     const row = await platform.createProject({
       companyId: req.principal!.companyId, name: String(name), description: description ?? null,
-      website: website ?? null, createdBy: u.id,
+      website: website ?? null, adoTarget: adoTarget ?? null, createdBy: u.id,
     });
     await audit(req, "project.create", { projectId: row.id, targetType: "project", targetId: row.id });
     created(res, row);
@@ -414,8 +414,8 @@ export function createPlatformRouter(orch: Orchestrator): Router {
 
   r.patch("/projects/:id", requireAuth(), wrap(async (req, res) => {
     const row = await project(req, res, "editor"); if (!row) return;
-    const { description, website, theme } = req.body ?? {};
-    const updated = await platform.updateProject(row.id, { description, website, theme });
+    const { description, website, theme, adoTarget } = req.body ?? {};
+    const updated = await platform.updateProject(row.id, { description, website, theme, adoTarget });
     await audit(req, "project.update", { projectId: row.id });
     ok(res, updated);
   }));

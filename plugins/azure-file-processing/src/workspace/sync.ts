@@ -170,6 +170,25 @@ export const syncUp = async (
   return { pushed: toPush.length, skipped: d.same.length, bytes };
 };
 
+/**
+ * Pull a project's tree DOWN from blob. Nothing in production may call this.
+ *
+ * The workspace container is an EXPORT: Postgres is the system of record (see
+ * `core/materialise.ts` — "the store is the system of record now"), the tree
+ * is materialised out of it per run and harvested back, and `syncUp` mirrors
+ * the result to blob for durability. A read path from blob would make it a
+ * third opinion about what a project contains, competing with the store and
+ * with whatever is on the local disk at the time — which is precisely the
+ * disagreement that let `POST /api/projects` refuse to create a project the
+ * database had never heard of.
+ *
+ * It is kept, exported and tested because the behaviour is real and an
+ * operator restoring a lost workspace by hand is a legitimate use. What is
+ * NOT legitimate is a code path reaching for it automatically, so
+ * `test/sync-one-way.test.ts` asserts that nothing under `src/` imports it.
+ * Deleting it would only mean rewriting it, worse, the first time somebody
+ * needs a restore.
+ */
 export const syncDown = async (
   s: Storage, root: string, project: string, opts: SyncOpts = {},
 ): Promise<{ pulled: number; skipped: number; bytes: number }> => {

@@ -20,7 +20,7 @@ import { orchestrator as paperclip } from "./orchestrator.js";
 import type { RequirementParams } from "./types.js";
 import { routeFile, uniqueName, requirementsDir, type Hint } from "./services/fileRouter.js";
 import { WORKSPACE_PATH } from "./workspace.js";
-import { slugProjectName, isNewProjectName } from "./names.js";
+import { slugProjectName, isNewProjectName, decideCreate } from "./names.js";
 import {
   listDocuments, deleteDocument, resolveDocument, readDocument, excerptOf,
   type DocumentEntry,
@@ -1663,44 +1663,111 @@ app.post("/api/projects", async (req, res) => {
       });
     }
     const root = path.join(WORKSPACE_PATH, "projects", project);
-    let exists = false;
-    try { await fs.access(root); exists = true; } catch { /* good — it is new */ }
-    if (exists) {
-      // A project whose Azure DevOps setup failed is INCOMPLETE, not taken.
-      // Refusing it with 409 would strand it: this route is the only way to
-      // create the target, and it is the thing being refused.
-      let hasTarget = false;
-      try {
-        const p = JSON.parse(await fs.readFile(path.join(root, ".published.json"), "utf8"));
-        hasTarget = Boolean(p?.adoTarget?.project);
-      } catch { /* no record — treat as missing */ }
-      if (hasTarget) {
-        return res.status(409).json({
-          error: "exists", project, requestedName: requested,
-          message: requested === project
-            ? `A project called "${project}" already exists.`
-            : `"${requested}" becomes "${project}", and a project by that name already exists.`,
-        });
-      }
-      // Completing an incomplete project rewrites its Azure DevOps target and
-      // its branding, so it must be the project the caller actually named.
-      // `SA Demo` and `SA-Demo` are two different projects that already exist
-      // side by side here — slugging the first onto the second would hand one
-      // client's tree another client's target, in a route that reports success.
-      if (requested !== project) {
-        return res.status(409).json({
-          error: "slug_collision", project, requestedName: requested,
-          message: `"${requested}" becomes "${project}", which already exists but is incomplete. ` +
-            `If that is the project you meant, enter "${project}" exactly to finish setting it up.`,
-        });
-      }
+
+    // The DATABASE decides whether this project exists. It did not use to: this
+    // route called `fs.access` on a folder and then read `.published.json` out
+    // of it, which made a directory the system of record for a fact the
+    // database owns — and `core/materialise.ts` is explicit that "the store is
+    // the system of record now". The two disagree the moment they can: pointing
+    // DATABASE_URL at a fresh server left seven project folders on disk, so
+    // this route refused to create a project the database had never heard of,
+    // naming an Azure DevOps target it could not see.
+    //
+    // Everything below still WRITES to disk — six skills read
+    // `projects/<p>/description.md` by path, the renderer reads
+    // `design/style-guides/theme.json`, and the publish scripts read
+    // `.published.json`. Those files are derived from the row now, not the
+    // other way round. Nothing here DECIDES anything by reading disk.
+    const token = tokenFor(req);
+    if (!token) {
+      // This used to half-succeed: `store.createProject` returned `skipped`,
+      // the tree was written anyway, and the caller got `ok: true` for a
+      // project no API could see. With the row as the record there is nothing
+      // to half-succeed at.
+      return res.status(401).json({
+        error: "not_authenticated",
+        message: "Sign in before creating a project — the project row is the record, and writing it needs your session.",
+      });
+    }
+
+    let row = (await store.listProjects(token)).find(p => p.name === project) ?? null;
+
+    // The rule itself lives in names.ts, next to the slug it depends on, and is
+    // tested there. A project whose Azure DevOps setup failed is INCOMPLETE,
+    // not taken: refusing it would strand it, because this route is the only
+    // way to create the target and it is the thing being refused.
+    const decision = decideCreate({ existing: row, requested, project });
+    if (decision === "exists") {
+      return res.status(409).json({
+        error: "exists", project, requestedName: requested,
+        message: requested === project
+          ? `A project called "${project}" already exists.`
+          : `"${requested}" becomes "${project}", and a project by that name already exists.`,
+      });
+    }
+    if (decision === "slug_collision") {
+      return res.status(409).json({
+        error: "slug_collision", project, requestedName: requested,
+        message: `"${requested}" becomes "${project}", which already exists but is incomplete. ` +
+          `If that is the project you meant, enter "${project}" exactly to finish setting it up.`,
+      });
+    }
+    if (decision === "complete") {
       console.log(`[projects] ${project} exists but has no Azure DevOps target — completing it`);
     }
 
+    // The row, FIRST and FATALLY.
+    //
+    // It used to be written last and best-effort, on the reasoning that "a
+    // project with a tree and no row is incomplete, not broken". That was true
+    // only while the tree was the record. Now the row IS the project: a create
+    // that leaves none has created nothing, the next create cannot see what
+    // this one did, and every symptom lands somewhere else — the definition
+    // silently fails to save, /spend files the runs under the anonymous row,
+    // and /projects/{id}/documents has no id to reach.
+    //
+    // So a database failure stops here, before an Azure DevOps project is
+    // created for a Scyne project that does not exist. The reverse order is
+    // what leaves rubbish in a client's ADO organisation.
+    const db = await store.createProject(token, { name: project, description, website });
+    if (!db.project) {
+      // Two different failures, and the fix for each is different.
+      //
+      // `exists` with no visible row means the name is held somewhere this
+      // caller cannot see — project names are unique across the whole install
+      // (`projectNameTaken` is deliberately not scoped to one organisation,
+      // because the folder tree is flat), so another organisation's project
+      // can refuse a name that is absent from every listing you can read.
+      // Answering `db_unavailable` for that would send someone to check a
+      // database that is working perfectly.
+      if (db.state === "exists") {
+        return res.status(409).json({
+          error: "name_taken", project, requestedName: requested,
+          message: db.reason ?? `The name "${project}" is already held.`,
+        });
+      }
+      console.error(`[projects] ${project}: not recorded in the database — ${db.reason}`);
+      return res.status(502).json({
+        error: "db_unavailable", project, requestedName: requested,
+        message: `The project row could not be written, so nothing was created: ${db.reason ?? "unknown error"}`,
+      });
+    }
+    row = db.project;
+
+    // Scaffold directories, kept. They hold nothing, but several readers walk
+    // them before writing (and blob has no concept of an empty directory, so a
+    // restored project comes back without them). Cheap insurance, and not a
+    // record of anything.
     for (const d of PROJECT_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
 
     // The definition is optional at creation time but changes every skill's
     // output, so it is asked for in step 1 rather than chased later.
+    //
+    // `projects.description` above is the record. This file is the DERIVED
+    // copy, and it stays because six skills read `projects/<p>/description.md`
+    // by that exact path (requirement-generator, capability-process-map,
+    // persona-journey-map, salesforce-data-modeler, solution-design-document
+    // and requirements-test-case-generator all name it in their SKILL.md).
     let definitionWritten = false;
     if (description.length >= 40) {
       const content = description.startsWith("#")
@@ -1710,24 +1777,43 @@ app.post("/api/projects", async (req, res) => {
       definitionWritten = true;
     }
 
-    // The Azure DevOps target, resolved once and recorded. Everything
-    // downstream reads it from .published.json rather than an environment
-    // variable, because ONE target for the whole installation is exactly what
-    // per-project targets replaced.
+    // The Azure DevOps target, resolved once and recorded — in the COLUMN,
+    // `projects.ado_target`, which is what this route reads back above to tell
+    // "already taken" from "incomplete, finish it". It used to live in
+    // `.published.json` and nowhere else, which is the bug this whole change
+    // exists to remove.
     //
-    // A failure here is NOT fatal to the wizard: the folder tree, the
-    // definition and the branding are real and worth keeping. It returns with
-    // `adoError` set and no `adoTarget`, leaving the project INCOMPLETE rather
-    // than broken — re-posting this route completes it.
+    // `.published.json` is still written, because the publish scripts and the
+    // agents read it BY PATH inside the materialised tree
+    // (`ado-publish.mjs`, `ado-workitems.mjs --published-json`,
+    // `resolvePagePath` in scripts/lib/ado.mjs). It is derived from the column
+    // now. Note that only `adoTarget` moves: the per-artefact `ado.<artefact>`
+    // page paths that live beside it are written by AGENTS mid-run and
+    // harvested back, so a column mirroring those would be stale from the
+    // first publish onwards.
+    //
+    // A failure here is NOT fatal: the row, the definition and the branding
+    // are real and worth keeping. It returns with `adoError` set and a null
+    // target, leaving the project INCOMPLETE rather than broken — re-posting
+    // this route completes it.
     let adoTarget: any = null;
     let adoError: string | null = null;
     if (process.env.ADO_ORG) {
       const ensured = await ensureAdoProject({ org: process.env.ADO_ORG, project });
       if (ensured.ok) {
+        const wrote = await store.updateProject(token, row.id, { adoTarget: ensured.target as any });
+        if (wrote.state === "failed") {
+          // Reported, not swallowed, and not fatal: the ADO project genuinely
+          // exists now. What is lost is this route's ability to recognise that
+          // on a re-post, which is a state a person can act on once told.
+          adoError = `Azure DevOps is set up, but the target was not recorded on the project row: ${wrote.reason}`;
+          console.error(`[projects] ${project}: ado_target not persisted — ${wrote.reason}`);
+        }
         const publishedFile = path.join(root, ".published.json");
         let current: any = {};
         try { current = JSON.parse(await fs.readFile(publishedFile, "utf8")); } catch { /* first write */ }
         current.adoTarget = ensured.target;
+        await fs.mkdir(root, { recursive: true });
         await fs.writeFile(publishedFile, JSON.stringify(current, null, 2) + "\n", "utf8");
         adoTarget = ensured.target;
       } else {
@@ -1753,6 +1839,15 @@ app.post("/api/projects", async (req, res) => {
           try {
             const t = JSON.parse(await fs.readFile(path.join(root, "design", "style-guides", "theme.json"), "utf8"));
             brand = { ...t, logoSrc: undefined, hasLogo: Boolean(t.logoSrc) };
+            // `projects.theme` has been a supported jsonb column since
+            // 002_platform, read and patchable through the platform API, and
+            // NOTHING has ever written it: every project in the database
+            // carried the default `{}` while its real palette sat in a file.
+            // Same class of bug as ado_target, same one-line fix.
+            const themed = await store.updateProject(token, row.id, { theme: t });
+            if (themed.state === "failed") {
+              console.error(`[projects] ${project}: theme not persisted — ${themed.reason}`);
+            }
           } catch { /* written but unreadable — treat as no brand */ }
         } else {
           brandError = extract.stderr?.trim() || `extract-brand.mjs exited with ${extract.code}`;
@@ -1760,17 +1855,7 @@ app.post("/api/projects", async (req, res) => {
       }
     }
 
-    // The DATABASE half. `scyne project create` has written both sides since
-    // cli/dual.ts was added; this route wrote only the tree, so a project made
-    // in the browser existed for every agent and for no API. Best-effort, like
-    // the Azure DevOps and branding steps above — a project with a tree and no
-    // row is incomplete, not broken, and re-posting this route completes it.
-    const db = await store.createProject(tokenFor(req), { name: project, description, website });
-    if (db.state === "failed") {
-      console.error(`[projects] ${project}: not recorded in the database — ${db.reason}`);
-    } else if (db.reason) {
-      console.log(`[projects] ${project}: database — ${db.state} (${db.reason})`);
-    }
+    if (db.reason) console.log(`[projects] ${project}: database — ${db.state} (${db.reason})`);
 
     console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ado=${Boolean(adoTarget)}, db=${db.state})`);
     res.json({
@@ -1779,11 +1864,12 @@ app.post("/api/projects", async (req, res) => {
       // to decide whether there is anything to tell the person.
       slugged: requested !== project ? { from: requested, to: project } : null,
       definitionWritten, brand, brandError, adoTarget, adoError,
-      db,
-      // Named separately from `db` because it is the one state a person has to
-      // act on: everything downstream that resolves a project BY NAME will come
-      // back empty until the row exists.
-      dbError: db.state === "failed" ? db.reason ?? "not recorded in the database" : null,
+      db, projectId: row.id,
+      // Always null on a success now, and kept only so existing callers keep
+      // reading a field that exists. A database failure cannot reach this
+      // point: it is fatal above and answers `502 db_unavailable`, because a
+      // create that leaves no row has created nothing.
+      dbError: null,
     });
   } catch (e: any) {
     console.error("[projects] failed:", e);
@@ -1809,27 +1895,49 @@ app.post("/api/features", async (req, res) => {
         message: `"${feature}" is reserved. Pick another name — it would clash with a project-level folder or CLI stage.`,
       });
     }
-    const projectRoot = path.join(WORKSPACE_PATH, "projects", project);
-    try { await fs.access(projectRoot); } catch {
-      return res.status(404).json({ error: "no_project", message: `No project called "${project}".` });
+    // The DATABASE decides, exactly as it does for a project. This route had
+    // the same defect: `fs.access` on `projects/<p>` answered "does this
+    // project exist" and `fs.access` on `projects/<p>/<f>` answered "is this
+    // feature taken", so both questions were being put to a directory. Left
+    // alone it would fail the other way round from the project route — a
+    // folder tree surviving a DATABASE_URL change would let a feature be
+    // "created" under a project that exists nowhere the API can see.
+    const token = tokenFor(req);
+    if (!token) {
+      return res.status(401).json({
+        error: "not_authenticated",
+        message: "Sign in before creating a feature — the feature row is the record, and writing it needs your session.",
+      });
     }
-    const root = path.join(projectRoot, feature);
-    try {
-      await fs.access(root);
-      return res.status(409).json({ error: "exists", message: `${project} already has a feature called "${feature}".` });
-    } catch { /* good — it is new */ }
 
-    for (const d of FEATURE_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
-
-    const db = await store.createFeature(tokenFor(req), { project, feature });
+    const db = await store.createFeature(token, { project, feature });
     if (db.state === "failed") {
       console.error(`[features] ${project}/${feature}: not recorded in the database — ${db.reason}`);
+      // `createFeature` reports a missing PROJECT distinctly, because the fix
+      // is a different one — create the project, not the feature.
+      const noProject = /is not in the database yet/.test(db.reason ?? "");
+      return res.status(noProject ? 404 : 502).json({
+        error: noProject ? "no_project" : "db_unavailable", project, feature,
+        message: noProject
+          ? `No project called "${project}" in the database. If its folder is on disk, \`npm run sync:docs -- --apply\` records it.`
+          : `The feature row could not be written, so nothing was created: ${db.reason}`,
+      });
     }
+    if (db.state === "exists") {
+      return res.status(409).json({ error: "exists", message: `${project} already has a feature called "${feature}".` });
+    }
+
+    // The working tree, derived. `stage.mjs` and the upload routes write into
+    // these, and blob has no concept of an empty directory — so a project
+    // restored from blob comes back without them.
+    const root = path.join(WORKSPACE_PATH, "projects", project, feature);
+    for (const d of FEATURE_SCAFFOLD) await fs.mkdir(path.join(root, ...d.split("/")), { recursive: true });
 
     console.log(`[features] created ${project}/${feature} (db=${db.state})`);
     res.json({
       ok: true, project, feature, db,
-      dbError: db.state === "failed" ? db.reason ?? "not recorded in the database" : null,
+      // Always null now: a database failure is fatal above and answers 502.
+      dbError: null,
     });
   } catch (e: any) {
     console.error("[features] failed:", e);

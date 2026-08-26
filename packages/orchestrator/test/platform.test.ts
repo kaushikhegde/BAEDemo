@@ -180,6 +180,65 @@ describe("projects and access", () => {
   });
 });
 
+/**
+ * Where a project publishes is a COLUMN, not a file.
+ *
+ * It lived only in `projects/<p>/.published.json`, which meant `POST
+ * /api/projects` decided whether a project existed — and whether it was fully
+ * set up — by reading a directory. Pointing DATABASE_URL at a fresh server
+ * left the folders behind and the route refused to create projects the
+ * database had never heard of.
+ */
+describe("a project's Azure DevOps target", () => {
+  const target = {
+    org: "Scyne-AI-Lab", project: "SA-Demo", wiki: "SA-Demo.wiki",
+    processTemplate: "Agile", workItemType: "User Story",
+  };
+
+  it("is null on a new project, which is what INCOMPLETE means", async () => {
+    const proj = await p.createProject({ companyId: company, name: "RTWSA" });
+    // Not `{}`. A project with no target is one whose Azure DevOps setup has
+    // not succeeded, and re-posting the create route is what repairs it — so
+    // "never set up" must stay distinguishable from "set up and empty".
+    expect(proj.ado_target).toBeNull();
+  });
+
+  it("can be supplied at creation and comes back as an object", async () => {
+    const proj = await p.createProject({ companyId: company, name: "SA-Demo", adoTarget: target });
+    expect(proj.ado_target).toEqual(target);
+    // Read back through every path that returns a project, because each one
+    // used to parse `theme` inline and would have missed a second jsonb column.
+    expect((await p.getProject(proj.id))?.ado_target).toEqual(target);
+    expect((await p.getProjectByName(company, "SA-Demo"))?.ado_target).toEqual(target);
+    expect((await p.listProjects(company))[0].ado_target).toEqual(target);
+  });
+
+  it("is patched onto an existing project — the completing-an-incomplete-project path", async () => {
+    const proj = await p.createProject({ companyId: company, name: "SA-Demo" });
+    const updated = await p.updateProject(proj.id, { adoTarget: target });
+    expect(updated?.ado_target).toEqual(target);
+  });
+
+  it("survives a patch that does not mention it", async () => {
+    const proj = await p.createProject({ companyId: company, name: "SA-Demo", adoTarget: target });
+    const updated = await p.updateProject(proj.id, { description: "who the client is" });
+    expect(updated?.ado_target).toEqual(target);
+    expect(updated?.description).toBe("who the client is");
+  });
+
+  it("is cleared by an explicit null, and only by an explicit null", async () => {
+    const proj = await p.createProject({ companyId: company, name: "SA-Demo", adoTarget: target });
+    expect((await p.updateProject(proj.id, { adoTarget: null }))?.ado_target).toBeNull();
+  });
+
+  it("does not disturb the theme column, and vice versa", async () => {
+    const proj = await p.createProject({ companyId: company, name: "SA-Demo", adoTarget: target });
+    const themed = await p.updateProject(proj.id, { theme: { brand: "#464e7e" } });
+    expect(themed?.theme).toEqual({ brand: "#464e7e" });
+    expect(themed?.ado_target).toEqual(target);
+  });
+});
+
 describe("installations", () => {
   it("registers per machine and re-registers rather than duplicating", async () => {
     const u = await member();

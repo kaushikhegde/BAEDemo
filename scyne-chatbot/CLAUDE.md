@@ -393,6 +393,18 @@ Click "New session" in the right-pane header. This clears `localStorage`, drops 
   spent" — a confident wrong answer where "you are not allowed to see this" is
   the true one. `sendOps` preserves the status; `OpsState` renders the three
   cases apart.
+- **The ROW is the project; the tree is derived.** `POST /api/projects` writes
+  the row FIRST and fatally (`502 db_unavailable`), refuses without a session
+  (`401`) rather than half-succeeding, and decides whether a project already
+  exists from `store.listProjects` — not from `fs.access` on a folder, which is
+  what it did until a fresh `DATABASE_URL` left seven project directories on
+  disk and made the route refuse to create projects the database had never
+  heard of. The publish target is `projects.ado_target` (a column since
+  009_project_ado_target.sql), the palette is `projects.theme`, and both are
+  still MIRRORED to `.published.json` and `theme.json` because the publish
+  scripts and the renderer read those by path. `decideCreate` in `names.ts`
+  holds the rule, next to the slug it depends on, so it can be tested without
+  booting the server. The note below is the history it replaced.
 - **Creation writes BOTH stores.** The folder tree the agents read and the
   database row `scyne`/the console/every platform route read. `/api/projects`
   and `/api/features` wrote only the tree for the whole of this repo's history,

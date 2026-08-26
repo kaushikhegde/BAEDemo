@@ -224,10 +224,14 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
     {
       title: "Create a project",
       description:
-        "Create a Scyne project: the folder tree, the database row, its Azure DevOps " +
-        "project and its branding, in one call. A name with spaces is SLUGGED — the " +
-        "result reports the name it actually used. Reports `dbError` and `adoError` " +
-        "separately: either can fail while the project is still usable.",
+        "Create a Scyne project: the database row, its Azure DevOps project, its " +
+        "branding and the working tree, in one call. A name with spaces is SLUGGED — " +
+        "the result reports the name it actually used. Whether a project already " +
+        "exists is decided by the DATABASE, never by a folder on disk. The row is " +
+        "written first and is fatal (`db_unavailable`), so a project either exists " +
+        "everywhere or nowhere; `adoError` is reported separately because a project " +
+        "with no Azure DevOps target is INCOMPLETE, not broken — calling this again " +
+        "with the same exact name finishes setting it up.",
       inputSchema: {
         project: z.string().min(1),
         description: z.string().optional(),

@@ -1,0 +1,31 @@
+-- Where a project publishes: its Azure DevOps org, project, wiki and work item
+-- type — as a COLUMN, because until now it existed only as a file.
+--
+-- `projects/<name>/.published.json` held `adoTarget` and nothing else did. That
+-- made a directory the system of record for a fact the database is supposed to
+-- own, and it showed: `POST /api/projects` decided whether a name was taken by
+-- calling `fs.access` on a folder and then reading that file to tell "already
+-- taken" from "created, but its Azure DevOps setup failed — re-post to finish
+-- it". A database pointed at a fresh server therefore refused to create a
+-- project it had never heard of, naming a target it could not see.
+--
+-- Only the TARGET moves. The per-artefact page paths that live beside it in the
+-- same file (`ado.<artefact>.wikiPath` / `.url`) stay there deliberately: an
+-- agent writes those mid-run and harvest brings them back into the store, so a
+-- column holding the same thing would be stale from the first publish onwards.
+-- Set-up metadata and run output have different lifecycles and get different
+-- homes. `.published.json` is still written at creation — the publish scripts
+-- read it by path — but it is now DERIVED from this column rather than being
+-- the record.
+--
+-- jsonb rather than five columns. It is read as a unit by everything that
+-- resolves a publish target, it is written once by the one route that creates
+-- the Azure DevOps project, and its shape follows what that API returns
+-- (`org`, `project`, `wiki`, `wikiId`, `processTemplate`, `workItemType`,
+-- `createdAt`) — a shape owned by Microsoft, not by us. Splitting it would mean
+-- a migration every time that answer gains a field.
+--
+-- Nullable, and the null is meaningful: a project with no target is INCOMPLETE,
+-- not broken. That is the state re-posting the create route repairs, and the
+-- distinction the route could previously only make by reading a file.
+alter table projects add column ado_target jsonb;

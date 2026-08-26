@@ -152,8 +152,8 @@ The user drives everything from a Scyne-branded chatbot UI. The chatbot does not
 > agent guessing a familiar name fails every story at once, after the gate was
 > approved and the page already published.
 >
-> It is now **per project**, not per install: `adoTarget.workItemType` in
-> `projects/<project>/.published.json`, written when the project is created and
+> It is now **per project**, not per install: `ado_target.workItemType` on the
+> project ROW (`projects.ado_target`), written when the project is created and
 > confirmed to exist BY NAME at that moment. New projects use the Agile
 > template and therefore `User Story`, which is what the BA's house style has
 > always described; SAPN predates this and is backfilled to Basic / `Issue`.
@@ -492,7 +492,9 @@ requirement-generator/                         workspace root (cwd for all agent
 │   │   ├── journeys/             optional journey artwork, <persona-id>-journey.png
 │   │   └── example-screens/
 │   ├── .published.json           wiki page identity per artefact, so a REVISION
-│   │                             updates the page instead of creating a second one
+│   │                             updates the page instead of creating a second one.
+│   │                             DERIVED — `projects.ado_target` is the record for
+│   │                             the publish target; the per-artefact paths live here
 │   └── solutions/
 │       ├── Capabilities/         (Capabilities Process Architect)
 │       │   ├── documents/project/<category>/     from projects/<p>/documents/
@@ -1065,6 +1067,26 @@ open http://127.0.0.1:5173
 | POST | `/api/upload` | Feature-level upload, routed into `requirements/<sub>/` via `fileRouter` |
 | POST | `/api/ui-agent/comment` | Follow-up comment on the UI build issue |
 
+> **The ROW is what a project IS. The tree is derived from it.**
+>
+> `POST /api/projects` writes the row **first**, and a failure to write it is
+> **fatal** — `502 db_unavailable`, nothing created, no orphaned Azure DevOps
+> project left in a client's organisation. Creating without a session is
+> refused (`401`) instead of silently half-succeeding, which is what it used to
+> do: `store.createProject` returned `skipped`, the tree was written anyway,
+> and the caller got `ok: true` for a project no API could see.
+>
+> Everything below still WRITES to disk, and must: six skills read
+> `projects/<p>/description.md` by that path, the renderer reads
+> `design/style-guides/theme.json`, the publish scripts read `.published.json`.
+> Those are DERIVED copies. Nothing DECIDES anything by reading disk any more —
+> the existence check is `store.listProjects`, and the rule itself is
+> `decideCreate` in `scyne-chatbot/server/names.ts`, extracted so it can be
+> tested without booting a server.
+>
+> The history below is what that replaced, and is kept because the symptoms are
+> the ones to recognise if any of it comes back.
+>
 > **Creation writes BOTH stores, and the web UI did not.** There are two
 > records of what exists — the folder tree the agents read, and the database
 > `scyne`, the console and every platform route read — and `cli/dual.ts` has
@@ -1272,9 +1294,40 @@ are gone, along with `CODEX_CLI` and the `PAPERCLIP_*` / `BETTER_AUTH_SECRET` /
 
 **One Azure DevOps project per Scyne project.** ONE organisation (`ADO_ORG`)
 holds everything; the PROJECT is created from the name the user enters, using
-the **Agile** template, and recorded in `projects/<project>/.published.json`
-under **`adoTarget`** — org, project, wiki, wiki id, process template and work
-item type. Every publish reads it from there.
+the **Agile** template, and recorded in **`projects.ado_target`** — org,
+project, wiki, wiki id, process template and work item type.
+
+> **That is a COLUMN, and it did not use to be.** It lived only in
+> `projects/<project>/.published.json`, so a directory was the system of record
+> for something the database owns — while `core/materialise.ts` says in as many
+> words that "the store is the system of record now". `POST /api/projects`
+> decided whether a project existed by calling `fs.access` on a folder and then
+> reading that file, which is why pointing `DATABASE_URL` at a fresh Postgres
+> produced a route that **refused to create projects the database had never
+> heard of**, quoting an Azure DevOps target it could not see. Seven folders,
+> zero rows, and the refusal named the folder.
+>
+> `.published.json` is still WRITTEN, and every publish still reads it by path
+> — `ado-publish.mjs`, `ado-workitems.mjs --published-json` and
+> `resolvePagePath` all take it from the materialised tree. It is derived from
+> the column now rather than being the record.
+>
+> **Only the target moved.** The per-artefact page paths beside it
+> (`ado.<artefact>.wikiPath` / `.url`) stay in the file, because an AGENT writes
+> those mid-run and harvest brings them back — a column mirroring them would be
+> stale from the first publish onwards. Set-up metadata and run output have
+> different lifecycles, so they get different homes.
+>
+> Projects created before this carry their target on disk only:
+> `npm run backfill:ado` prints a plan, `-- --apply` lifts it. A row that
+> already has a target is never overwritten, even when the file disagrees — a
+> stale `.published.json` from an old clone must not be able to redirect a
+> client's publishing.
+>
+> `projects.theme` was the same bug with no symptom yet: a supported jsonb
+> column since 002_platform that **nothing ever wrote**, so every project
+> carried `{}` while its real palette sat in `design/style-guides/theme.json`.
+> The create route patches it now.
 
 There is deliberately **no `ADO_PROJECT`**. One target for the whole install is
 exactly what this replaced, and a fallback to one would publish a client's
@@ -2221,6 +2274,10 @@ with the registry, the registry wins.
 | A stage is refused `no documents` when the project holds `.docx`/`.pdf` | Fixed: the gates count `readable` = markdown **plus** every source `convert-to-md.mjs` can convert, because `stage.mjs` converts as its first step. If it still refuses, the files are images or audio (`other`), which are not discovery material. | `READABLE_AFTER_CONVERSION` in `scripts/convert-to-md.mjs` is the list, imported by the server rather than restated. |
 | Documents upload fine but no stage can read them | The conversion failed. `stage.mjs` now prints `⚠ N document(s) could not be converted` and carries on with whatever else it staged. | Usually `markitdown-ts is not installed` — `cd scyne-chatbot && npm install`. It is a declared dependency, but only of `scyne-chatbot`, and it lives only in that `node_modules`. |
 | A project created in the web UI is in no listing, its definition will not save, and its runs show no project in Spend | It was never written to the DATABASE. The wizard wrote the folder tree only; `cli/dual.ts` has always written both. | Fixed — `/api/projects` and `/api/features` now write the row too, and report `dbError` when they cannot. For a project created BEFORE the fix, re-post `/api/projects` with the same name: it completes rather than refusing. |
+| `create_project` / the wizard refuses `exists`, but the `projects` table is empty | The existence check was reading DISK. Fixed — it reads `store.listProjects` now. If you still see it, the folders are being counted somewhere else. | The project folders survive a `DATABASE_URL` change; the rows do not. `npm run sync:docs -- --apply` creates the missing rows, then `npm run backfill:ado` lifts each `.published.json` target into `projects.ado_target`. |
+| A project that IS fully set up is offered as "incomplete, finish setting it up" | Its target is on disk only — `projects.ado_target` is null because the project predates 009_project_ado_target.sql. | `npm run backfill:ado` (a plan; `-- --apply` writes). It refuses to overwrite a row that already has a target, so a stale `.published.json` cannot redirect a client's publishing. |
+| Creating a project answers `502 db_unavailable` | Deliberate: the row is the record, so a create that cannot write one has created nothing. Nothing was left behind — no folder, no Azure DevOps project. | The message carries the underlying reason. Usually the orchestrator is not running, or `DATABASE_URL` points somewhere unreachable. |
+| Creating a project answers `401 not_authenticated` | Also deliberate. It used to write the tree anyway and report `ok: true` for a project no API could see. | Sign in. The CLI sends `Authorization: Bearer`; the browser sends the `scyne_session` cookie. |
 | A deleted document comes back | The archived source in `original-files/` was left behind, and the next conversion pass rebuilt the markdown from it. | Fixed — `deleteDocument` takes both. If one predates this, delete the file under `original-files/` by hand. |
 | A stage still reports documents after its `requirements/` was emptied | `countFeatureDocs` walked `original-files/`, so every archived source counted as a live document — and each converted document counted twice. `countProjectDocs` skipped it explicitly and this did not. | Fixed — `original-files` is in `SKIP_DIRS`. |
 | A stage is refused `no documents` while `/docs` lists documents | Those rows are in the DATABASE and the files are not on DISK, and every gate counts `.md` on disk. Either the upload was refused (`ambiguous_kind` — a `.docx`/`.pdf` whose name matches neither the SOP nor the transcript pattern needs `--as`) and a pre-`51dec6e` CLI recorded the row anyway, or the file landed but never converted. | `find projects/<p> -name '*.md'` is what the gate sees. Re-upload with `--as sop\|transcripts\|notes`, or with no feature pinned for client-wide material. `node scripts/convert-to-md.mjs <p> [<f>]` converts what is already there. |

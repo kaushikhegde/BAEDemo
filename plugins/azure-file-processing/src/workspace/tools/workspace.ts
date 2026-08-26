@@ -53,6 +53,11 @@ export const createProject = async (ctx: WsCtx, args: CreateProjectArgs) => {
 
   return {
     project: res.project,
+    // The row's id. The project IS the row now — the tree is materialised from
+    // it — so carrying the id back is what lets a caller address the project
+    // through any platform route (`/projects/{id}/documents`, members, spend)
+    // rather than only by name.
+    projectId: res.projectId ?? null,
     // A name with spaces is SLUGGED, not refused: `{from, to}` when it
     // changed, null when the caller already typed the slug.
     slugged: res.slugged ?? null,

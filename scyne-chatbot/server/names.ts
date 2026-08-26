@@ -48,3 +48,48 @@ export function isNewProjectName(name: string): boolean {
   if (name.startsWith(".") || /[. ]$/.test(name)) return false;
   return true;
 }
+
+/**
+ * What `POST /api/projects` should do about a name it has been handed.
+ *
+ * Extracted because this decision was inlined in a 150-line route and could
+ * only be exercised by booting the server — and it is the part that was wrong.
+ * It used to be made by calling `fs.access` on a folder and then reading
+ * `.published.json` out of it, so a fresh database with the old folders still
+ * on disk refused to create projects it had never heard of, naming an Azure
+ * DevOps target it could not see.
+ *
+ * The input is now the project ROW (or its absence), which is the record.
+ *
+ *   create          — nothing holds this name; make it
+ *   exists          — a fully set-up project holds it; refuse
+ *   slug_collision  — an INCOMPLETE project holds the slug, but the caller
+ *                     typed something else that slugged onto it; refuse
+ *   complete        — an INCOMPLETE project holds it and the caller typed it
+ *                     exactly; finish setting it up
+ *
+ * The `slug_collision` case is the subtle one and is deliberately a refusal.
+ * Completing a project rewrites its Azure DevOps target and its branding, so
+ * it has to be the project the caller actually meant — and `SA Demo` and
+ * `SA-Demo` are two different projects that exist side by side in this
+ * install. Adopting one because a typed name happened to slug onto it would
+ * hand one client's tree another client's target, in a route that reports
+ * success.
+ */
+export type CreateDecision = "create" | "exists" | "slug_collision" | "complete";
+
+export function decideCreate(input: {
+  /** The row holding the slugged name, or null when nothing does. */
+  existing: { ado_target?: Record<string, unknown> | null } | null;
+  /** What the caller typed, before slugging. */
+  requested: string;
+  /** What it slugs to — the name that would be created. */
+  project: string;
+}): CreateDecision {
+  if (!input.existing) return "create";
+  // A target with no `project` in it is not a target: an Azure DevOps setup
+  // that half-succeeded leaves the project incomplete, not taken.
+  const target = input.existing.ado_target as { project?: string } | null | undefined;
+  if (target?.project) return "exists";
+  return input.requested === input.project ? "complete" : "slug_collision";
+}

@@ -3,14 +3,60 @@
 Everything below is driven from **Codex**, through this plugin. For the server
 itself — installing, claiming the installation, users, budgets — see
 [`SETUP.md`](../../SETUP.md) and [`SETUP-RUN.md`](../../SETUP-RUN.md) at the
-repo root. This file assumes those are done and picks up from "the stack is
-installed, now use it".
+repo root. This file assumes those are done and picks up at getting the plugin
+into Codex.
 
 Paths are relative to the repo root unless stated.
 
 ---
 
-## 1 · Start everything
+## 1 · Install the plugin into Codex
+
+Once per machine, from the **repo root** — `.agents/plugins/marketplace.json`
+registers this repo as a marketplace named `scyne`, and the plugin is installed
+out of it:
+
+```bash
+codex plugin marketplace add .                 # registers the marketplace `scyne`
+codex plugin add azure-file-processing@scyne   # installs the plugin from it
+codex plugin list | grep scyne                 # → installed, enabled  0.6.0
+```
+
+A clone somewhere else takes the same two steps with a Git source instead of
+`.`:
+
+```bash
+codex plugin marketplace add <git-url> --ref main
+codex plugin add azure-file-processing@scyne
+```
+
+> **`add` COPIES the plugin** into
+> `~/.codex/plugins/cache/scyne/azure-file-processing/<version>/`, and that copy
+> is what Codex loads — not the working tree. So an edit to
+> `skills/scyne/SKILL.md` or to `.mcp.json` does nothing until you re-run
+> `codex plugin add azure-file-processing@scyne`, which overwrites the cache in
+> place. The two MCP servers are a different matter: they run from the REPO
+> (§2), so a change under `src/` needs only a restart of `stack.sh`.
+
+Then install the plugin's own dependencies — `stack.sh` starts both servers with
+`./node_modules/.bin/tsx` and will not run without them:
+
+```bash
+cd plugins/azure-file-processing && npm install
+```
+
+### Removing it
+
+```bash
+codex plugin remove azure-file-processing@scyne   # config entry + the cached copy
+codex plugin marketplace remove scyne             # deregister the marketplace
+```
+
+Neither touches anything in the repo.
+
+---
+
+## 2 · Start everything
 
 Four processes, in two commands, in this order.
 
@@ -61,12 +107,12 @@ cd plugins/azure-file-processing && ./scripts/stack.sh down   # ⚠ see below
 
 ---
 
-## 2 · The whole flow
+## 3 · The whole flow
 
 In Codex, type `$scyne <verb>` — `$`, not `/`. Plain English works identically
 ("run the capability map for SAPN"); the verbs are just the precise form.
 
-### 2.1 Create the project
+### 3.1 Create the project
 
 ```
 $scyne new project "SA Power Networks"
@@ -99,7 +145,7 @@ regulated by the AER, serving 900,000 homes and businesses…"
 
 Minimum 40 characters. Ask once; never block a run on it.
 
-### 2.2 Upload the project's client-wide documents
+### 3.2 Upload the project's client-wide documents
 
 Client-wide policy, legislation, standards, current-state architecture:
 
@@ -122,7 +168,7 @@ $scyne docs                 # what the project holds now
 $scyne extracts             # …and whether it is ready to be read by a stage
 ```
 
-### 2.3 Wait for extraction, then the capability map
+### 3.3 Wait for extraction, then the capability map
 
 **There is no extract step to run.** Uploading starts it: all three upload
 routes spawn `extract-documents.mjs` the moment a document lands, detached, so
@@ -156,7 +202,7 @@ $scyne run extract          # idempotent catch-up; raises its own gate
 Produces the Business Capability Map and the L1/L2/L3 Process Model, and on
 approval publishes to the project's Azure DevOps wiki.
 
-### 2.4 Personas
+### 3.4 Personas
 
 ```
 $scyne run personas
@@ -164,7 +210,7 @@ $scyne run personas
 
 Requires the capability map — journey stages align to its L1 lifecycle phases.
 
-### 2.5 Create a feature
+### 3.5 Create a feature
 
 ```
 $scyne new feature "CRM Management"
@@ -175,7 +221,7 @@ Feature names MAY contain spaces. Reserved names (`capabilities`, `personas`,
 `app`, `all`, `baseline`, `solutions`, `documents`, `design`, `original-files`,
 `outputs`) are refused with the reason.
 
-### 2.6 Upload the feature's discovery documents
+### 3.6 Upload the feature's discovery documents
 
 **`kind` is a real decision, not filing.** The folder is what the pipeline
 reads: the BA treats `Transcripts/` as the source of stories and `SOP/` as
@@ -198,7 +244,7 @@ $scyne upload /Users/you/screens/current-case-view.png ui
 Omitting `kind` on a feature document risks `ambiguous_kind` — the router only
 infers from the filename.
 
-### 2.7 Requirements, then the rest
+### 3.7 Requirements, then the rest
 
 ```
 $scyne run requirements
@@ -218,7 +264,7 @@ $scyne run qa              # test cases + traceability matrix
 
 Each raises its own gate and publishes on approval.
 
-### 2.8 The companion app
+### 3.8 The companion app
 
 ```
 $scyne run app
@@ -241,7 +287,7 @@ name; most features need only the architecture.
 
 ---
 
-## 3 · Watching, approving, controlling
+## 4 · Watching, approving, controlling
 
 ### What is waiting on me
 
@@ -352,7 +398,7 @@ empty table.
 
 ---
 
-## 4 · Reading a large document without running a stage
+## 5 · Reading a large document without running a stage
 
 Separate from the pipeline. Ask a question of a 2 GB PDF without any of it
 entering the conversation:
@@ -367,11 +413,11 @@ is filed into a project — use `$scyne upload` for that.
 
 ---
 
-## 5 · When it goes wrong
+## 6 · When it goes wrong
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `$scyne` not offered in Codex | Thread started before the stack came up, or plugin not installed | New thread. `codex plugin list` should show `azure-file-processing@scyne  installed, enabled` |
+| `$scyne` not offered in Codex | Thread started before the stack came up, or the plugin is not installed | Start a new thread. `codex plugin list` should show `azure-file-processing@scyne  installed, enabled` — if it does not, or shows a stale version, §1 |
 | `not_authenticated` | `SCYNE_ORCH_TOKEN` unset in the **workspace-root** `.env` | Set it, restart the workspace server |
 | `cannot reach the orchestrator` / `the Scyne chatbot` | `npm run dev` is not running | Start it |
 | `documents_not_ready` | Extraction is still running, or one document failed. It starts automatically on upload | `$scyne extracts`. Usually just wait. `$scyne run extract` only if a document arrived outside the upload routes |
@@ -396,7 +442,7 @@ DB row written, then searched back to page 1450), documents listed and deleted,
 the stage catalogue read live from the server (26 stages), and every read-only
 verb answering against live data.
 
-**Not yet run end to end: a real agent stage.** Sections 2.3 through 2.8 are
+**Not yet run end to end: a real agent stage.** Sections 3.3 through 3.8 are
 written from the pipeline definition and the workflow compiler, not from a
 completed run — each stage costs roughly twenty-five minutes and real money, and
 that spend was deliberately left for you to authorise. Expect the shape to hold

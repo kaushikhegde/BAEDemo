@@ -7,7 +7,7 @@
 // about to reject, and the suggestion the server sent back was never shown.
 
 import { describe, it, expect } from "vitest";
-import { slugProjectName, isNewProjectName } from "./names.js";
+import { slugProjectName, isNewProjectName, decideCreate } from "./names.js";
 
 describe("slugProjectName", () => {
   it("hyphenates the spaces a person naturally types", () => {
@@ -80,5 +80,56 @@ describe("isNewProjectName", () => {
 
   it("rejects nothing at all", () => {
     expect(isNewProjectName("")).toBe(false);
+  });
+});
+
+/**
+ * The project-exists decision, which used to be `fs.access` on a folder.
+ *
+ * It is here rather than in a route test because the input is now the project
+ * ROW: the whole point of the change is that a directory no longer decides
+ * whether a project exists. These are the four states, and the ones that
+ * matter are the two that are NOT simple.
+ */
+describe("decideCreate", () => {
+  const complete = { ado_target: { org: "Scyne-AI-Lab", project: "SA-Demo" } };
+  const incomplete = { ado_target: null };
+
+  it("creates when no row holds the name", () => {
+    expect(decideCreate({ existing: null, requested: "SA Demo", project: "SA-Demo" })).toBe("create");
+  });
+
+  it("refuses when a fully set-up project holds it", () => {
+    expect(decideCreate({ existing: complete, requested: "SA-Demo", project: "SA-Demo" })).toBe("exists");
+  });
+
+  it("completes an incomplete project when the caller typed its name exactly", () => {
+    // This is the state a failed Azure DevOps setup leaves behind, and this
+    // route is the only thing that can repair it — so it must not be refused.
+    expect(decideCreate({ existing: incomplete, requested: "SA-Demo", project: "SA-Demo" })).toBe("complete");
+  });
+
+  it("refuses to complete a project the caller only SLUGGED onto", () => {
+    // `SA Demo` and `SA-Demo` are two different projects that exist side by
+    // side in this install. Completing one rewrites its Azure DevOps target
+    // and its branding, so adopting it because a typed name happened to slug
+    // onto it would hand one client's tree another client's target.
+    expect(decideCreate({ existing: incomplete, requested: "SA Demo", project: "SA-Demo" }))
+      .toBe("slug_collision");
+  });
+
+  it("treats a target with no project in it as no target", () => {
+    // A half-succeeded setup leaves an object, not a usable target. Reading
+    // truthiness on the object rather than on `.project` would call that
+    // project taken and strand it permanently.
+    for (const half of [{}, { org: "Scyne-AI-Lab" }, { project: "" }]) {
+      expect(decideCreate({ existing: { ado_target: half }, requested: "X", project: "X" }))
+        .toBe("complete");
+    }
+  });
+
+  it("treats an absent ado_target field the same as a null one", () => {
+    // A row read back from an API that omits nulls must not read as complete.
+    expect(decideCreate({ existing: {}, requested: "X", project: "X" })).toBe("complete");
   });
 });

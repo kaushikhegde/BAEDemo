@@ -1297,7 +1297,7 @@ paths:
         "401": { description: Authentication required }
     post:
       operationId: createProject
-      summary: Create a project. The creator becomes its owner.
+      summary: Create a project. The creator becomes its owner. An `adoTarget` may be supplied at creation; without one the project is INCOMPLETE until a later PATCH sets it.
       responses:
         "201":
           description: OK
@@ -1315,7 +1315,7 @@ paths:
         "404": { description: Not found, or not visible to the caller }
     patch:
       operationId: updateProject
-      summary: Update a project's description, website or theme. Needs editor.
+      summary: Update a project's description, website, theme or Azure DevOps target. Needs editor.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:

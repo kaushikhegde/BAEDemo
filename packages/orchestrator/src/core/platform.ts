@@ -27,6 +27,12 @@ export interface UserRow {
 export interface ProjectRow {
   id: string; company_id: string; name: string; description: string | null;
   website: string | null; theme: Record<string, unknown>;
+  /**
+   * Azure DevOps org / project / wiki / work item type, or null when the
+   * project has not been set up there yet. Null is the INCOMPLETE state that
+   * re-posting the create route repairs — see 009_project_ado_target.sql.
+   */
+  ado_target: Record<string, unknown> | null;
   created_by: string | null; created_at: string; updated_at: string; archived_at: string | null;
 }
 export interface FeatureRow {
@@ -154,6 +160,29 @@ export interface SpendRow {
 
 const asJson = (v: unknown): Record<string, unknown> =>
   typeof v === "string" ? JSON.parse(v) : ((v ?? {}) as Record<string, unknown>);
+
+/**
+ * Like `asJson`, but a null stays null.
+ *
+ * `ado_target` is the one jsonb column here whose absence MEANS something: a
+ * project with no publish target is incomplete, and re-posting the create
+ * route is what repairs it. Coercing that to `{}` the way `theme` is coerced
+ * would make "never set up" indistinguishable from "set up and empty", which
+ * is exactly the distinction the column was added to record.
+ */
+const asJsonOrNull = (v: unknown): Record<string, unknown> | null =>
+  v == null ? null : (typeof v === "string" ? JSON.parse(v) : (v as Record<string, unknown>));
+
+/**
+ * The one place a `projects` row is turned into a `ProjectRow`.
+ *
+ * Six queries return one, and each used to spread-and-parse `theme` inline. A
+ * seventh jsonb column meant either a seventh copy of that or a column that is
+ * silently a raw string on one driver and an object on another — pglite and
+ * `pg` do not agree on how jsonb comes back.
+ */
+const shapeProject = (r: ProjectRow): ProjectRow =>
+  ({ ...r, theme: asJson(r.theme), ado_target: asJsonOrNull(r.ado_target) });
 
 /**
  * The one implementation of how a name becomes a slug.
@@ -408,14 +437,20 @@ export function createPlatformRepo(db: Db) {
 
     async createProject(input: {
       companyId: string; name: string; description?: string | null;
-      website?: string | null; createdBy?: string | null;
+      website?: string | null; adoTarget?: Record<string, unknown> | null;
+      createdBy?: string | null;
     }): Promise<ProjectRow> {
       const id = newId();
       const { rows } = await db.query<ProjectRow>(
-        `insert into projects (id, company_id, name, description, website, created_by)
-         values ($1,$2,$3,$4,$5,$6) returning *`,
+        `insert into projects (id, company_id, name, description, website, ado_target, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7) returning *`,
         [id, input.companyId, input.name, input.description ?? null,
-         input.website ?? null, input.createdBy ?? null]);
+         input.website ?? null,
+         // Stringified rather than passed as an object: the two drivers this
+         // runs on disagree about how to bind a jsonb parameter, and a string
+         // is the form both accept.
+         input.adoTarget ? JSON.stringify(input.adoTarget) : null,
+         input.createdBy ?? null]);
       // The creator owns what they created. Without this a project is
       // immediately inaccessible to the person who just made it.
       if (input.createdBy) {
@@ -423,12 +458,12 @@ export function createPlatformRepo(db: Db) {
           `insert into project_members (project_id, user_id, role, granted_by)
            values ($1,$2,'owner',$2) on conflict do nothing`, [id, input.createdBy]);
       }
-      return { ...rows[0], theme: asJson(rows[0].theme) };
+      return shapeProject(rows[0]);
     },
 
     async getProject(id: string): Promise<ProjectRow | null> {
       const { rows } = await db.query<ProjectRow>(`select * from projects where id=$1`, [id]);
-      return rows[0] ? { ...rows[0], theme: asJson(rows[0].theme) } : null;
+      return rows[0] ? shapeProject(rows[0]) : null;
     },
 
     /**
@@ -456,7 +491,7 @@ export function createPlatformRepo(db: Db) {
     async getProjectByName(companyId: string, name: string): Promise<ProjectRow | null> {
       const { rows } = await db.query<ProjectRow>(
         `select * from projects where company_id=$1 and name=$2`, [companyId, name]);
-      return rows[0] ? { ...rows[0], theme: asJson(rows[0].theme) } : null;
+      return rows[0] ? shapeProject(rows[0]) : null;
     },
 
     /**
@@ -469,28 +504,35 @@ export function createPlatformRepo(db: Db) {
       if (opts.isAdmin || !opts.userId) {
         const { rows } = await db.query<ProjectRow>(
           `select * from projects where company_id=$1 and archived_at is null order by name`, [companyId]);
-        return rows.map(r => ({ ...r, theme: asJson(r.theme) }));
+        return rows.map(shapeProject);
       }
       const { rows } = await db.query<ProjectRow>(
         `select p.* from projects p join project_members m on m.project_id = p.id
           where p.company_id=$1 and p.archived_at is null and m.user_id=$2 order by p.name`,
         [companyId, opts.userId]);
-      return rows.map(r => ({ ...r, theme: asJson(r.theme) }));
+      return rows.map(shapeProject);
     },
 
     async updateProject(id: string, patch: {
       description?: string | null; website?: string | null; theme?: Record<string, unknown>;
+      adoTarget?: Record<string, unknown> | null;
     }): Promise<ProjectRow | null> {
       const sets: string[] = []; const params: unknown[] = [];
       const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col}=$${params.length}`); };
       if (patch.description !== undefined) set("description", patch.description);
       if (patch.website !== undefined) set("website", patch.website);
       if (patch.theme !== undefined) set("theme", JSON.stringify(patch.theme));
+      // An explicit null CLEARS the target — that is how a project is put back
+      // into the incomplete state deliberately. `undefined` leaves it alone,
+      // which is what every caller not touching the target passes.
+      if (patch.adoTarget !== undefined) {
+        set("ado_target", patch.adoTarget ? JSON.stringify(patch.adoTarget) : null);
+      }
       if (!sets.length) return this.getProject(id);
       params.push(id);
       const { rows } = await db.query<ProjectRow>(
         `update projects set ${sets.join(", ")}, updated_at=now() where id=$${params.length} returning *`, params);
-      return rows[0] ? { ...rows[0], theme: asJson(rows[0].theme) } : null;
+      return rows[0] ? shapeProject(rows[0]) : null;
     },
 
     async archiveProject(id: string): Promise<boolean> {
