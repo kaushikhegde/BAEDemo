@@ -48,9 +48,9 @@ const KNOWN_FLAGS = ["--force", "--no-convert", "--keep-originals", "--from-requ
 // bare `node` dies with ERR_MODULE_NOT_FOUND. NOT `npx tsx` either — on a
 // machine with tsx not cached, npx DOWNLOADS it, putting a network fetch
 // inside a hook that runs before every stage. This repo's own precedent is
-// the plugin-local binary (see plugins/azure-file-processing/scripts/stack.sh).
-const SYNC_TSX = path.join(WORKSPACE, "plugins/azure-file-processing/node_modules/.bin/tsx");
-const SYNC_CLI = path.join(WORKSPACE, "plugins/azure-file-processing/scripts/sync.mjs");
+// the plugin-local binary (see plugins/aws-file-processing/scripts/stack.sh).
+const SYNC_TSX = path.join(WORKSPACE, "plugins/aws-file-processing/node_modules/.bin/tsx");
+const SYNC_CLI = path.join(WORKSPACE, "plugins/aws-file-processing/scripts/sync.mjs");
 
 const PROJECT_STAGE_KEYS = new Set(ordered(LEVEL.PROJECT).map(([k]) => k));
 
@@ -858,7 +858,7 @@ async function syncDownFromBlob(project) {
   try {
     const out = execFileSync(
       SYNC_TSX, [SYNC_CLI, project, "--down", "--root", WORKSPACE],
-      { cwd: path.join(WORKSPACE, "plugins/azure-file-processing"), encoding: "utf8" },
+      { cwd: path.join(WORKSPACE, "plugins/aws-file-processing"), encoding: "utf8" },
     );
     const r = JSON.parse(out.trim());
     console.log(`  synced: pulled ${r.pulled}, skipped ${r.skipped}`);

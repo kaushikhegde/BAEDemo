@@ -38,6 +38,12 @@ npm run dev
 cd plugins/aws-file-processing && ./scripts/stack.sh up
 ```
 
+The repo root drives THIS plugin: `orchestrator.workflows.ts`,
+`scripts/stage.mjs`, `scyne-chatbot/server/index.ts` and `DEMO.sh` all resolve
+the sync CLI out of `plugins/aws-file-processing/`. So every stage's outputs are
+pushed to S3, and a project that exists only in S3 is pulled back down before
+staging.
+
 Four health checks, and all four have to answer:
 
 ```bash

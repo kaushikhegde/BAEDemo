@@ -4,6 +4,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { DeleteBucketCommand } from "@aws-sdk/client-s3";
 import { loadConfig, WORKSPACE } from "../src/shared/config.js";
 import {
@@ -164,14 +165,29 @@ describe("syncStatus", () => {
     // NoSuchBucket rather than returning an empty list. "What's out of sync?"
     // is the first command anyone runs against a brand new workspace, so a
     // first-run-ever must not blow up here.
-    await wipeRemote(); // a bucket must be empty before S3 will delete it
-    await s.s3.send(new DeleteBucketCommand({ Bucket: bucket() }));
+    //
+    // Tested against a bucket name nothing has ever used, NOT by deleting the
+    // shared one. Two reasons, and the first is a genuine S3-vs-Azure
+    // difference: Azure deletes a container whatever is in it, while S3 refuses
+    // to delete a bucket that is not empty — and this bucket is shared with
+    // every other *.int.test.ts file (CLITEST, UPLOADHOOK, HOOKTEST all live
+    // under their own prefixes in it), so `wipeRemote()`'s SYNCTEST-only sweep
+    // can never empty it. Measured: the delete failed with "The bucket you
+    // tried to delete is not empty" the moment this file stopped running alone.
+    // The second reason is that deleting a bucket other files are actively
+    // using would be wrong even if S3 allowed it.
+    const virgin = getStorage({
+      ...cfg,
+      workspaceBucket: `scyne-ws-virgin-${randomUUID().slice(0, 8)}`,
+    });
     try {
-      const st = await syncStatus(s, root, PROJ);
+      const st = await syncStatus(virgin, root, PROJ);
       expect(st).toEqual({ onlyLocal: [], onlyRemote: [], differing: [], same: 0 });
     } finally {
-      // Restore for every test that runs after this one in the file.
-      await ensureWorkspaceBucket(s);
+      // syncStatus created it and nothing wrote to it, so it is empty and S3
+      // will take the delete.
+      await virgin.s3.send(new DeleteBucketCommand({ Bucket: virgin.bucket(WORKSPACE) }))
+        .catch(() => { /* best effort: a leaked empty bucket is litter, not a failure */ });
     }
   });
 });

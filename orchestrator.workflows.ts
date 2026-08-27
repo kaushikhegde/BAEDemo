@@ -352,8 +352,8 @@ function ensureAdoProjectStep(): Step {
 function syncOutputsStep(s: Stage): Step {
   const prefix = s.level === LEVEL.FEATURE ? ` --prefix "{feature}"` : "";
   const sync =
-    `plugins/azure-file-processing/node_modules/.bin/tsx ` +
-    `plugins/azure-file-processing/scripts/sync.mjs "{project}" --up --root "{workspace}"${prefix}`;
+    `plugins/aws-file-processing/node_modules/.bin/tsx ` +
+    `plugins/aws-file-processing/scripts/sync.mjs "{project}" --up --root "{workspace}"${prefix}`;
   return {
     type: "exec",
     label: "Saving this stage's outputs",

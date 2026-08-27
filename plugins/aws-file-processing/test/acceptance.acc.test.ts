@@ -4,7 +4,7 @@ import { mkdtempSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "../src/shared/config.js";
+import { loadConfig, JOB_QUEUE, POISON_QUEUE, type QueueKey } from "../src/shared/config.js";
 import { getStorage, ensureStorage } from "../src/shared/storage.js";
 import { getJob } from "../src/shared/jobs.js";
 import { createUploadUrl } from "../src/orchestrator/tools/create-upload-url.js";
@@ -22,10 +22,41 @@ const dir = mkdtempSync(join(tmpdir(), "afp-acc-"));
 
 const NEEDLE = "PLUTONIUM_ARTICHOKE_7731";  // appears nowhere else on earth
 
+/**
+ * Empty both queues before this suite submits anything.
+ *
+ * The queue is shared with the integration suite, and that suite deliberately
+ * LEAVES messages on it: `worker.int.test.ts` proves that a failed job's
+ * message survives for another attempt rather than being lost, so a broken.pdf
+ * and a deliberately-wrong-checksum job are still sitting there when it
+ * finishes.
+ *
+ * Harmless on their own. Not harmless once this suite restores a three-worker
+ * pool: all three pick those leftovers up, each takes a 300-second visibility
+ * lease, and they churn on documents that can never succeed while this suite's
+ * own job waits behind them. MEASURED — "results stay compact" timed out at
+ * 120s with the pool visibly healthy and processing somebody else's rubbish.
+ *
+ * Best effort, and only at start-up: nothing this suite owns has been submitted
+ * yet, so anything on the queue now belongs to a previous run.
+ */
+const drainQueue = async (key: QueueKey) => {
+  const q = storage.queue(key);
+  for (;;) {
+    const r = await q.receiveMessages({ numberOfMessages: 10, waitTimeSeconds: 1 });
+    if (!r.receivedMessageItems.length) return;
+    for (const m of r.receivedMessageItems) {
+      await q.deleteMessage(m.messageId, m.popReceipt).catch(() => {});
+    }
+  }
+};
+
 beforeAll(async () => {
   await ensureStorage(storage);
   const res = await fetch("http://127.0.0.1:8080/health").catch(() => null);
   if (!res?.ok) throw new Error("Stack is not up. Run ./scripts/stack.sh up first.");
+  await drainQueue(JOB_QUEUE);
+  await drainQueue(POISON_QUEUE);
 });
 
 // Fixtures here run into the hundreds of megabytes (the bounded-memory case

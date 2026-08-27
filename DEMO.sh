@@ -4,8 +4,8 @@
 # SAFE: this never touches projects/. It restores into a throwaway root under
 # /tmp, which is also the more honest demo — it is what a NEW machine sees.
 set -e
-TSX=plugins/azure-file-processing/node_modules/.bin/tsx
-CLI=plugins/azure-file-processing/scripts/sync.mjs
+TSX=plugins/aws-file-processing/node_modules/.bin/tsx
+CLI=plugins/aws-file-processing/scripts/sync.mjs
 P="${1:-SAPN_DEMO}"
 FRESH=/tmp/scyne-fresh-machine
 q() { python3 -m json.tool; }

@@ -2314,9 +2314,9 @@ function isSafeSegment(name: string): boolean {
 // bare `node` dies with ERR_MODULE_NOT_FOUND. NOT `npx tsx` either — on a
 // machine with tsx not cached, npx DOWNLOADS it, which has no place inside a
 // route that runs on every upload. This repo's own precedent is the
-// plugin-local binary (see plugins/azure-file-processing/scripts/stack.sh).
-const SYNC_TSX = path.join(WORKSPACE_PATH, "plugins/azure-file-processing/node_modules/.bin/tsx");
-const SYNC_CLI = path.join(WORKSPACE_PATH, "plugins/azure-file-processing/scripts/sync.mjs");
+// plugin-local binary (see plugins/aws-file-processing/scripts/stack.sh).
+const SYNC_TSX = path.join(WORKSPACE_PATH, "plugins/aws-file-processing/node_modules/.bin/tsx");
+const SYNC_CLI = path.join(WORKSPACE_PATH, "plugins/aws-file-processing/scripts/sync.mjs");
 
 /**
  * Push this project's tree to blob after an upload.
@@ -2327,7 +2327,7 @@ const SYNC_CLI = path.join(WORKSPACE_PATH, "plugins/azure-file-processing/script
  * reported rather than thrown.
  */
 function syncProjectToBlob(project: string): void {
-  const cwd = path.join(WORKSPACE_PATH, "plugins/azure-file-processing");
+  const cwd = path.join(WORKSPACE_PATH, "plugins/aws-file-processing");
   execFile(SYNC_TSX, [SYNC_CLI, project, "--up", "--root", WORKSPACE_PATH],
     { cwd },
     (err, stdout) => {

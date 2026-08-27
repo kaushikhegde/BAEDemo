@@ -194,15 +194,31 @@ npm run test:integration        # against LocalStack
 npm run test:acceptance         # end to end, including the bounded-memory job
 ```
 
-**Measured on this port:** 188 unit tests pass with no infrastructure at all;
-144 integration tests pass against LocalStack alone. One integration file,
-`orchestrator-tools.int.test.ts`, additionally needs the Scyne stack (`npm run
-dev` at the repo root) and fails loudly rather than skipping when it is not
-there — a silently skipped integration suite is a green build that proves
-nothing. The acceptance suite needs the Docker worker pool and has not been run
-on this port; its fixture sizes and the ~84% scan boundary it asserts are
-figures inherited from the Azure build (the code paths that decide them are
-unchanged, but they are not re-measured).
+**Measured on this port, all green:**
+
+| Suite | Result | Needs |
+|---|---|---|
+| unit | **188/188** | nothing |
+| integration | **167/167** | LocalStack; four files also need the Scyne stack (`npm run dev`) |
+| acceptance | **5/5**, 351 s | LocalStack + the 3-worker Docker pool + the file plane on :8080 |
+
+A suite that cannot reach its dependencies fails loudly rather than skipping — a
+silently skipped integration suite is a green build that proves nothing.
+
+The acceptance run re-confirms the inherited figures rather than assuming them:
+the bounded-memory fixture is the same 634,596,908 bytes, and a worker capped at
+`--max-old-space-size=256` processed all 40,000 pages of it with no heap
+exhaustion, with the job attributed to that capped worker rather than to the
+pool.
+
+**The two suites share one queue, and the acceptance suite drains it first.**
+`worker.int.test.ts` deliberately leaves a failed job's message on the queue —
+that is the property it is proving. Harmless until the acceptance suite restores
+a three-worker pool, at which point all three pick those leftovers up, take a
+300-second visibility lease each and churn on documents that can never succeed
+while the acceptance suite's own job waits behind them. Measured: "results stay
+compact" timed out at 120 s with the pool visibly healthy and processing the
+previous suite's rubbish.
 
 After changing anything the model reads — a tool description, `SKILL.md`,
 `commands/scyne.md` — restart the servers and then start a **new Claude Code
@@ -335,28 +351,47 @@ bounded-memory guarantee and the acceptance suite are all the same. So is the
 rule the whole thing exists for: **a document's contents never enter a tool
 response.**
 
-### Three tests deliberately not ported
+### `dual-write.int.test.ts` reuses the Azure suite's project names
 
-`plugins/azure-file-processing/test/` has three files this plugin does not:
+It calls `createProject` against the live chatbot, which really does create an
+Azure DevOps project on the client's tenant. The Azure suite's first run left two
+standing in `Scyne-AI-Lab` — `PLUGIN-DUALWRITE-TEST` and
+`PLUGIN-DUALWRITE-TEST-Two`.
 
-- **`dual-write.int.test.ts`** — it calls `createProject` against the live
-  chatbot, which really does create an Azure DevOps project on the client's
-  tenant. That suite's own header records two stray projects it left in
-  `Scyne-AI-Lab` on its first run and states that it deliberately never cleans
-  up. Porting it would mean a second suite able to create client-tenant
-  resources, so it is left where it is rather than duplicated.
-- **`upload-hook.int.test.ts`** and **`stage-hook.int.test.ts`** — both assert
-  the REPO ROOT's wiring (`scyne-chatbot/server/index.ts`'s sync hook and
-  `scripts/stage.mjs`), which still points at the Azure plugin. See below.
-  `sync-cli.int.test.ts` covers this plugin's own CLI over the same code path.
+This port therefore reuses those **exact** names rather than namespacing its own.
+`ensureAdoProject` is check-then-create, so running against a name that already
+exists reuses that project and creates nothing new. **Renaming `NAME` would
+create a third stray project on a client's tenant**, and that file's header is
+the only thing standing between somebody and doing it.
 
-### Not rewired
+Two assertions in it were stale and are corrected here: they checked for `db` and
+`dbError` on `createProject`/`createFeature`, which the implementation
+deliberately stopped returning — the database write is fatal (`502
+db_unavailable`), so a result that came back at all had a row written, and the
+detail is logged for the operator instead of handed to a caller who cannot act on
+it.
 
-The repo root still points its workflow sync step, `scripts/stage.mjs`,
-`DEMO.sh` and `.agents/plugins/marketplace.json` at
-`plugins/azure-file-processing`. This plugin is installed **alongside** it and
-changes nothing about the running system. Switching the root over is a separate,
-deliberate edit.
+### Rewired
+
+The repo root now drives THIS plugin. Four sites changed, all of them the same
+subprocess call to the sync CLI:
+
+| File | What |
+|---|---|
+| `orchestrator.workflows.ts` | `syncOutputsStep` — the step appended to every compiled workflow |
+| `scripts/stage.mjs` | the sync-down before staging |
+| `scyne-chatbot/server/index.ts` | `syncProjectToBlob`, the upload routes' hook |
+| `DEMO.sh` | the demo's own `TSX`/`CLI` pair |
+
+`test/stage-hook.int.test.ts` and `test/upload-hook.int.test.ts` prove it end to
+end: a project pushed to S3, deleted from disk, and recovered by `stage.mjs`
+alone.
+
+Both marketplaces are registered and neither disturbs the other —
+`.claude-plugin/marketplace.json` carries this plugin for Claude Code,
+`.agents/plugins/marketplace.json` carries both entries with `products` naming
+which client each is for. The Azure plugin still has its `.codex-plugin/`
+manifest and still loads in Codex; it is simply no longer what the root calls.
 
 ## Known limits
 
