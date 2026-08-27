@@ -18,6 +18,25 @@
         "wit_work_item_write",
         "wit_work_item_link_write"
       ]
+    },
+    "atlassian": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.atlassian.com/v1/sse"
+      ],
+      "autoApproveTools": [
+        "getConfluenceSpaces",
+        "getConfluencePage",
+        "getPagesInConfluenceSpace",
+        "createConfluencePage",
+        "updateConfluencePage",
+        "searchConfluenceUsingCql",
+        "getJiraProjectIssueTypesMetadata",
+        "getJiraIssue",
+        "searchJiraIssuesUsingJql"
+      ]
     }
   }
 }

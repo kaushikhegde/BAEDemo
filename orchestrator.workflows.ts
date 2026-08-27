@@ -158,7 +158,151 @@ const parentPagesTpl = (s: Stage): string[] => {
   return parts.map((_, i) => "/" + parts.slice(0, i + 1).join("/"));
 };
 
+/**
+ * Which system this installation publishes to.
+ *
+ * Two are live: `atlassian` (Confluence pages + Jira issues) and `ado` (wiki
+ * pages + work items). Read once, at compile time, because a workflow's steps
+ * are fixed strings built when the process boots — the same way `defaultAdapter`
+ * decides which CLI runs the agents.
+ *
+ * A PROJECT can still disagree with the install, and that is handled where it
+ * can be: every publishing SCRIPT resolves the target per project from
+ * `.published.json` (see `resolvePublishTarget` in scripts/lib/publish-shared.mjs),
+ * so a project already publishing to Azure DevOps keeps doing so. What a
+ * compiled prompt cannot do is describe both systems without doubling in
+ * length, so `ensurePublishTargetStep` below fails LOUDLY on a mismatch rather
+ * than letting a run publish half a pack into the wrong place.
+ */
+const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
+if (PUBLISH_TARGET !== "atlassian" && PUBLISH_TARGET !== "ado") {
+  throw new Error(
+    `PUBLISH_TARGET='${PUBLISH_TARGET}' is not a known target — expected 'atlassian' or 'ado'.`);
+}
+
+/**
+ * The Confluence page title for an artefact.
+ *
+ * Confluence has no page PATH the way an ADO wiki does — a page is identified
+ * by id, and titles must be unique WITHIN A SPACE. So the feature has to be in
+ * the title or two features would collide on a stage name, which is exactly
+ * what `wikiPathTpl` uses the path segment for.
+ *
+ * This is a FIRST-publish title only. An artefact already recorded in
+ * `.published.json` keeps the page id it was published to — see `resolvePageId`
+ * in `scripts/lib/atlassian.mjs`. That matters more here than on ADO: a
+ * Confluence title can be edited in the UI by anybody, so title lookup alone
+ * would eventually publish a duplicate beside a page somebody had renamed.
+ */
+const pageTitleTpl = (s: Stage): string =>
+  isProject(s) ? s.label : `{feature} — ${s.label}`;
+
+function confluencePublishPrompt(key: string, s: Stage): string {
+  const stories = key === "requirements";
+  return [
+    `A human has APPROVED the ${s.label} for ${scope(s)}. Publish it to`,
+    `Confluence.`,
+    ``,
+    `## Where`,
+    ``,
+    `- **Space**: the \`confluenceSpace\` parameter below if one is listed,`,
+    `  otherwise the \`atlassianTarget.space\` recorded in`,
+    `  \`projects/{project}/.published.json\`. There is no environment fallback:`,
+    `  ONE space for the whole installation is exactly what per-project targets`,
+    `  replaced, and guessing one would publish a client's document into another`,
+    `  client's space. If neither is present, STOP and say the project has no`,
+    `  Confluence target.`,
+    `- **Page title**: \`${pageTitleTpl(s)}\``,
+    `  Keep it identical between runs, and do not "tidy" it.`,
+    ``,
+    `## How`,
+    ``,
+    `Run this. Do not read the document, and do not pass it through a tool call:`,
+    ``,
+    `    node scripts/confluence-publish.mjs ${primaryDoc(s)} \\`,
+    `      --title "${pageTitleTpl(s)}" \\`,
+    `      --render-mermaid \\`,
+    `      --published-json projects/{project}/.published.json \\`,
+    `      --artefact-key "${artefactKeyTpl(key, s)}"`,
+    ``,
+    `It reads the space from the recorded target, converts the markdown to`,
+    `Confluence storage format, resolves the page by its recorded id (so a`,
+    `revision UPDATES rather than creating a second page), and records the id`,
+    `and URL back into \`.published.json\`.`,
+    ``,
+    `### Why this is a script and not a tool call`,
+    ``,
+    `Two things the MCP cannot do, and the second is the one that bites:`,
+    ``,
+    `1. **Size.** Measured on run SCY-6: a 110 KB document passed to a`,
+    `   publishing tool call was read three times while the call was assembled,`,
+    `   triggered a context compaction thirteen minutes in, and ended in a loop`,
+    `   that published nothing — $2.73 for no page. Moving bytes is not a`,
+    `   reasoning task.`,
+    `2. **Attachments.** Confluence does NOT render \`\`\`mermaid fences the way an`,
+    `   Azure DevOps wiki does. Every diagram has to be rendered to PNG and`,
+    `   ATTACHED to the page, and the MCP's OAuth grant carries no attachment`,
+    `   scope at all — \`POST .../child/attachment\` answers 401 "scope does not`,
+    `   match" whichever host it is sent to, and re-authorising does not add it.`,
+    `   \`--render-mermaid\` does the render and the upload in one pass, over the`,
+    `   API token.`,
+    ``,
+    `   This is why a page must never be published by hand-converting the`,
+    `   markdown: it publishes looking complete, with its diagrams SILENTLY`,
+    `   missing, which is worse than not publishing.`,
+    ``,
+    `You may use the Atlassian MCP to LOOK at the space — confirm it exists, find`,
+    `a parent page — but the page body goes through the script.`,
+    ``,
+    `## Record where it went`,
+    ``,
+    `The script writes the page id and URL into`,
+    `\`projects/{project}/.published.json\` under`,
+    `\`atlassian.${artefactKeyTpl(key, s)}\` itself, so a later revision updates`,
+    `this page rather than creating a second one. If you publish some other way,`,
+    `you must write that record yourself — including the \`url\` field.`,
+    ...(stories ? [
+      ``,
+      `## The backlog is not yours to create`,
+      ``,
+      `This stage delivers two things — this page, and one Jira issue per story.`,
+      `You publish the page. You do NOT create the issues: the step immediately`,
+      `after this one runs \`scripts/jira-issues.mjs\`, which reads`,
+      `\`projects/{project}/{feature}/outputs/stories.json\`, discovers the`,
+      `project's issue type, substitutes the Confluence URL, creates or UPDATES`,
+      `each issue, and writes every new key back into that file.`,
+      ``,
+      `That used to be a loop of tool calls, and it is not one any more because`,
+      `of how it failed. Measured on SA-Power-Networks: 45 stories, the page`,
+      `published, **zero** items created, and the turn finished normally — exit`,
+      `0. An exit code says a model stopped talking; it has never said the work`,
+      `happened. Forty-five sequential tool calls in one turn is not a reasoning`,
+      `task, and the one part of it that cannot be undone — a duplicated backlog`,
+      `in a client's project — is the part a retry makes worse.`,
+      ``,
+      `So do not create Jira issues at all. What the next step needs from you is`,
+      `the record described above: it reads the page URL back out of`,
+      `\`.published.json\`, so **the \`url\` field must be there**.`,
+    ] : []),
+    ``,
+    `## Finish`,
+    ``,
+    `Print the Confluence page URL on a line of its own as the last thing you`,
+    `output. Do not change any issue status — the orchestrator moves the issue`,
+    `on when you exit cleanly.`,
+  ].join("\n");
+}
+
+/** Dispatches on the installation's publish target. Each back end gets its own
+ *  prompt rather than one prompt with branches in it: a prompt that describes
+ *  two systems is a prompt in which a model picks the wrong one. */
 function publishPrompt(key: string, s: Stage): string {
+  return PUBLISH_TARGET === "atlassian"
+    ? confluencePublishPrompt(key, s)
+    : adoPublishPrompt(key, s);
+}
+
+function adoPublishPrompt(key: string, s: Stage): string {
   const stories = key === "requirements";
   return [
     `A human has APPROVED the ${s.label} for ${scope(s)}. Publish it to the`,
@@ -315,6 +459,42 @@ function ensureAdoProjectStep(): Step {
 }
 
 /**
+ * Confirm the project's publish target BEFORE anything tries to write to it.
+ *
+ * Two jobs in one step, and the second is the reason it exists at all:
+ *
+ *   · the space is there, and the credential can see it — the Atlassian
+ *     counterpart of `ensure-ado-project.mts`, and for the same reason. A
+ *     capability-map publish once failed its verifier with "the project does
+ *     not exist", after a human had approved a document that then had nowhere
+ *     to go.
+ *
+ *   · the project's RECORDED target matches this installation's. A workflow's
+ *     prompt is a fixed string compiled at boot from `PUBLISH_TARGET`, so a
+ *     project carrying an `adoTarget` under an Atlassian install would be
+ *     handed Confluence instructions while its scripts resolved Azure DevOps —
+ *     half a pack in each system, which is worse than either. Refusing here
+ *     costs nothing; the fix is to run that project with the matching
+ *     PUBLISH_TARGET.
+ *
+ * BEFORE the publish, deliberately, not inside the verifier: a judge that
+ * repairs what it is judging cannot fail it.
+ */
+function ensureConfluenceSpaceStep(): Step {
+  return {
+    type: "exec",
+    label: "Making sure the Confluence space exists",
+    cmd: `node scripts/ensure-confluence-space.mjs "{project}"`,
+    timeoutMs: 5 * MINUTES,
+  };
+}
+
+/** The right pre-publish check for whichever back end this install uses. */
+function ensurePublishTargetStep(): Step {
+  return PUBLISH_TARGET === "atlassian" ? ensureConfluenceSpaceStep() : ensureAdoProjectStep();
+}
+
+/**
  * Push a stage's outputs to blob.
  *
  * Blob is the source of truth for projects/; the local tree is a cache. An
@@ -396,10 +576,18 @@ function syncOutputsStep(s: Stage): Step {
  * spending another publish agent.
  */
 function createWorkItemsStep(key: string, s: Stage): Step {
+  // Same arguments either way — both scripts read the stories file, resolve the
+  // published page URL back out of `.published.json`, and write their created
+  // ids into the stories file so a re-run updates rather than duplicating. Only
+  // the binary differs, which is what makes this a one-line branch rather than
+  // two step builders.
+  const script = PUBLISH_TARGET === "atlassian"
+    ? "scripts/jira-issues.mjs"
+    : "scripts/ado-workitems.mjs";
   return {
     type: "exec",
-    label: "Creating the work items",
-    cmd: `node scripts/ado-workitems.mjs "projects/{project}/{feature}/outputs/stories.json"` +
+    label: PUBLISH_TARGET === "atlassian" ? "Creating the Jira issues" : "Creating the work items",
+    cmd: `node ${script} "projects/{project}/{feature}/outputs/stories.json"` +
          ` --published-json "projects/{project}/.published.json"` +
          ` --artefact-key "${artefactKeyTpl(key, s)}"`,
     timeoutMs: 15 * MINUTES,
@@ -412,7 +600,13 @@ function verifyPublishStep(key: string, s: Stage, publishStepIndex: number): Ste
     label: "Confirming the page is really there",
     cmd: `node scripts/verify-published.mjs "{project}"` +
          ` --artefact "${artefactKeyTpl(key, s)}"` +
-         ` --path "${wikiPathTpl(s)}"` +
+         // The page's IDENTITY, and the two systems name it differently: an
+         // ADO wiki page is a path, a Confluence page is a title within a
+         // space. Passing the wrong one would make the verifier look for a
+         // page that was never going to be there and fail every publish.
+         (PUBLISH_TARGET === "atlassian"
+           ? ` --title "${pageTitleTpl(s)}"`
+           : ` --path "${wikiPathTpl(s)}"`) +
          // The requirements stage is the only one whose deliverable is a page
          // AND a backlog, and the backlog half had nothing checking it: a
          // published page with zero work items closed the issue green.
@@ -463,7 +657,7 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   }
 
   if (s.publishes) {
-    steps.push(ensureAdoProjectStep());
+    steps.push(ensurePublishTargetStep());
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -570,7 +764,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     });
   }
   if (s.publishes) {
-    steps.push(ensureAdoProjectStep());
+    steps.push(ensurePublishTargetStep());
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -632,7 +826,7 @@ export function publishWorkflow(key: string, s: Stage): WorkflowDef {
       ].join("\n"),
     },
   ];
-  steps.push(ensureAdoProjectStep());
+  steps.push(ensurePublishTargetStep());
   const publishAt = steps.length;
   steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
   // Requirements is the only stage delivering a backlog as well as a page.

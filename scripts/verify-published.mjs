@@ -40,9 +40,18 @@
  *        [--stories <stories.json>]
  *        [--org <org>] [--project <adoProject>] [--wiki <wiki>]
  *
- * `--artefact` is the key under `ado.` in `.published.json` — matching
- * `artefactKeyTpl` in orchestrator.workflows.ts (`capabilities`, or
+ *   node scripts/verify-published.mjs <project> --artefact "<key>" --title "<page title>"
+ *        [--stories <stories.json>]
+ *
+ * `--artefact` is the key under `ado.` / `atlassian.` in `.published.json` —
+ * matching `artefactKeyTpl` in orchestrator.workflows.ts (`capabilities`, or
  * `<feature>/datamodel`).
+ *
+ * WHICH SYSTEM IT CHECKS is the project's own, resolved from `.published.json`
+ * rather than from a flag — so a verify can never check a different system than
+ * the publish wrote to, which is precisely the hole this script exists to
+ * close. A Confluence page is identified by a TITLE within a space where an ADO
+ * page is identified by a PATH, so the two take different identity flags.
  *
  * Exit 0 = the page is really there. Non-zero = the issue blocks, with the
  * reason, which is the entire point.
@@ -52,6 +61,10 @@ import fsp from "node:fs/promises";
 import process from "node:process";
 import { API, adoFetch, loadAdo, parseArgs, projectPath, readAdoTarget, readPublished }
   from "./lib/ado.mjs";
+import { resolvePublishTarget } from "./lib/publish-shared.mjs";
+import {
+  atlassianFetch, loadAtlassian, readAtlassianTarget, CONFLUENCE_V2,
+} from "./lib/atlassian.mjs";
 
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const project = positional[0];
@@ -67,6 +80,141 @@ if (!project)   die(`No Scyne project. Usage: verify-published.mjs <project> --a
 if (!artefact)  die(`No --artefact key to look for in .published.json.`);
 
 const publishedFile = `projects/${project}/.published.json`;
+
+const wantedTitle = flags.title ? String(flags.title) : "";
+
+// Resolved from the PROJECT, never from a flag: a verifier that could be
+// pointed at a different system than the publish used would be checking
+// something nobody published to, and passing.
+const TARGET = await resolvePublishTarget({ publishedFile });
+
+if (TARGET === "atlassian") {
+  // ------------------------------------------------------------ 1. local
+  const published = await readPublished(publishedFile);
+  const record = published?.atlassian?.[artefact];
+
+  if (!record) {
+    die([
+      `The ${artefact} publish left no record, so it did not publish.`,
+      ``,
+      `  expected: ${publishedFile}`,
+      `            → atlassian.${JSON.stringify(artefact)}`,
+      ``,
+      `The agent step exited 0, but an agent exits 0 when it finishes TALKING —`,
+      `including when what it had to say was that it could not reach Confluence.`,
+      `Read the publish run's transcript: the real error is in there.`,
+    ].join("\n"));
+  }
+
+  console.log(`  ✓ ${publishedFile} records atlassian.${artefact}`);
+  if (record.title) console.log(`    title: ${record.title}`);
+  if (record.url)   console.log(`    url:   ${record.url}`);
+
+  if (wantedTitle && record.title && record.title !== wantedTitle) {
+    die([
+      `The recorded page title is not the one this stage publishes to.`,
+      ``,
+      `  recorded: ${record.title}`,
+      `  expected: ${wantedTitle}`,
+      ``,
+      `A revision republished under a different title leaves the client holding`,
+      `two documents that disagree, and nothing downstream can tell which is`,
+      `current.`,
+    ].join("\n"));
+  }
+
+  // ----------------------------------------------------------- 2. remote
+  // `soft: true` — a missing credential must DOWNGRADE this check, not block
+  // the issue. `loadAtlassian` calls process.exit otherwise, which a try/catch
+  // cannot soften.
+  const atlTarget = await readAtlassianTarget(publishedFile);
+  const creds = await loadAtlassian({
+    space: atlTarget?.space, jiraProject: atlTarget?.jiraProject, soft: true,
+  });
+
+  if (!creds?.auth) {
+    console.log(
+      `\n  ! NOT VERIFIED AGAINST CONFLUENCE — no credential is configured here.\n` +
+      `    Only the local record was checked, and that file is written by the\n` +
+      `    same agent whose work it vouches for. Set ATLASSIAN_SITE_URL,\n` +
+      `    ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN to make this check mean\n` +
+      `    something.\n`);
+    process.exit(0);
+  }
+
+  if (!record.pageId) {
+    die(`No pageId recorded for ${artefact}, so there is nothing to look up.`);
+  }
+
+  // A page moved to the trash still resolves unless its status is checked:
+  // Confluence keeps trashed pages addressable by id, so a page a client
+  // deleted would verify green without this.
+  const page = await atlassianFetch(creds, `${CONFLUENCE_V2}/pages/${encodeURIComponent(record.pageId)}`)
+    .catch((e) => {
+      if (String(e.message).includes("HTTP 404")) {
+        die([
+          `Confluence has no page with id ${record.pageId} — so nothing was published.`,
+          ``,
+          `A record exists in ${publishedFile} but the page behind it does not.`,
+          `The publish step reported success it had not earned.`,
+        ].join("\n"));
+      }
+      die(`Could not reach Confluence: ${String(e.message).split("\n")[0]}`);
+    });
+
+  if (page.status && page.status !== "current") {
+    die(`Confluence page ${record.pageId} is '${page.status}', not 'current' — it has been trashed or archived.`);
+  }
+  console.log(`  ✓ the page exists in Confluence  (${page.title})`);
+
+  // ------------------------------------------------------- 3. the backlog
+  if (storiesFile) {
+    let stories = null;
+    try {
+      stories = JSON.parse(await fsp.readFile(storiesFile, "utf8"));
+    } catch (e) {
+      die(`--stories ${storiesFile} could not be read: ${e.message}`);
+    }
+    if (!Array.isArray(stories)) die(`${storiesFile} is not an array of stories.`);
+
+    const keys = stories.map((st) => st?.jiraKey ?? st?.fields?.jiraKey).filter(Boolean);
+    if (keys.length !== stories.length) {
+      die([
+        `${stories.length - keys.length} of ${stories.length} stor${stories.length === 1 ? "y" : "ies"} carry no \`jiraKey\`, so the backlog was not created.`,
+        ``,
+        `  file: ${storiesFile}`,
+        ``,
+        `The Confluence page published, which is why this step got this far. The`,
+        `Jira issues are the other half of this stage and they are missing.`,
+        ``,
+        `The step BEFORE this one creates them — an exec running`,
+        `scripts/jira-issues.mjs, which writes each new key straight back into the`,
+        `file above. Reaching this message means that step did not run, or`,
+        `something rewrote stories.json after it did.`,
+        ``,
+        `To do it by hand — it is idempotent, and updates rather than duplicating:`,
+        `  node scripts/jira-issues.mjs ${storiesFile} \\`,
+        `    --published-json ${publishedFile} --artefact-key "${artefact}"`,
+      ].join("\n"));
+    }
+
+    // JQL rather than one GET per issue: a 45-story backlog would otherwise be
+    // 45 round trips, and the count is the whole assertion.
+    const jql = `key in (${keys.slice(0, 200).join(",")})`;
+    const probe = await atlassianFetch(creds,
+      `/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=key&maxResults=200`)
+      .catch((e) => die(`Could not confirm the Jira issues: ${String(e.message).split("\n")[0]}`));
+
+    const found = (probe?.issues ?? []).length;
+    if (found !== Math.min(keys.length, 200)) {
+      die(`stories.json names ${keys.length} issue(s) but Jira returned ${found}.`);
+    }
+    console.log(`  ✓ ${keys.length} Jira issue(s) exist`);
+  }
+
+  console.log(`\n${artefact} is published.\n`);
+  process.exit(0);
+}
 
 // ---------------------------------------------------------------- 1. local
 

@@ -33,6 +33,17 @@ export interface ProjectRow {
    * re-posting the create route repairs — see 009_project_ado_target.sql.
    */
   ado_target: Record<string, unknown> | null;
+  /**
+   * Confluence space / Jira project, or null when the project does not publish
+   * to Atlassian — see 012_project_atlassian_target.sql.
+   *
+   * A SECOND column beside `ado_target` rather than one discriminated blob, so
+   * "which system does this project publish to?" is answered by which column is
+   * populated rather than by parsing one. Both set is legal and means a project
+   * MIGRATED between them, which is what lets the links panel still show a
+   * client the documents that already exist on the old side.
+   */
+  atlassian_target: Record<string, unknown> | null;
   created_by: string | null; created_at: string; updated_at: string; archived_at: string | null;
 }
 export interface FeatureRow {
@@ -164,9 +175,9 @@ const asJson = (v: unknown): Record<string, unknown> =>
 /**
  * Like `asJson`, but a null stays null.
  *
- * `ado_target` is the one jsonb column here whose absence MEANS something: a
- * project with no publish target is incomplete, and re-posting the create
- * route is what repairs it. Coercing that to `{}` the way `theme` is coerced
+ * The publish-target columns are the ones here whose absence MEANS something: a
+ * project with no target is incomplete, and re-posting the create route is what
+ * repairs it. Coercing that to `{}` the way `theme` is coerced
  * would make "never set up" indistinguishable from "set up and empty", which
  * is exactly the distinction the column was added to record.
  */
@@ -182,7 +193,12 @@ const asJsonOrNull = (v: unknown): Record<string, unknown> | null =>
  * `pg` do not agree on how jsonb comes back.
  */
 const shapeProject = (r: ProjectRow): ProjectRow =>
-  ({ ...r, theme: asJson(r.theme), ado_target: asJsonOrNull(r.ado_target) });
+  ({
+    ...r,
+    theme: asJson(r.theme),
+    ado_target: asJsonOrNull(r.ado_target),
+    atlassian_target: asJsonOrNull(r.atlassian_target),
+  });
 
 /**
  * The one implementation of how a name becomes a slug.
@@ -438,18 +454,20 @@ export function createPlatformRepo(db: Db) {
     async createProject(input: {
       companyId: string; name: string; description?: string | null;
       website?: string | null; adoTarget?: Record<string, unknown> | null;
+      atlassianTarget?: Record<string, unknown> | null;
       createdBy?: string | null;
     }): Promise<ProjectRow> {
       const id = newId();
       const { rows } = await db.query<ProjectRow>(
-        `insert into projects (id, company_id, name, description, website, ado_target, created_by)
-         values ($1,$2,$3,$4,$5,$6,$7) returning *`,
+        `insert into projects (id, company_id, name, description, website, ado_target, atlassian_target, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
         [id, input.companyId, input.name, input.description ?? null,
          input.website ?? null,
          // Stringified rather than passed as an object: the two drivers this
          // runs on disagree about how to bind a jsonb parameter, and a string
          // is the form both accept.
          input.adoTarget ? JSON.stringify(input.adoTarget) : null,
+         input.atlassianTarget ? JSON.stringify(input.atlassianTarget) : null,
          input.createdBy ?? null]);
       // The creator owns what they created. Without this a project is
       // immediately inaccessible to the person who just made it.
@@ -516,6 +534,7 @@ export function createPlatformRepo(db: Db) {
     async updateProject(id: string, patch: {
       description?: string | null; website?: string | null; theme?: Record<string, unknown>;
       adoTarget?: Record<string, unknown> | null;
+      atlassianTarget?: Record<string, unknown> | null;
     }): Promise<ProjectRow | null> {
       const sets: string[] = []; const params: unknown[] = [];
       const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col}=$${params.length}`); };
@@ -527,6 +546,9 @@ export function createPlatformRepo(db: Db) {
       // which is what every caller not touching the target passes.
       if (patch.adoTarget !== undefined) {
         set("ado_target", patch.adoTarget ? JSON.stringify(patch.adoTarget) : null);
+      }
+      if (patch.atlassianTarget !== undefined) {
+        set("atlassian_target", patch.atlassianTarget ? JSON.stringify(patch.atlassianTarget) : null);
       }
       if (!sets.length) return this.getProject(id);
       params.push(id);

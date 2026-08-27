@@ -1,5 +1,5 @@
 /**
- * The Azure DevOps links a finished workflow should put in front of the user,
+ * The publishing links a finished workflow should put in front of the user,
  * read from disk rather than scraped out of the timeline.
  *
  * `/api/status` has always derived its links with `extractLinks`, a regex over
@@ -16,13 +16,13 @@
  * The URLs were never missing — they are recorded in the two files the publish
  * VERIFIER already refuses to let an issue past without:
  *
- *   projects/<p>/.published.json          → ado.<artefact>, the page and its URL
- *   projects/<p>/<f>/outputs/stories.json → every story's adoId
+ *   projects/<p>/.published.json          → ado.<artefact> or atlassian.<artefact>,
+ *                                           the page and its URL
+ *   projects/<p>/<f>/outputs/stories.json → every story's adoId / jiraKey
  *
  * That invariant is what makes reading disk sound rather than optimistic: an
  * issue cannot reach `done` with a page this cannot find — `verify-published.mjs`
- * dies on a missing `ado.<artefact>` record, and on any story without an
- * `adoId`. It also means this works for every run that finished BEFORE it
+ * dies on a missing publish record, and on any story without its id. It also means this works for every run that finished BEFORE it
  * existed, which a fix in the engine's narration could not.
  *
  * Nothing here throws. It is called from a status poll that runs every three
@@ -38,6 +38,21 @@ export interface AdoTarget {
   org?: string | null;
   project?: string | null;
   wiki?: string | null;
+}
+
+/** What `recordAtlassianTarget` writes under `atlassianTarget`. */
+export interface AtlassianTarget {
+  site?: string | null;
+  space?: string | null;
+  jiraProject?: string | null;
+}
+
+/** One artefact's entry under `atlassian.` in `.published.json`. */
+export interface AtlassianRecord {
+  url?: string | null;
+  pageId?: string | null;
+  space?: string | null;
+  title?: string | null;
 }
 
 /** One artefact's entry under `ado.` in `.published.json`. */
@@ -95,6 +110,42 @@ export function workItemUrl(id: unknown, target?: AdoTarget | null): string | nu
   return `${orgUrl(target)}/_workitems/edit/${n}`;
 }
 
+/**
+ * The Confluence page URL for one recorded artefact.
+ *
+ * The recorded `url` wins outright, for the same reason it does on the Azure
+ * side: `confluence-publish.mjs` writes the URL it actually used, and rebuilding
+ * one over the top of that is how a page published into a renamed space
+ * acquires a link that 404s. The rebuild is the fallback for a record written by
+ * hand after an MCP call, which carries the id but not the URL.
+ */
+export function confluenceUrl(
+  record: AtlassianRecord | null | undefined,
+  target?: AtlassianTarget | null,
+): string | null {
+  if (!record) return null;
+  if (record.url) return String(record.url);
+  const site = target?.site ?? null;
+  const space = record.space ?? target?.space ?? null;
+  if (!record.pageId || !site || !space) return null;
+  return `${String(site).replace(/\/+$/, "")}/wiki/spaces/` +
+    `${encodeURIComponent(String(space))}/pages/${encodeURIComponent(String(record.pageId))}`;
+}
+
+/**
+ * The Jira issue URL for one key.
+ *
+ * A key, not a number — `PROJ-123`. Validated rather than interpolated blindly:
+ * this ends up in an href a client clicks, and `stories.json` is written by an
+ * agent.
+ */
+export function jiraUrl(key: unknown, target?: AtlassianTarget | null): string | null {
+  const k = typeof key === "string" ? key.trim() : "";
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(k)) return null;
+  if (!target?.site) return null;
+  return `${String(target.site).replace(/\/+$/, "")}/browse/${k}`;
+}
+
 /** `revise-datamodel` and `publish-datamodel` are the datamodel stage in another mode. */
 const VARIANT = /^(?:revise|publish)-/;
 
@@ -141,12 +192,20 @@ export function mergeLinks(
 /**
  * Everything above, off disk, in the shape `/api/status` already returns.
  *
- * The keys are `wiki` / `workItems`, naming what they hold: an Azure DevOps
- * wiki page and its work items. They were `confluence` / `jira` for as long as
- * it took the destination change to settle — renaming the wire format in the
- * same change as moving what fills it is how a links panel goes quietly empty
- * twice. The one consumer that outlives a deploy is the chat transcript in
- * localStorage, so `loadMessages` in App.tsx migrates a stored card on read.
+ * The keys STAY `wiki` / `workItems` even though this now also returns
+ * Confluence pages and Jira issues. They were `confluence` / `jira` once, were
+ * renamed when publishing moved to Azure DevOps, and renaming the wire format
+ * in the same change as moving what fills it is exactly how a links panel goes
+ * quietly empty. Doing it a second time — back again — would be the same
+ * mistake with more history behind it. The keys are a wire contract read by
+ * `extractLinks`, the frontend's LinksPanel, and chat transcripts already sitting
+ * in localStorage; what they MEAN is "the published document" and "the backlog
+ * items", which is true of both back ends.
+ *
+ * Both sources are read and merged rather than branched on. A project publishes
+ * to one system, so in practice one side is always empty — but a project
+ * MIGRATED between them has records under both, and showing the client only
+ * half of what exists would be worse than showing both.
  */
 export async function publishedLinks(
   workspace: string,
@@ -161,10 +220,15 @@ export async function publishedLinks(
   if (!published) return empty;
 
   const target: AdoTarget = published.adoTarget ?? {};
+  const atlTarget: AtlassianTarget = published.atlassianTarget ?? {};
   const wiki: string[] = [];
   for (const key of keys) {
-    const url = wikiUrl(published?.ado?.[key], target);
-    if (url && !wiki.includes(url)) wiki.push(url);
+    for (const url of [
+      wikiUrl(published?.ado?.[key], target),
+      confluenceUrl(published?.atlassian?.[key], atlTarget),
+    ]) {
+      if (url && !wiki.includes(url)) wiki.push(url);
+    }
   }
 
   // The requirements stage is the only one whose deliverable is a page AND a
@@ -174,8 +238,12 @@ export async function publishedLinks(
     const stories = await readJson(path.join(projectDir, opts.feature, "outputs", "stories.json"));
     if (Array.isArray(stories)) {
       for (const s of stories) {
-        const url = workItemUrl(s?.adoId ?? s?.fields?.adoId, target);
-        if (url && !workItems.includes(url)) workItems.push(url);
+        for (const url of [
+          workItemUrl(s?.adoId ?? s?.fields?.adoId, target),
+          jiraUrl(s?.jiraKey ?? s?.fields?.jiraKey, atlTarget),
+        ]) {
+          if (url && !workItems.includes(url)) workItems.push(url);
+        }
       }
     }
   }

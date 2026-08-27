@@ -19,7 +19,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { wikiUrl, workItemUrl, artefactKeysFor, mergeLinks, publishedLinks } from "./publishedLinks.js";
+import {
+  wikiUrl, workItemUrl, confluenceUrl, jiraUrl, artefactKeysFor, mergeLinks, publishedLinks,
+} from "./publishedLinks.js";
 
 const TARGET = { org: "Scyne-AI-Lab", project: "Scyne AI Project", wiki: "Scyne-AI-Project-Wiki" };
 
@@ -183,5 +185,114 @@ describe("publishedLinks", () => {
     // wizard. Neither is an error worth failing a status poll over.
     const links = await publishedLinks(ws, { project: "Nope", workflowKey: "capabilities" });
     expect(links).toEqual({ wiki: [], workItems: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Atlassian half. Publishing has two live back ends — Confluence + Jira,
+// and the Azure DevOps wiki + work items — and the wire keys stay `wiki` /
+// `workItems` for BOTH. Renaming the wire format in the same change as moving
+// what fills it is how this panel went empty the first time; doing it again,
+// back the other way, would be the same mistake with more history behind it.
+// ---------------------------------------------------------------------------
+
+describe("confluenceUrl", () => {
+  const target = { site: "https://acme.atlassian.net", space: "SAPN" };
+
+  it("prefers the recorded url over rebuilding one", () => {
+    // `confluence-publish.mjs` writes the URL it actually used. Rebuilding over
+    // the top of it is how a page published into a renamed space acquires a
+    // link that 404s.
+    expect(confluenceUrl({ url: "https://acme.atlassian.net/wiki/x", pageId: "9" }, target))
+      .toBe("https://acme.atlassian.net/wiki/x");
+  });
+
+  it("rebuilds from a pageId when no url was recorded", () => {
+    // The fallback for a record written by hand after an MCP call, which
+    // carries the id but not the URL.
+    expect(confluenceUrl({ pageId: "27230209", space: "SAPN" }, target))
+      .toBe("https://acme.atlassian.net/wiki/spaces/SAPN/pages/27230209");
+  });
+
+  it("tolerates a trailing slash on the site", () => {
+    expect(confluenceUrl({ pageId: "1" }, { site: "https://acme.atlassian.net/", space: "S" }))
+      .toBe("https://acme.atlassian.net/wiki/spaces/S/pages/1");
+  });
+
+  it("returns null rather than a broken link when it cannot build one", () => {
+    expect(confluenceUrl(null, target)).toBeNull();
+    expect(confluenceUrl({ pageId: "1" }, null)).toBeNull();
+    expect(confluenceUrl({ space: "S" }, target)).toBeNull();
+  });
+});
+
+describe("jiraUrl", () => {
+  const target = { site: "https://acme.atlassian.net" };
+
+  it("builds a browse link from an issue key", () => {
+    expect(jiraUrl("SAPN-42", target)).toBe("https://acme.atlassian.net/browse/SAPN-42");
+  });
+
+  it("refuses anything that is not an issue key", () => {
+    // This ends up in an href a client clicks, and stories.json is written by
+    // an agent — so the shape is validated rather than interpolated blindly.
+    for (const bad of ["", "42", "sapn-42", "SAPN", "SAPN-", "../../evil", null, undefined, 42]) {
+      expect(jiraUrl(bad as unknown, target), String(bad)).toBeNull();
+    }
+  });
+
+  it("returns null with no site rather than a relative link", () => {
+    expect(jiraUrl("SAPN-42", {})).toBeNull();
+  });
+});
+
+describe("publishedLinks — Atlassian", () => {
+  let ws: string;
+
+  beforeAll(async () => {
+    ws = await fs.mkdtemp(path.join(os.tmpdir(), "atl-links-"));
+    const proj = path.join(ws, "projects", "ATL");
+    await fs.mkdir(path.join(proj, "Appeals", "outputs"), { recursive: true });
+    await fs.writeFile(path.join(proj, ".published.json"), JSON.stringify({
+      atlassianTarget: { site: "https://acme.atlassian.net", space: "ATL", jiraProject: "ATL" },
+      atlassian: {
+        capabilities: {
+          pageId: "111", title: "Capability & Process Map", space: "ATL",
+          url: "https://acme.atlassian.net/wiki/spaces/ATL/pages/111",
+        },
+        "Appeals/requirements": {
+          pageId: "222", title: "Appeals — Requirements & Product Summary", space: "ATL",
+          url: "https://acme.atlassian.net/wiki/spaces/ATL/pages/222",
+        },
+      },
+    }));
+    await fs.writeFile(path.join(proj, "Appeals", "outputs", "stories.json"), JSON.stringify([
+      { fields: { summary: "one" }, jiraKey: "ATL-1" },
+      { fields: { summary: "two" }, jiraKey: "ATL-2" },
+    ]));
+  });
+
+  afterAll(async () => { await fs.rm(ws, { recursive: true, force: true }); });
+
+  it("returns a Confluence page under the `wiki` key", async () => {
+    const links = await publishedLinks(ws, { project: "ATL", workflowKey: "capabilities" });
+    expect(links.wiki).toEqual(["https://acme.atlassian.net/wiki/spaces/ATL/pages/111"]);
+    expect(links.workItems).toEqual([]);
+  });
+
+  it("returns Jira issues under the `workItems` key, for requirements only", async () => {
+    const links = await publishedLinks(ws, {
+      project: "ATL", feature: "Appeals", workflowKey: "requirements",
+    });
+    expect(links.wiki).toEqual(["https://acme.atlassian.net/wiki/spaces/ATL/pages/222"]);
+    expect(links.workItems).toEqual([
+      "https://acme.atlassian.net/browse/ATL-1",
+      "https://acme.atlassian.net/browse/ATL-2",
+    ]);
+  });
+
+  it("carries a revision through the same keys as its stage", async () => {
+    const links = await publishedLinks(ws, { project: "ATL", workflowKey: "revise-capabilities" });
+    expect(links.wiki).toEqual(["https://acme.atlassian.net/wiki/spaces/ATL/pages/111"]);
   });
 });

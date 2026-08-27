@@ -26,6 +26,16 @@ import {
   type DocumentEntry,
 } from "./services/documents.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
+import { verifyAtlassianTarget, atlassianConfigured } from "./services/atlassianVerify.js";
+
+/**
+ * Where this installation publishes. Mirrors the constant of the same name in
+ * orchestrator.workflows.ts, which compiles the publish prompts — the two have
+ * to agree or a project would be SET UP for one system and PUBLISHED to the
+ * other. Both read the same environment variable rather than one importing the
+ * other, because this file must not pull in the workflow compiler.
+ */
+const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
 import { ensureAdoProject } from "./services/adoProject.js";
 import { publishedLinks, mergeLinks } from "./publishedLinks.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
@@ -1067,6 +1077,55 @@ app.post("/api/approve/:approvalId", async (req, res) => {
     // VERIFY, never create — see services/adoVerify.ts. Creating an ADO project
     // is a long-running asynchronous operation and a half-created one is worse
     // to hand a client than a clear refusal.
+    //
+    // Two back ends, and WHICH ONE is a property of the PROJECT rather than of
+    // this request: the target is recorded in `.published.json` and every
+    // publishing script reads it from there, so keying this check off anything
+    // else could verify a system the publish is not going to use — and pass.
+    if (atlassianConfigured()) {
+      try {
+        const issue: any = await paperclip.getIssue(parentIssueId);
+        const desc = String(issue?.description || "");
+        const scyneProject =
+          (desc.match(/-\s*Project:\s*(.+)/) || [])[1]?.trim() || "";
+        if (scyneProject) {
+          const publishedFile = path.join(
+            WORKSPACE_PATH, "projects", scyneProject, ".published.json");
+          let published: any = null;
+          try { published = JSON.parse(await fs.readFile(publishedFile, "utf8")); } catch { /* not published yet */ }
+          const target = published?.atlassianTarget;
+          // Only a project that actually publishes to Atlassian is checked
+          // here. One carrying an `adoTarget` falls through to the Azure block
+          // below, which is what keeps a project on the system it has already
+          // delivered into.
+          if (target?.space) {
+            const result = await verifyAtlassianTarget({
+              space: String(target.space),
+              jiraProject: target.jiraProject ? String(target.jiraProject) : undefined,
+              issueType: target.issueType ? String(target.issueType) : undefined,
+              // Only the requirements flow creates issues; the rest publish a
+              // page only, and failing them on a Jira project they never touch
+              // would block an approval for no reason.
+              needsIssues: /requirement/i.test(String(issue?.title || "")),
+            });
+            console.log("[approve] verifyAtlassianTarget:",
+              JSON.stringify({ ok: result.ok, summary: result.summary }));
+            if (!result.ok) {
+              return res.status(502).json({
+                error: "atlassian_target_unavailable",
+                message:
+                  `Approving would publish to Confluence, and the target is not ready:\n  ${result.summary}\n\n` +
+                  `Nothing has been approved. Fix the target and approve again — it is far cheaper ` +
+                  `to discover this now than after the publish step has built a document.`,
+                checks: result.checks,
+              });
+            }
+          }
+        }
+      } catch (e: any) {
+        return res.status(502).json({ error: "atlassian_verify_failed", message: e?.message ?? String(e) });
+      }
+    }
     if (adoConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
@@ -1797,9 +1856,46 @@ app.post("/api/projects", async (req, res) => {
     // are real and worth keeping. It returns with `adoError` set and a null
     // target, leaving the project INCOMPLETE rather than broken — re-posting
     // this route completes it.
+    //
+    // WHICH target depends on PUBLISH_TARGET. Atlassian records a space and a
+    // Jira project and creates NEITHER — `verify, never create` is the rule
+    // that governs the whole Atlassian path (see services/atlassianVerify.ts),
+    // and it starts here: a space conjured into a client's site by a project
+    // wizard is a decision about where their documents live being made by a
+    // form. The names are DERIVED from the project name rather than asked for,
+    // so the common case needs no extra field, and an operator who wants
+    // different ones edits `.published.json` before the first publish.
+    let atlassianTarget: any = null;
+    let atlassianError: string | null = null;
+    if (PUBLISH_TARGET === "atlassian") {
+      const site = process.env.ATLASSIAN_SITE_URL ?? null;
+      // A Confluence space key and a Jira project key are both uppercase
+      // alphanumeric. Derived, not invented: the same slug the project already
+      // is, with the characters those keys cannot carry removed.
+      const key = project.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 10)
+        || "SCYNE";
+      atlassianTarget = { site, space: key, jiraProject: key };
+      const wrote = await store.updateProject(token, row.id, { atlassianTarget } as any);
+      if (wrote.state === "failed") {
+        atlassianError = `The Atlassian target was not recorded on the project row: ${wrote.reason}`;
+        console.error(`[projects] ${project}: atlassian_target not persisted — ${wrote.reason}`);
+      }
+      const publishedFile = path.join(root, ".published.json");
+      let current: any = {};
+      try { current = JSON.parse(await fs.readFile(publishedFile, "utf8")); } catch { /* first write */ }
+      current.atlassianTarget = atlassianTarget;
+      await fs.mkdir(root, { recursive: true });
+      await fs.writeFile(publishedFile, JSON.stringify(current, null, 2) + "\n", "utf8");
+      if (!site) {
+        atlassianError =
+          "ATLASSIAN_SITE_URL is not set, so publishing will refuse until it is. " +
+          "The project itself is fine.";
+      }
+    }
+
     let adoTarget: any = null;
     let adoError: string | null = null;
-    if (process.env.ADO_ORG) {
+    if (PUBLISH_TARGET === "ado" && process.env.ADO_ORG) {
       const ensured = await ensureAdoProject({ org: process.env.ADO_ORG, project });
       if (ensured.ok) {
         const wrote = await store.updateProject(token, row.id, { adoTarget: ensured.target as any });
@@ -1821,7 +1917,7 @@ app.post("/api/projects", async (req, res) => {
         adoError = ensured.error;
         console.error(`[projects] ${project}: Azure DevOps setup failed — ${ensured.error}`);
       }
-    } else {
+    } else if (PUBLISH_TARGET === "ado") {
       adoError = "ADO_ORG is not set, so no Azure DevOps project was created.";
     }
 
@@ -1858,13 +1954,15 @@ app.post("/api/projects", async (req, res) => {
 
     if (db.reason) console.log(`[projects] ${project}: database — ${db.state} (${db.reason})`);
 
-    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ado=${Boolean(adoTarget)}, db=${db.state})`);
+    console.log(`[projects] created ${project} (definition=${definitionWritten}, brand=${Boolean(brand)}, ` +
+      `publishTarget=${PUBLISH_TARGET}, ado=${Boolean(adoTarget)}, atlassian=${Boolean(atlassianTarget)}, db=${db.state})`);
     res.json({
       ok: true, project, requestedName: requested,
       // Only when it differs — a caller should not have to compare two strings
       // to decide whether there is anything to tell the person.
       slugged: requested !== project ? { from: requested, to: project } : null,
       definitionWritten, brand, brandError, adoTarget, adoError,
+      atlassianTarget, atlassianError,
       db, projectId: row.id,
       // Always null on a success now, and kept only so existing callers keep
       // reading a field that exists. A database failure cannot reach this

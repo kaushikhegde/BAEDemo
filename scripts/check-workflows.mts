@@ -25,16 +25,32 @@
 import { existsSync } from "node:fs";
 import { ORG, buildWorkflows } from "../orchestrator.workflows.js";
 
+/**
+ * Which back end this compilation targets, and what its publish sequence looks
+ * like.
+ *
+ * These checks exist to catch a publish step losing its guard or its backlog
+ * step — the SA-Power-Networks failure, where 45 stories produced zero work
+ * items and the run still recorded `succeeded`. That failure is identical on
+ * either back end, so the assertions are the same shape and only the script
+ * names differ. Hard-coding the Azure ones made every check fail the moment
+ * PUBLISH_TARGET flipped, which is a checker measuring the wrong thing rather
+ * than a pipeline that broke.
+ */
+const TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
+const ENSURE_SCRIPT = TARGET === "atlassian" ? "ensure-confluence-space" : "ensure-ado-project";
+const BACKLOG_SCRIPT = TARGET === "atlassian" ? "jira-issues" : "ado-workitems";
+
 let bad = 0;
 const fail = (m: string) => { console.error(`FAIL  ${m}`); bad++; };
 
 const publisher = ORG.find(a => a.key === "publisher");
 if (!publisher) fail("ORG has no `publisher` agent");
 else {
-  // Without MCP the publisher cannot reach wiki_upsert_page at all, and the
+  // Without MCP the publisher cannot reach its page-writing tool at all, and the
   // step fails after the gate was approved — the most expensive moment to find
   // out.
-  if (!publisher.mcpEnabled) fail("the publisher needs mcpEnabled to reach the ADO MCP");
+  if (!publisher.mcpEnabled) fail("the publisher needs mcpEnabled to reach the publishing MCP");
   if (!publisher.bundlePath) fail("the publisher has no bundlePath, so it runs on the bare workflow prompt");
   else if (!existsSync(publisher.bundlePath)) {
     // Claude Code fails fast with `System prompt file not found` before any
@@ -78,15 +94,28 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
     }
   }
 
-  // A project-level artefact sits at the wiki root and therefore has NO parent
-  // page; a feature-level one has exactly one, `/{feature}`.
+  // Where an artefact lands, and the two systems name it differently.
+  //
+  // ADO: a PATH. A project-level artefact sits at the wiki root and therefore
+  // has NO parent page; a feature-level one has exactly one, `/{feature}`.
+  //
+  // Confluence: a TITLE, unique within the space. There is no path at all, so
+  // the feature has to be IN the title or two features collide on a stage name
+  // — which is the job the `/{feature}/` path segment does on ADO. Asserting
+  // the ADO shape against a Confluence prompt is checking for the wrong thing,
+  // not finding a fault.
+  const expectProject = TARGET === "atlassian"
+    ? "`Capability & Process Map`" : "`/Capability & Process Map`";
+  const expectFeature = TARGET === "atlassian"
+    ? "`{feature} — Salesforce Data Model`" : "`/{feature}/Salesforce Data Model`";
+
   const capabilities = publishPrompts.find(p => p.key === "capabilities");
-  if (capabilities && !capabilities.prompt.includes("`/Capability & Process Map`")) {
-    fail("capabilities: expected the page path `/Capability & Process Map`");
+  if (capabilities && !capabilities.prompt.includes(expectProject)) {
+    fail(`capabilities: expected the page identity ${expectProject}`);
   }
   const datamodel = publishPrompts.find(p => p.key === "datamodel");
-  if (datamodel && !datamodel.prompt.includes("`/{feature}/Salesforce Data Model`")) {
-    fail("datamodel: expected the page path `/{feature}/Salesforce Data Model`");
+  if (datamodel && !datamodel.prompt.includes(expectFeature)) {
+    fail(`datamodel: expected the page identity ${expectFeature}`);
   }
 }
 
@@ -105,8 +134,8 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
       if (step.type !== "agent" || step.phase !== "publish") continue;
 
       const before = w.steps[i - 1];
-      if (before?.type !== "exec" || !String((before as any).cmd ?? "").includes("ensure-ado-project")) {
-        fail(`${w.key} step ${i}: publish is not preceded by the ensure-ado-project step`);
+      if (before?.type !== "exec" || !String((before as any).cmd ?? "").includes(ENSURE_SCRIPT)) {
+        fail(`${w.key} step ${i}: publish is not preceded by the ${ENSURE_SCRIPT} step`);
       } else ensured++;
 
       // The verifier sits at i+1, or at i+2 with the work-item step between
@@ -116,7 +145,7 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
       // search-forward would accept a verifier six steps and a gate later.
       const between = w.steps[i + 1] as any;
       const gap = between?.type === "exec" &&
-        String(between.cmd ?? "").includes("ado-workitems") ? 1 : 0;
+        String(between.cmd ?? "").includes(BACKLOG_SCRIPT) ? 1 : 0;
       const verifier = w.steps[i + 1 + gap] as any;
       if (verifier?.type !== "exec" || !String(verifier.cmd ?? "").includes("verify-published")) {
         fail(`${w.key} step ${i}: publish is not followed by its verifier`);
@@ -125,7 +154,7 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
       }
     }
   }
-  if (publishSteps && !ensured) fail("no publish step is preceded by ensure-ado-project");
+  if (publishSteps && !ensured) fail(`no publish step is preceded by ${ENSURE_SCRIPT}`);
 }
 
 // Only the stage that produces a backlog asks the verifier to check one.
@@ -152,7 +181,7 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
 // These two have to agree or a client's backlog is written twice, and a
 // duplicated backlog is the one failure in this pipeline that re-running
 // cannot undo. So: every workflow that publishes the requirements stage
-// carries exactly one `ado-workitems` step, and no publish prompt anywhere
+// carries exactly one backlog-creating step, and no publish prompt anywhere
 // still tells an agent to create work items itself.
 //
 // SA-Power-Networks is why the step exists — 45 stories, page published, zero
@@ -162,13 +191,13 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
 {
   for (const w of buildWorkflows()) {
     const backlog = w.steps.filter(st =>
-      st.type === "exec" && String((st as any).cmd ?? "").includes("ado-workitems"));
+      st.type === "exec" && String((st as any).cmd ?? "").includes(BACKLOG_SCRIPT));
     const should = w.key === "requirements" || (w as any).variantOf === "requirements";
     if (should && backlog.length !== 1) {
-      fail(`${w.key}: expected exactly 1 ado-workitems step, found ${backlog.length}`);
+      fail(`${w.key}: expected exactly 1 ${BACKLOG_SCRIPT} step, found ${backlog.length}`);
     }
     if (!should && backlog.length) {
-      fail(`${w.key}: has an ado-workitems step but does not publish the requirements stage`);
+      fail(`${w.key}: has a ${BACKLOG_SCRIPT} step but does not publish the requirements stage`);
     }
 
     for (const [i, st] of w.steps.entries()) {

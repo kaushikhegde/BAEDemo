@@ -1,0 +1,34 @@
+-- Where a project publishes when the target is Atlassian: its Confluence space
+-- and Jira project, as a COLUMN, for exactly the reasons 009 gave for
+-- `ado_target`.
+--
+-- A SECOND column rather than a generic `publish_target`, and the choice is
+-- deliberate. Collapsing both into one jsonb blob with a discriminator would
+-- make "which system does this project publish to?" a question about the
+-- CONTENTS of a column rather than about which column is populated — and that
+-- question is asked by every publishing script, the approval gate, the links
+-- panel and the workflow guard. Two nullable columns answer it by shape:
+--
+--   ado_target set, atlassian_target null   → Azure DevOps
+--   atlassian_target set, ado_target null   → Confluence + Jira
+--   both null                               → INCOMPLETE, not broken
+--   both set                                → a project MIGRATED between them
+--
+-- The last row is the one that earns the design. A project that has published
+-- into one system keeps publishing there — a client has links to those
+-- documents, and splitting a delivery pack across two systems is worse than
+-- either. Holding both records means a migration can be deliberate and
+-- reversible instead of destructive, and it means the links panel can still
+-- show a client the documents that already exist on the old side. A single
+-- overwritten column would lose that on the first write.
+--
+-- Same lifecycle rule as 009, and it matters more here: only the TARGET lives
+-- in this column. The per-artefact page identities beside it in
+-- `.published.json` (`atlassian.<artefact>.pageId` / `.url`) are written by
+-- AGENTS mid-run and harvested back, so a column mirroring them would be stale
+-- from the first publish onwards.
+--
+-- jsonb rather than two text columns: it is read as a unit by everything that
+-- resolves a publish target, and its shape (`site`, `space`, `jiraProject`,
+-- and optionally `issueType`) will gain fields as the Atlassian path does.
+alter table projects add column atlassian_target jsonb;
