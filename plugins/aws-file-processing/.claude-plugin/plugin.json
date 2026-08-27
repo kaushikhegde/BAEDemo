@@ -1,6 +1,6 @@
 {
   "name": "aws-file-processing",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Upload, process and query very large documents through AWS S3 without their contents entering the model's context, and drive the Scyne requirements pipeline as tracked issues.",
   "author": {
     "name": "Scyne"

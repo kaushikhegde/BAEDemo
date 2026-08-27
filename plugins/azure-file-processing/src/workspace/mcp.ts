@@ -64,8 +64,80 @@ export const jsonResult = (value: unknown): ToolResult => ({
  * role upstream, and the console is the right surface for them — a plugin that
  * can re-price every run in the install is not a document tool.
  */
+/**
+ * What the client is told about this server before it calls anything.
+ *
+ * The MCP `instructions` field is the ONLY guidance that is always present:
+ * it arrives with the tool list at initialize, on every conversation, whether
+ * or not the `scyne` skill was judged relevant and whether or not anybody
+ * typed `/scyne`. That matters because the failure this fixes was a model
+ * answering "list my projects" from `ls` — the skill never fired, so the one
+ * place the routing lived was never read.
+ *
+ * It is deliberately a ROUTING table rather than a summary of the tools. A
+ * tool description answers "what does this return"; a caller mapping a
+ * sentence onto a tool needs "which question does this answer", and those are
+ * not the same text. The phrasings below are the ones people actually type.
+ *
+ * The no-shell rule is scoped to WORKSPACE questions on purpose. A blanket
+ * "never use the shell" would be wrong and would be ignored: the caller is a
+ * coding agent that legitimately runs commands all day. What it must not do is
+ * answer a question ABOUT THIS WORKSPACE from the local filesystem, because on
+ * an end user's machine that reads their own unrelated folders and reports
+ * them back as Scyne projects — a wrong answer delivered confidently.
+ */
+const WORKSPACE_INSTRUCTIONS = `
+The front door to a Scyne workspace: projects, features, documents, pipeline
+stages, approval gates, issues and spend.
+
+ROUTING — these tools are the ONLY source of truth for the questions below.
+Do not answer any of them from the shell, the local filesystem, a file you
+read, an HTTP call, or memory. The workspace lives on the server this plugin
+talks to, not in the current directory. \`ls\`, \`find\`, \`cat\` and \`curl\` see
+the caller's own machine, which is not the workspace and will produce a
+confident wrong answer.
+
+  "list my projects" / "what projects do I have"      -> list_projects
+  "create a project called X" / "new project"         -> create_project
+  "use project X" / "switch to X"                     -> list_projects to
+                                                         validate, then hold X
+                                                         for later calls
+  "what features are in X" / "list features"          -> list_features
+  "create a feature X"                                -> create_feature
+  "what documents are in X" / "list docs"             -> list_documents
+  "upload / add this file"                            -> ingest_document
+  "run extract" / "extract the documents"             -> extraction is
+                                                         AUTOMATIC on upload;
+                                                         call extract_status.
+                                                         retry_extraction only
+                                                         for a FAILED document
+  "is extract done" / "are the documents ready"       -> extract_status
+  "what can I run" / "what stages are there"          -> stages
+  "run <stage>" / "generate the capability map"       -> start_stage
+  "what is the status of X" / "how is SCY-7 going"    -> issue_status
+  "issues" / "what is waiting on me"                  -> list_issues {open:true}
+  "approve / reject that"                             -> approve_gate /
+                                                         reject_gate
+  "change X in the data model"                        -> revise_artefact
+  "what is out of date"                               -> staleness
+  "what has this cost"                                -> spend
+  "who is this client" / "project definition"         -> get_project_definition
+
+If a call needs a project and none was given, call list_projects and ask which
+one rather than guessing. If a tool is missing or every call fails to connect,
+say the Scyne service is unreachable — do not fall back to the filesystem.
+
+NEVER read a document's contents into the conversation. Large documents go
+through the file plane (the companion \`scyne\` server): counts and headings
+from get_result, snippets from search_chunks, and only the passages you ask
+fetch_chunks for. read_document is for short notes and nothing else.
+`.trim();
+
 export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
-  const server = new McpServer({ name: "scyne-workspace", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "scyne-workspace", version: "0.1.0" },
+    { instructions: WORKSPACE_INSTRUCTIONS },
+  );
 
   server.registerTool(
     "start_stage",
@@ -109,7 +181,9 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
     {
       title: "Issue status",
       description:
-        "State, current step, any pending approval gate, and the recent activity timeline for one issue.",
+        "State, current step, any pending approval gate, and the recent activity timeline " +
+        "for one issue. The answer to \"what is the status of SCY-7\", \"how is that run " +
+        "going\", \"is it finished\" — poll this after start_stage rather than waiting.",
       inputSchema: { issueId: z.string().min(1) },
     },
     async (args) => jsonResult(await issueStatus(ctx, args as any)),
@@ -256,7 +330,16 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
 
   server.registerTool(
     "list_projects",
-    { title: "List projects", description: "Every project on the workspace.", inputSchema: {} },
+    {
+      title: "List projects",
+      description:
+        "Every project on this Scyne workspace, with how many features each one has. THE " +
+        "answer to \"list my projects\", \"what projects do I have\", \"which projects exist\" — " +
+        "and the way to resolve or validate a project name before any other call. The " +
+        "workspace lives on the server, never in the caller's current directory, so this " +
+        "must not be answered from `ls`, `find` or a path on the local machine.",
+      inputSchema: {},
+    },
     async () => jsonResult(await listProjects(ctx)),
   );
 
@@ -264,7 +347,11 @@ export const buildWorkspaceServer = (ctx: OrchCtx): McpServer => {
     "list_features",
     {
       title: "List features",
-      description: "The features under one project.",
+      description:
+        "The features under one project, each with the discovery documents it holds per " +
+        "folder (sop · transcripts · notes · ui) — which is what decides whether a stage " +
+        "refuses with no_documents. The answer to \"what features are in X\" and the way to " +
+        "validate a feature name before start_stage. Read from the server, not from disk.",
       inputSchema: { project: z.string().min(1) },
     },
     async (args) => jsonResult(await listFeatures(ctx, args as any)),

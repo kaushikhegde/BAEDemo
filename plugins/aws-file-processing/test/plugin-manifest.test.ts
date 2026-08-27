@@ -57,7 +57,7 @@ describe("Claude Code plugin packaging", () => {
 
   it("is registered in the repo's Claude Code marketplace by a relative local path", () => {
     // `.claude-plugin/marketplace.json` at the REPO ROOT, which is what
-    // `/plugin marketplace add .` reads. The Codex build's
+    // `/plugin marketplace add ./` reads. The Codex build's
     // `.agents/plugins/marketplace.json` still exists and still points at the
     // Azure plugin; the two are separate registries and neither disturbs the
     // other, which is what lets both plugins be installed at once.

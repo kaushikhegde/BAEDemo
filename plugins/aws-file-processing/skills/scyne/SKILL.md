@@ -1,6 +1,6 @@
 ---
 name: scyne
-description: The Scyne delivery pipeline and its large-document plane. Use when running or revising a pipeline stage (capability map, personas, requirements, UI mockups, data model, solution architecture, test cases, companion app), managing Scyne projects, features or documents, approving a gate, or reporting spend — AND whenever a document is too large to read directly, or you are asked to upload, process, search, summarise or extract text from a PDF, Word, PowerPoint, Excel, HTML or text file. Trigger on "/scyne", "scyne", "this PDF", "large file", "search this document", "what does the contract say", any file over a few hundred kilobytes, or any request to run/check/approve/revise something in the pipeline.
+description: The Scyne delivery pipeline and its large-document plane. Use for ANY question about Scyne projects, features, documents, issues, gates or spend — listing them, creating them, checking on them — as well as running or revising a pipeline stage (capability map, personas, requirements, UI mockups, data model, solution architecture, test cases, companion app), approving a gate, or checking extraction; AND whenever a document is too large to read directly, or you are asked to upload, process, search, summarise or extract text from a PDF, Word, PowerPoint, Excel, HTML or text file. Trigger on "/scyne", "scyne", "my projects", "list projects", "create a project", "use project X", "what features are in", "what documents are in", "run extract", "extract status", "my issues", "what is waiting on me", "run <stage>", "approve the gate", "what has this cost", "this PDF", "large file", "what does the contract say", any file over a few hundred kilobytes, or any request to run/check/approve/revise something in the pipeline. These are answered by this plugin's MCP tools on the Scyne server — never from the local filesystem.
 ---
 
 # /scyne
@@ -39,6 +39,42 @@ from `search_chunks`, and the handful of passages you explicitly ask
 This holds no matter which verb you are serving. `upload`, `docs`, `read` and
 every stage that consumes documents are all bound by it.
 
+## The second rule: the workspace is not on this machine
+
+**Every question about projects, features, documents, issues, stages, gates or
+spend is answered by a tool on this list — never from the shell, the local
+filesystem, an HTTP call or memory.**
+
+The workspace lives on the server the plugin talks to. `ls`, `find`, `cat` and
+`curl` see the *caller's* machine, which is a different thing entirely. On a
+developer's clone they happen to overlap enough to look right; on an end user's
+laptop they do not overlap at all, and the answer that comes back is their own
+unrelated folders reported as Scyne projects — wrong, and delivered with
+confidence. That failure is why this section exists.
+
+| They say | You call |
+|---|---|
+| "list my projects", "what projects do I have" | `list_projects` |
+| "create a project called X" | `create_project` |
+| "use project X", "switch to X" | `list_projects` to validate, then hold X |
+| "what features are in X" | `list_features` |
+| "what documents are in X" | `list_documents` |
+| "add this file", "upload X" | `ingest_document` |
+| "run extract on the documents" | `extract_status` — extraction is AUTOMATIC on upload; there is no run |
+| "is extract done", "are the documents ready" | `extract_status` |
+| "what can I run" | `stages` |
+| "run \<stage\>", "generate the capability map" | `start_stage` |
+| "status of SCY-7", "how is that going" | `issue_status` |
+| "issues", "what is waiting on me" | `list_issues { open: true }` |
+| "what has this cost" | `spend` |
+
+This is not a closed list — it is the shape. Anything workspace-shaped goes to
+a tool. If none fits, say so; do not go looking on disk for it.
+
+If the tools are missing or every call fails to connect, the Scyne service is
+unreachable — **say that**. Falling back to the filesystem turns an outage into
+a wrong answer.
+
 ## Before anything works
 
 The workspace plane is a front door to the Scyne stack, not a replacement for
@@ -71,6 +107,8 @@ runnable and what is waiting on a person.
 
 | Verb | Does |
 |---|---|
+| `projects` | `list_projects`. The answer to "list my projects" — never `ls`. |
+| `features [project]` | `list_features`, with the document counts that decide whether a stage will run. |
 | `use <project> [feature]` | Pin a target for this conversation. Validate against `list_projects` / `list_features`. |
 | `stages` | Every workflow this server offers. Read live — never recite from memory. |
 | `run <stage> [project] [feature]` | `start_stage`. Report the issue id and stop. |
@@ -83,7 +121,7 @@ runnable and what is waiting on a person.
 | `republish <artefact>` | `republish_artefact` — same page, no new agent run. |
 | `upload <path> [kind]` | `ingest_document`. **The default for any document.** |
 | `docs` | `list_documents`. Report `inDb: false` rows. |
-| `extracts` | `extract_status` — are the documents ready yet? Extraction is automatic; this asks if it has finished. |
+| `extracts` \| `extract` \| `run extract` | `extract_status` — are the documents ready yet? Extraction starts BY ITSELF on upload, so "run extract" is a status question, not a job to start. Never `start_stage` for it. |
 | `retry extract [<path>]` | `retry_extraction` — for a document that FAILED, or one wedged at `extracting`. Not for one merely still running. |
 | `read <path>` | `read_document`. Short notes only. |
 | `rm <path>` | `delete_document`. **Confirm first.** |

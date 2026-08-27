@@ -23,9 +23,12 @@ It is a local plugin, registered in the repo's Claude Code marketplace at
 `.claude-plugin/marketplace.json`:
 
 ```
-/plugin marketplace add .
+/plugin marketplace add ./
 /plugin install aws-file-processing@scyne
 ```
+
+The trailing slash matters — a bare `.` is not a recognised source format. See
+[RUN.md](./RUN.md#1--install-the-plugin).
 
 Then start a NEW Claude Code session — MCP tools and skills bind at session
 start, so a plugin installed mid-session provides nothing until you restart.

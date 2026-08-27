@@ -9,10 +9,28 @@ For what the plugin IS, its environment and its AWS mapping, see
 
 ## 1 · Install the plugin
 
+From a Claude Code session whose working directory is the **repo root**:
+
 ```
-/plugin marketplace add .
+/plugin marketplace add ./
 /plugin install aws-file-processing@scyne
 ```
+
+**The trailing slash is not optional.** The source argument is parsed as one of
+`owner/repo`, a URL, or a path — and a path only counts as one if it starts
+`./`, `../`, `/` or `~`. A bare `.` matches none of them and is refused with
+`Invalid marketplace source format. Try: owner/repo, https://..., or ./path`,
+which reads like the manifest is broken when nothing is wrong with it. An
+absolute path is the other way to say it:
+
+```
+/plugin marketplace add /absolute/path/to/requirement-generator
+```
+
+Either form registers the marketplace `scyne` from
+[`.claude-plugin/marketplace.json`](../../.claude-plugin/marketplace.json) at
+the repo root — not from this directory, which holds the plugin the manifest
+points at.
 
 Then start a **new session**. MCP tools and skills bind at session start, so a
 plugin installed mid-session provides nothing until you restart. If tools are

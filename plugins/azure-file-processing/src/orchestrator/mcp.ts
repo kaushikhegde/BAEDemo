@@ -27,8 +27,34 @@ export const jsonResult = (value: unknown): ToolResult => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
 });
 
+/**
+ * Always-on guidance for the file plane, for the same reason the workspace
+ * server carries its own: `instructions` arrives with the tool list on every
+ * conversation, whereas the skill only loads if it is judged relevant. The
+ * one rule this plugin exists to enforce cannot depend on that judgement.
+ */
+const FILE_PLANE_INSTRUCTIONS = `
+Large documents in, page-cited passages out. A file uploaded here is converted
+and chunked on the server, so a multi-gigabyte PDF can be questioned without
+its contents entering the conversation.
+
+NEVER read an uploaded document yourself. Do not open it, cat it, pass it to
+another tool, or summarise it from memory — that is the exact cost this server
+exists to remove. You should only ever see: counts and headings from
+get_result, short snippets from search_chunks, and the passages you explicitly
+request with fetch_chunks.
+
+The order is: upload_file (or create_upload_url + PUT, when the file is not on
+this machine) -> job_status until it succeeds -> get_result -> search_chunks ->
+fetch_chunks. Do not shell out to upload, and do not compute a checksum by
+reading the file.
+`.trim();
+
 export const buildMcpServer = (ctx: Ctx): McpServer => {
-  const server = new McpServer({ name: "scyne", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "scyne", version: "0.1.0" },
+    { instructions: FILE_PLANE_INSTRUCTIONS },
+  );
 
   // Registered only where it can work. A tool that is present and always
   // throws teaches a model to retry it; one that is absent is simply not an
