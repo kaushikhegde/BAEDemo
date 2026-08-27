@@ -1,0 +1,40 @@
+{
+  "name": "aws-file-processing",
+  "version": "0.6.0",
+  "description": "Upload, process and query very large documents through AWS S3 without their contents entering the model's context, and drive the Scyne requirements pipeline as tracked issues.",
+  "author": {
+    "name": "Scyne"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "aws",
+    "s3",
+    "sqs",
+    "dynamodb",
+    "mcp",
+    "large-files",
+    "pdf",
+    "docx",
+    "chunking"
+  ],
+  "commands": "./commands/",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "AWS File Processing",
+    "shortDescription": "Run the Scyne pipeline and process huge documents, without filling the context window",
+    "longDescription": "Ships two MCP servers. The FILE plane provides an upload-process-retrieve workflow for documents up to 5 GiB: files travel directly from the machine into an S3 bucket using an 8 MiB-part multipart upload, and a worker pool converts and chunks them there, so a 2 GB PDF can be questioned while only a few kilobytes ever reach the context window. The WORKSPACE plane is a full front door to the Scyne requirements pipeline — thirty tools covering what the web chat and the scyne CLI can each do: ingesting documents of any size into a project, starting and revising every stage, approving gates, and reporting spend and audit. A stage started from Claude Code becomes the SAME tracked issue the chatbot creates, visible in the console, in Spend and in Actions.",
+    "developerName": "Scyne",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Upload a large document to S3, process it into page-mapped chunks, and answer my questions about it using only the passages that matter.",
+      "Run the capability map for my project and tell me when it needs approving."
+    ],
+    "brandColor": "#464E7E",
+    "screenshots": []
+  }
+}

@@ -1,0 +1,84 @@
+name: aws-file-processing
+
+# LocalStack stands in for S3, SQS and DynamoDB, the way Azurite stood in for
+# blob, queue and table storage — one container, one endpoint, every service on
+# :4566. Nothing in `src/` knows the difference: `AWS_ENDPOINT_URL` is the SDK's
+# own standard variable, so pointing at real AWS is deleting three lines rather
+# than changing any code.
+
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: "s3,sqs,dynamodb"
+      # A presigned URL's signature covers the Host header, so LocalStack has to
+      # agree with us about which host it is being addressed as. Path-style
+      # addressing keeps `bucket.localhost:4566` — which resolves nowhere — out
+      # of the picture entirely.
+      HOSTNAME_EXTERNAL: "localstack"
+      # Off by default in LocalStack, for backwards compatibility — and with it
+      # off, every "a presigned URL must be REFUSED here" assertion in
+      # test/presign.int.test.ts silently passes. A green suite proving nothing
+      # about the one property that stands between an upload URL and a read of
+      # somebody else's bucket. On.
+      S3_SKIP_SIGNATURE_VALIDATION: "0"
+      DEBUG: "0"
+    ports:
+      - "127.0.0.1:4566:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      # `/_localstack/health` reports per-service readiness, and s3 is the last
+      # of the three to come up — waiting on the port alone lets a worker start
+      # against a LocalStack that answers TCP and 500s every API call.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q '\"s3\": *\"available\"\\|\"s3\": *\"running\"'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  orchestrator:
+    build: .
+    command: ["npx", "tsx", "src/orchestrator/server.ts"]
+    environment:
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+      S3_FORCE_PATH_STYLE: "true"
+      ORCH_PORT: "8080"
+      # THE line that makes presigned URLs work from the host. SigV4 signs the
+      # Host header: a URL signed against `localstack:4566` (which is what this
+      # container can reach) is cryptographically invalid when curl on the HOST
+      # uses it at `127.0.0.1:4566`. So presigning is done by a second S3 client
+      # built against this endpoint — see shared/storage.ts. This is NOT the
+      # cosmetic string swap its Azure ancestor was.
+      S3_PUBLIC_ENDPOINT: "http://127.0.0.1:4566"
+      # A container's filesystem is the image's, so every path a caller names
+      # resolves to nothing (or, worse, to something unrelated that happens to
+      # exist inside). The gate's own default cannot catch this — it keys off
+      # MCP_BEARER_TOKEN, and a local Compose stack sets none — so this stack
+      # says so explicitly and upload_file is not registered here at all.
+      ALLOW_LOCAL_PATH_UPLOAD: "false"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["npx", "tsx", "src/worker/index.ts"]
+    environment:
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+      S3_FORCE_PATH_STYLE: "true"
+    deploy:
+      replicas: 2
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+volumes:
+  localstack-data:

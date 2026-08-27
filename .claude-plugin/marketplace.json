@@ -1,0 +1,14 @@
+{
+  "name": "scyne",
+  "owner": {
+    "name": "Scyne"
+  },
+  "plugins": [
+    {
+      "name": "aws-file-processing",
+      "source": "./plugins/aws-file-processing",
+      "description": "Upload, process and query very large documents through AWS S3 without their contents entering the model's context, and drive the Scyne requirements pipeline as tracked issues.",
+      "category": "Developer Tools"
+    }
+  ]
+}
