@@ -16,22 +16,28 @@ const walk = async (dir: string): Promise<string[]> => {
 };
 
 /**
- * S3 is an EXPORT, not a second source of truth.
+ * The workspace bucket is an OPERATOR tool, and no longer on any tool path.
  *
- * Postgres is the system of record; the project tree is materialised out of it
- * for a run and harvested back, and `syncUp` mirrors the result to the
- * workspace container for durability. Reading that container back would make
- * it a third opinion about what a project contains — competing with the store
- * and with the local disk — which is the same class of bug as `POST
- * /api/projects` deciding a project existed by calling `fs.access` on a folder.
+ * It used to be an export: documents landed in `projects/` on disk and
+ * `syncUp` mirrored that tree for durability. Both halves are gone. Documents
+ * now go to the orchestrator's store — object storage plus the database row,
+ * written together — and a `projects/` tree exists only while a stage runs,
+ * materialised for that step and discarded after it.
  *
- * `syncDown` stays exported and tested for an operator restoring a lost
- * workspace by hand. This asserts nothing reaches for it AUTOMATICALLY. Written
- * as a guard rather than a deletion because the direction is the invariant, and
- * an invariant nothing checks is a comment.
+ * So the invariant tightened rather than disappeared. It used to be "written,
+ * never read", which allowed a tool to push. It is now: nothing under `src/`
+ * reaches for EITHER direction. A tool that synced would be reintroducing a
+ * second opinion about what a project contains, competing with the store —
+ * the same class of bug as deciding a project exists by `fs.access` on a
+ * folder.
+ *
+ * `sync.ts` stays, and so do both exports, because `scripts/sync.mjs` is how
+ * an operator restores or mirrors a workspace by hand. That is asserted too:
+ * an invariant guarding a module nothing can reach is a comment, and a module
+ * nothing reaches at all should have been deleted instead.
  */
-describe("the workspace bucket is written, never read", () => {
-  it("nothing under src/ imports syncDown, except sync.ts which defines it", async () => {
+describe("the workspace bucket is operator-only, on no tool path", () => {
+  it("nothing under src/ imports syncUp or syncDown", async () => {
     const files = await walk(SRC);
     expect(files.length).toBeGreaterThan(10);
 
@@ -40,26 +46,21 @@ describe("the workspace bucket is written, never read", () => {
       if (f.endsWith(`workspace${sep}sync.ts`)) continue;
       const text = await readFile(f, "utf8");
       // An import of the symbol, not a mention of the word: the comments in
-      // paths.ts and manifest.ts discuss syncDown at length and must not fail.
-      if (/^\s*import[^;]*\bsyncDown\b[^;]*;/ms.test(text)) offenders.push(relative(SRC, f));
+      // paths.ts, manifest.ts and the document tools discuss sync at length
+      // and must not fail.
+      if (/^\s*import[^;]*\b(syncUp|syncDown)\b[^;]*;/ms.test(text)) offenders.push(relative(SRC, f));
     }
 
     expect(
       offenders,
-      `these import syncDown, which would make S3 a read path: ${offenders.join(", ")}`,
+      `these import a sync direction, which would make the bucket a second source of ` +
+      `truth beside the document store: ${offenders.join(", ")}`,
     ).toEqual([]);
   });
 
-  it("syncUp is imported by the tools that write, so the export half is real", async () => {
-    const files = await walk(SRC);
-    const importers = [];
-    for (const f of files) {
-      if (f.endsWith("sync.ts")) continue;
-      if (/^\s*import[^;]*\bsyncUp\b[^;]*;/ms.test(await readFile(f, "utf8"))) {
-        importers.push(relative(SRC, f));
-      }
-    }
-    // Guarding the direction is only meaningful while something pushes.
-    expect(importers.length).toBeGreaterThan(0);
+  it("the operator CLI still reaches both, so the module is not dead code", async () => {
+    const cli = await readFile(new URL("../scripts/sync.mjs", import.meta.url), "utf8");
+    expect(cli).toMatch(/import\s*\{[^}]*\bsyncUp\b/);
+    expect(cli).toMatch(/import\s*\{[^}]*\bsyncDown\b/);
   });
 });

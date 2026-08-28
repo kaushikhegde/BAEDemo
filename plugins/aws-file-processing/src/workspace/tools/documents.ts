@@ -1,9 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { chatFetch, type WsCtx } from "../chatbot.js";
+import { putDocument, listStoreDocuments, readStoreDocument, deleteStoreDocument } from "../doc-store.js";
+import { convertToMarkdown } from "../doc-convert.js";
 import type { OrchCtx } from "../orchestrator.js";
 import { getStorage } from "../../shared/storage.js";
-import { ensureWorkspaceBucket, syncUp } from "../sync.js";
 import { log } from "../../shared/logger.js";
 import { userError, serviceError } from "../../shared/errors.js";
 
@@ -47,18 +48,15 @@ const body = (args: DocRef): Record<string, string> => ({
  * description says so; the caller is expected to ask first.
  */
 export const deleteDocument = async (ctx: OrchCtx & WsCtx, args: DocRef) => {
-  const r = await chatFetch<any>(ctx.cfg, "DELETE", "/api/documents", body(args));
-  // The durable copy must not keep a document the tree no longer has. syncUp
-  // never deletes an object (an accidental `rm -rf projects/` must not compound
-  // itself), so this is reported rather than silently reconciled.
+  const r = await deleteStoreDocument(ctx, args.project, args.path, args.feature ?? null);
   log.info("workspace.document_deleted", {
     project: args.project, feature: args.feature ?? "", path: args.path,
   });
   return {
     ...r,
-    note: "Removed from disk and the database. The copy already pushed to S3 is " +
-          "retained deliberately — syncUp never deletes, so an accidental local " +
-          "delete cannot destroy the durable copy too.",
+    note: "The current version at that path is retired. The BYTES are kept — they " +
+          "are addressed by hash and another path may share them, so removing them " +
+          "would be a delete nobody asked for.",
   };
 };
 
@@ -77,44 +75,46 @@ export const replaceDocument = async (
   const st = await stat(args.file).catch(() => null);
   if (!st || !st.isFile()) throw userError("no_such_file", `no such file: ${args.file}`);
 
-  const form = new FormData();
-  form.set("file", new Blob([new Uint8Array(await readFile(args.file))]), basename(args.file));
-  form.set("project", args.project);
-  form.set("path", args.path);
-  if (args.feature) form.set("feature", args.feature);
+  // Retire first, then store. The store versions by PATH, so writing the new
+  // bytes at the old path is the replacement — there is no `handling (1).md`
+  // to avoid any more, because nothing is landing in a directory.
+  await deleteStoreDocument(ctx, args.project, args.path, args.feature ?? null).catch(() => null);
 
-  const url = `${ctx.cfg.chatbotUrl.replace(/\/+$/, "")}/api/documents`;
-  const headers: Record<string, string> = { accept: "application/json" };
-  if (ctx.cfg.orchToken) headers.authorization = `Bearer ${ctx.cfg.orchToken}`;
-
-  const res = await fetch(url, { method: "PUT", headers, body: form })
-    .catch((e: any) => { throw serviceError("service_unavailable", e, { context: { service: "chatbot", path: "/api/documents" } }); });
-  const text = await res.text();
-  let body: any;
-  try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
-    if (!res.ok) {
-    if (body?.message) throw userError(String(body.error ?? `http_${res.status}`), String(body.message));
-    throw serviceError(`http_${res.status}`, text.slice(0, 400), {
-      nothingChanged: false, context: { service: "chatbot", path: "/api/documents", status: res.status },
-    });
-  }
-
-  let synced: unknown;
-  try {
-    const storage = getStorage(ctx.cfg);
-    await ensureWorkspaceBucket(storage);
-    synced = await syncUp(storage, ctx.cfg.workspaceRoot, args.project);
-  } catch (e: any) {
-    synced = { error: String(e?.message ?? e).slice(0, 400) };
-  }
-  return { ...body, synced };
+  const converted = await convertToMarkdown(
+    await readFile(args.file), basename(args.file), ctx.cfg);
+  const doc: any = await putDocument(ctx, {
+    project: args.project, feature: args.feature ?? null,
+    path: args.path, content: converted.content,
+  });
+  log.info("workspace.document_replaced", {
+    project: args.project, feature: args.feature ?? "", path: args.path,
+    bytes: converted.content.length, converter: converted.converter,
+  });
+  return {
+    project: args.project, feature: args.feature ?? null, path: args.path,
+    filename: converted.filename, converter: converted.converter,
+    version: doc?.version ?? null, changed: doc?.changed !== false,
+  };
 };
 
 /** One document's text, for reading a SHORT document in full. Refuses a binary
  *  file and anything outside `documents/`. For anything large this is the wrong
  *  tool — upload it and use search_chunks, which is what the file plane is for. */
-export const readDocument = async (ctx: WsCtx, args: DocRef) =>
-  chatFetch<any>(ctx.cfg, "GET", `/api/documents/content?${q(args)}`);
+export const readDocument = async (ctx: OrchCtx & WsCtx, args: DocRef) => {
+  const rows = await listStoreDocuments(ctx, args.project, args.feature ?? null, true);
+  const hit = (rows ?? []).find((d: any) => d?.path === args.path);
+  if (!hit) {
+    throw userError("no_document",
+      `no document at ${args.path} in ${args.project}` +
+      (args.feature ? `/${args.feature}` : "") + ". Call list_documents for the stored paths.");
+  }
+  const bytes = await readStoreDocument(ctx, args.project, hit.id);
+  return {
+    project: args.project, feature: args.feature ?? null, path: hit.path,
+    version: hit.version ?? null, bytes: bytes.length,
+    content: bytes.toString("utf8"),
+  };
+};
 
 /**
  * Whether a project's documents have finished extracting.

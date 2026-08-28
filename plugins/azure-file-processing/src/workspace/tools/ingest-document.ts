@@ -2,7 +2,6 @@ import { basename, extname, isAbsolute } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { OrchCtx } from "../orchestrator.js";
 import { getStorage } from "../../shared/storage.js";
-import { ensureWorkspaceContainer, syncUp } from "../sync.js";
 import { ARTIFACTS_CONTAINER } from "../../shared/config.js";
 import { uploadFile } from "../../orchestrator/tools/upload-file.js";
 import type { Ctx as FileCtx } from "../../orchestrator/mcp.js";
@@ -29,9 +28,13 @@ export interface IngestResult {
   project: string; feature: string | null;
   jobId: string; sourceFilename: string; bytes: number; sha256: string;
   converter: string | null; pages: number | null; markdownChars: number | null;
-  filename: string; storedPath: string | null; subfolder: string | null;
-  db: unknown; dbError: string | null;
-  synced: { pushed: number; skipped: number; bytes: number } | { error: string };
+  /** Where it is stored, relative to its own level. There is no disk path to
+   *  report any more — the bytes and the row live in the store together. */
+  filename: string; storedPath: string; subfolder: string | null;
+  version: number | null;
+  /** false when identical content already sat at that path: a real answer the
+   *  store gives, not a failure. */
+  changed: boolean;
 }
 
 /**
@@ -130,20 +133,20 @@ export const ingestDocument = async (
   const stem = basename(up.filename, extname(up.filename));
   const mdName = `${stem}.md`;
 
+  // `preConverted`: the worker already rendered this to markdown out in the
+  // pool, so converting again would stamp a second engine header on top and
+  // lose the record of which engine actually read the document.
   const posted = await postDocument(ctx, {
     project: args.project, feature: args.feature, kind: args.kind,
-    filename: mdName, bytes: md,
+    filename: mdName, bytes: md, preConverted: true,
   });
 
-  let synced: IngestResult["synced"];
-  try {
-    await ensureWorkspaceContainer(storage);
-    synced = await syncUp(storage, ctx.cfg.workspaceRoot, args.project);
-  } catch (e: any) {
-    // Never fatal, for the same reason attach_document treats it that way: the
-    // file and its row are real whether or not the durable copy caught up.
-    synced = { error: String(e?.message ?? e).slice(0, 400) };
-  }
+  // `syncUp` used to run here, pushing the whole `projects/` tree from local
+  // disk into a second container. It is gone with the disk write it existed to
+  // mirror: the orchestrator's store now holds the bytes and the row together,
+  // so a third copy is one more thing to fall out of step — and reading the
+  // tree off local disk never worked anywhere the plugin did not share a
+  // filesystem with it.
 
   log.info("workspace.document_ingested", {
     project: args.project, feature: args.feature ?? "",
@@ -157,12 +160,10 @@ export const ingestDocument = async (
     converter: result?.converter ?? null,
     pages: result?.pages ?? null,
     markdownChars: md.byteLength,
-    filename: posted.filename ?? mdName,
-    storedPath: posted.path ?? null,
-    subfolder: posted.subfolder ?? null,
-    db: posted.db ?? null,
-    dbError: posted.db?.state === "failed"
-      ? (posted.db.reason ?? "not recorded in the database") : null,
-    synced,
+    filename: posted.filename,
+    storedPath: posted.storedPath,
+    subfolder: posted.subfolder,
+    version: posted.version,
+    changed: posted.changed,
   };
 };

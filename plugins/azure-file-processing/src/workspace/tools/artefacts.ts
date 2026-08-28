@@ -1,4 +1,6 @@
 import { chatFetch, type WsCtx } from "../chatbot.js";
+import { orchFetch } from "../orchestrator.js";
+import { resolveProjectId } from "../doc-store.js";
 import { log } from "../../shared/logger.js";
 import { userError } from "../../shared/errors.js";
 
@@ -82,8 +84,14 @@ export const republishArtefact = async (
  * document, so a project without one produces documents written in nobody's
  * terms.
  */
-export const getProjectDefinition = async (ctx: WsCtx, args: { project: string }) =>
-  chatFetch<any>(ctx.cfg, "GET", `/api/project-description/${encodeURIComponent(args.project)}`);
+export const getProjectDefinition = async (ctx: WsCtx, args: { project: string }) => {
+  // The `description` COLUMN on the project row, not `description.md` on disk.
+  // Six skills read the definition, and they read it from a tree materialised
+  // for the step — so the record is the row, and the file is derived from it.
+  const id = await resolveProjectId(ctx as any, args.project);
+  const row: any = await orchFetch<any>(ctx.cfg as any, "GET", `/projects/${id}`);
+  return { project: args.project, description: row?.description ?? null };
+};
 
 export const saveProjectDefinition = async (
   ctx: WsCtx, args: { project: string; description: string },
@@ -97,9 +105,10 @@ export const saveProjectDefinition = async (
       `least 40. Write who the client is, what they are regulated to do, and who ` +
       `their customers are — every skill reads this before any discovery document.`);
   }
-  return chatFetch<any>(ctx.cfg, "POST", "/api/project-description", {
-    project: args.project, description: args.description,
-  });
+  const id = await resolveProjectId(ctx as any, args.project);
+  const row: any = await orchFetch<any>(ctx.cfg as any, "PATCH", `/projects/${id}`,
+    { description: args.description });
+  return { project: args.project, description: row?.description ?? args.description };
 };
 
 /**
