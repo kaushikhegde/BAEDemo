@@ -3,18 +3,26 @@
 // This is an `exec` step rather than N `agent` steps because the workflow
 // engine has no fan-out primitive — `flow` exists but parent-resume-on-child-
 // completion is not implemented, and a workflow is compiled at boot, before any
-// document is known. The cost of that shortcut is that these runs get no `runs`
-// row, so they do not appear in /spend and are not covered by the per-agent
-// budget ceiling. Each extract records its own token usage so the spend is at
-// least recoverable.
+// document is known.
+//
+// The cost of that shortcut USED to be that these runs got no `runs` row: no
+// transcript, no cost, nothing in /spend, and no way to tell a working pass
+// from a wedged one for the twenty minutes it takes. The step now records
+// itself — one row per document over POST /issues/{id}/runs — so the only
+// thing still missing is the engine's per-agent budget ceiling, which cannot
+// apply to a process the engine did not spawn.
 
 import { mkdir, open, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { projectState, extractPathFor } from "./extract-state.mjs";
 import { validateExtract } from "./lib/extract-schema.mjs";
+// The runner's own argv builder and usage parser, imported rather than copied.
+// The copy that used to live here is what this fixes — see runClaude below.
+import { buildArgs, extractUsage } from "@scyne/orchestrator";
 
 const exec = promisify(execFile);
 
@@ -61,21 +69,26 @@ const onlyFeature = val("--feature", null);
  * contract the tests use: `<cmd> <outPath> <docPath>`. That is what lets the
  * suite run without spending money, and how a different adapter gets swapped in.
  *
- * The DEFAULT path is a real Claude Code invocation, and it does not look like
- * the override: Claude Code takes its prompt on **stdin**, not argv
- * (packages/orchestrator/src/core/runner.ts:91 says so explicitly), so passing
- * the paths as positional arguments would hand them over as the prompt itself.
- * The flags mirror `buildArgs` in that same file, minus the streaming output
- * this script has no use for.
+ * The DEFAULT path is a real Claude Code invocation whose argv comes from
+ * `buildArgs` — the runner's own, not a copy of it. There WAS a copy here, and
+ * it dropped `--output-format stream-json --verbose` as "streaming output this
+ * script has no use for". That output is where the `result` event lives, so
+ * every document extracted with no token count, no cost and no transcript.
+ * `runner.ts` insists every flag it carries is "confirmed against a real
+ * invocation, not assumed"; a second, assumed list is the defect.
  */
-const CLAUDE_ARGS = [
-  "-p",
-  "--permission-mode", "bypassPermissions",
-  "--no-session-persistence",
-  "--exclude-dynamic-system-prompt-sections",
-  "--strict-mcp-config",
-  "--system-prompt-file", path.join(REPO, "agent-instructions", "extract.thin.md"),
-];
+
+/**
+ * The model this pass runs on.
+ *
+ * Pinned here rather than inherited from `orchestrator.config.ts`'s default,
+ * because extraction is form-filling from a single document and every other
+ * stage is not — they are separate decisions and should stay separately
+ * changeable. `--effort low` for the same reason: this is the case low effort
+ * exists for, and it is the cost lever that does not trade away accuracy the
+ * way a weaker model would.
+ */
+const EXTRACT_MODEL = process.env.SCYNE_EXTRACT_MODEL || "claude-sonnet-5";
 
 /**
  * The prompt carries the EXACT JSON envelope, pre-filled with the three fields
@@ -238,15 +251,47 @@ const levelRootFor = (doc) => {
  * either way. `wroteSomething` deliberately tests for a NON-EMPTY file rather
  * than for existence — the placeholder always exists, which is exactly how the
  * empty case slipped through as a parse error.
+ *
+ * The argv is `buildArgs`', not a local copy. The copy this replaces omitted
+ * `--output-format stream-json --verbose` as "streaming output this script has
+ * no use for", which is precisely why a document's extraction had no token
+ * count, no cost and no transcript: the `result` event only exists on that
+ * output format. stdout is therefore BOTH the transcript and the usage record,
+ * so it is written to `logPath` for the console to render and parsed by
+ * `extractUsage` for the run row.
  */
-const runClaude = (docPath, outPath, meta) => new Promise((resolve, reject) => {
-  const child = spawn("claude", CLAUDE_ARGS, {
+const runClaude = (docPath, outPath, meta, logPath) => new Promise((resolve, reject) => {
+  const args = buildArgs({
+    agent: {
+      key: "capArchitect",
+      bundlePath: path.join(REPO, "agent-instructions", "extract.thin.md"),
+      // No MCP: this agent reads one file and writes one file. Nothing it does
+      // needs to reach Jira, Confluence or Azure DevOps.
+      mcpEnabled: false,
+      extraArgs: [],
+    },
+    model: EXTRACT_MODEL,
+    effort: "low",
+    // Claude Code takes its prompt on STDIN, not argv — buildArgs deliberately
+    // leaves it out of the flag list, and it is written below.
+    prompt: "",
+    cwd: REPO,
+    logPath: logPath ?? "",
+  });
+
+  const child = spawn("claude", args, {
     cwd: REPO, stdio: ["pipe", "pipe", "pipe"],
   });
+  // Appended, matching the runner: a retried attempt must not silently
+  // overwrite the transcript of the one before it.
+  const log = logPath ? createWriteStream(logPath, { flags: "a" }) : null;
+  let stdout = "";
   let stderr = "";
+  child.stdout.on("data", (d) => { stdout += d.toString(); log?.write(d); });
   child.stderr.on("data", (d) => { stderr += d.toString().slice(0, 4000); });
   child.on("error", reject);
   child.on("close", async (code) => {
+    log?.end();
     const tail = stderr.trim().slice(-500);
     if (code !== 0) return reject(new Error(`claude exited ${code}: ${tail}`));
     const wroteSomething = await stat(outPath).then((s) => s.size > 0).catch(() => false);
@@ -254,7 +299,11 @@ const runClaude = (docPath, outPath, meta) => new Promise((resolve, reject) => {
       return reject(new Error(
         `claude exited 0 without writing an extract` + (tail ? `: ${tail}` : " and said nothing on stderr")));
     }
-    resolve();
+    // null when the CLI emitted no result event. NOT an error and never fatal:
+    // the extract is the work, its price tag is bookkeeping.
+    let usage = null;
+    try { usage = extractUsage(stdout); } catch { /* bookkeeping never fails the work */ }
+    resolve({ usage });
   });
   // EPIPE if the child exits before reading — it is not an error worth failing on,
   // because `close` above carries the real outcome.
@@ -283,22 +332,34 @@ const extractOne = async (doc) => {
   // with `wx` — the claim that keeps two passes from colliding.
   if (await claimPartial(partial, out, flag("--force")) === "done-by-other") {
     await rm(failed, { force: true });
-    return { doc, docId, ok: true, skipped: "extracted by another pass" };
+    // No run row: no agent was spawned and nothing was spent. A row here would
+    // report a $0.00 run that never happened.
+    return { doc, docId, ok: true, usage: null, skipped: "extracted by another pass" };
   }
 
+  // Opened only once the claim is WON, so a pass that lost the race leaves no
+  // row behind. `run` is null whenever recording is unavailable — run by hand
+  // from the CLI, no token, orchestrator down — and everything below tolerates
+  // that, because the extract is the work.
+  const run = await startRun(docId);
+
   try {
+    // Declared BEFORE the branch, not inside the else: the override path spawns
+    // no agent, so there is no usage to record — null, not zero — and a `const`
+    // scoped to the else is out of scope by the time this function returns.
+    let usage = null;
     const override = process.env.SCYNE_EXTRACT_CMD;
     if (override) {
       // Test/adapter path: positional contract, no shell, no stdin.
       const [cmd, ...base] = override.split(" ");
       await exec(cmd, [...base, partial, doc], { maxBuffer: 64 * 1024 * 1024 });
     } else {
-      await runClaude(path.resolve(doc), path.resolve(partial), {
+      ({ usage } = await runClaude(path.resolve(doc), path.resolve(partial), {
         docId,
         scope: levelRoot === path.join(root, "projects", project)
           ? "project" : path.basename(levelRoot),
         category: path.basename(path.dirname(doc)),
-      });
+      }, run?.log_path));
     }
     const parsed = JSON.parse(await readFile(partial, "utf8"));
     const v = validateExtract(parsed);
@@ -312,7 +373,8 @@ const extractOne = async (doc) => {
     // never actually broken. `stateOf` reads the marker before the extract, so
     // a stale one wins every time.
     await rm(failed, { force: true });
-    return { doc, docId, ok: true };
+    await finishRun(run, { status: "succeeded", usage });
+    return { doc, docId, ok: true, usage };
   } catch (e) {
     await rm(partial, { force: true });
     const reason = scrub(e.message ?? e);
@@ -329,7 +391,8 @@ const extractOne = async (doc) => {
       lastFailedAt: now,
       ...(e.stderr ? { stderrTail: scrub(e.stderr).trim().slice(-500) } : {}),
     }, null, 2));
-    return { doc, docId, ok: false, reason: reason.slice(0, 300) };
+    await finishRun(run, { status: "failed", usage: null });
+    return { doc, docId, ok: false, usage: null, reason: reason.slice(0, 300) };
   }
 };
 
@@ -384,50 +447,160 @@ if (flag("--dry-run")) {
  */
 const ISSUE_ID = process.env.SCYNE_ISSUE_ID || "";
 const ORCH = (process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100").replace(/\/+$/, "");
+const orchHeaders = () => {
+  const h = { "content-type": "application/json" };
+  if (process.env.SCYNE_ORCH_TOKEN) h.authorization = `Bearer ${process.env.SCYNE_ORCH_TOKEN}`;
+  return h;
+};
+
 const narrate = async (body) => {
   if (!ISSUE_ID) return;
   try {
-    const headers = { "content-type": "application/json" };
-    if (process.env.SCYNE_ORCH_TOKEN) headers.authorization = `Bearer ${process.env.SCYNE_ORCH_TOKEN}`;
     await fetch(`${ORCH}/issues/${ISSUE_ID}/comments`, {
-      method: "POST", headers, body: JSON.stringify({ body }),
+      method: "POST", headers: orchHeaders(), body: JSON.stringify({ body }),
     });
   } catch { /* commentary, never the work */ }
+};
+
+/**
+ * Open and close a `runs` row for ONE document's extraction.
+ *
+ * Nine agent invocations inside a single `exec` step used to leave no trace:
+ * no transcript, no cost, nothing in /spend, and no way to tell a working pass
+ * from a wedged one during the twenty minutes it takes. The engine narrates
+ * STEPS and cannot narrate inside one, so the step records itself — the same
+ * narrow seam `SCYNE_ISSUE_ID` already opens for comments, and nothing wider.
+ *
+ * Best-effort in every direction, exactly as `narrate` is, and for the same
+ * reason: no issue id (a hand run from the CLI), no token, an unreachable
+ * orchestrator or a rejected insert must never fail an extraction that is
+ * otherwise working. A run row is bookkeeping; the extract is the work.
+ */
+const startRun = async (docId) => {
+  if (!ISSUE_ID) return null;
+  try {
+    const res = await fetch(`${ORCH}/issues/${ISSUE_ID}/runs`, {
+      method: "POST", headers: orchHeaders(),
+      body: JSON.stringify({
+        // Whose spend this is. /spend attributes by agent, and these tokens
+        // belong to the Capabilities Process Architect like any other of its runs.
+        agentKey: "capArchitect",
+        // The docId IS the label: nine rows at one step index are only useful
+        // if a reader can tell which document each one is.
+        phase: `extract: ${docId}`,
+        adapter: "claude_local",
+        model: EXTRACT_MODEL,
+      }),
+    });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+};
+
+const finishRun = async (run, { status, usage }) => {
+  if (!run?.id) return;
+  try {
+    await fetch(`${ORCH}/runs/${run.id}`, {
+      method: "PATCH", headers: orchHeaders(),
+      body: JSON.stringify({
+        status,
+        exitCode: status === "succeeded" ? 0 : 1,
+        sessionId: usage?.sessionId ?? null,
+        inputTokens: usage?.inputTokens ?? null,
+        outputTokens: usage?.outputTokens ?? null,
+        cacheReadTokens: usage?.cacheReadTokens ?? null,
+        cacheCreationTokens: usage?.cacheCreationTokens ?? null,
+        costUsd: usage?.costUsd ?? null,
+        durationMs: usage?.durationMs ?? null,
+        numTurns: usage?.numTurns ?? null,
+      }),
+    });
+  } catch { /* bookkeeping never fails the work */ }
 };
 
 const absOf = (d) => d.scope === "project"
   ? path.join(root, "projects", project, d.docId)
   : path.join(root, "projects", project, d.scope, d.docId);
 
+/**
+ * How many times a pass re-resolves its work list before giving up.
+ *
+ * The list is a SNAPSHOT, taken once, and uploads keep arriving: extraction
+ * starts once per PROJECT now rather than once per document, so a pass
+ * routinely begins before the last file has landed. SA-DEMO's SCY-5 is the
+ * measured case — it resolved one document, extracted it, and
+ * `validate-extracts.mjs` then found nine and blocked the issue, with the
+ * extraction step itself having reported success.
+ *
+ * Bounded rather than "until nothing is left". A document that fails on every
+ * attempt would otherwise loop forever, and `attempted` is what makes each
+ * sweep strictly smaller: a document is tried at most once per pass, so the
+ * loop drains even when every attempt fails.
+ */
+const MAX_SWEEPS = 3;
+const attempted = new Set();
+const idOf = (d) => `${d.scope}/${d.docId}`;
+
 const results = [];
-const queue = [...todo];
-const lanes = Math.min(concurrency, queue.length);
+let sweep = 0;
+let queue = todo;
 
-// An estimate up front, because "how long will this take" is the question
-// somebody watching a blank panel is actually asking. Deliberately a RANGE and
-// deliberately rough: a document's extraction time is dominated by its length
-// and this knows only how many there are. A wrong-but-honest range beats a
-// spinner, and beats a precise number that is also wrong.
-const waves = Math.ceil(queue.length / Math.max(1, lanes));
-await narrate(
-  `Extracting ${queue.length} document(s), ${lanes} at a time — about ` +
-  `${waves * 2}\u2013${waves * 5} minutes. One agent reads each document once and ` +
-  `fills in a fixed form; a long PDF is the slow one.` +
-  (st.ready ? ` ${st.ready} already extracted and skipped.` : ""));
+while (queue.length && sweep < MAX_SWEEPS) {
+  sweep++;
+  for (const d of queue) attempted.add(idOf(d));
+  const lanes = Math.min(concurrency, queue.length);
 
-let done = 0;
-await Promise.all(Array.from({ length: lanes }, async () => {
-  while (queue.length) {
-    const r = await extractOne(absOf(queue.shift()));
-    results.push(r);
-    done++;
-    // Per document rather than per wave: a wave boundary tells you nothing
-    // while the wave is running, which is the whole interval being reported on.
-    await narrate(r.ok
-      ? `${done}/${todo.length} \u00b7 extracted \`${r.docId}\`${r.skipped ? ` (${r.skipped})` : ""}`
-      : `${done}/${todo.length} \u00b7 FAILED \`${r.docId}\` \u2014 ${r.reason}`);
+  if (sweep === 1) {
+    // An estimate up front, because "how long will this take" is the question
+    // somebody watching a blank panel is actually asking. Deliberately a RANGE
+    // and deliberately rough: a document's extraction time is dominated by its
+    // length and this knows only how many there are. A wrong-but-honest range
+    // beats a spinner, and beats a precise number that is also wrong.
+    const waves = Math.ceil(queue.length / Math.max(1, lanes));
+    await narrate(
+      `Extracting ${queue.length} document(s), ${lanes} at a time — about ` +
+      `${waves * 2}–${waves * 5} minutes. One agent reads each document once and ` +
+      `fills in a fixed form; a long PDF is the slow one.` +
+      (st.ready ? ` ${st.ready} already extracted and skipped.` : ""));
+  } else {
+    await narrate(
+      `${queue.length} more document(s) arrived while that ran — extracting those too.`);
   }
-}));
+
+  const lane = [...queue];
+  // The denominator counts what is known NOW. It grows between sweeps, which is
+  // honest: a total that stayed wrong would be worse than one that moves when
+  // more work genuinely appears.
+  const total = results.length + lane.length;
+  await Promise.all(Array.from({ length: lanes }, async () => {
+    while (lane.length) {
+      const r = await extractOne(absOf(lane.shift()));
+      results.push(r);
+      // Per document rather than per wave: a wave boundary tells you nothing
+      // while the wave is running, which is the whole interval being reported on.
+      await narrate(r.ok
+        ? `${results.length}/${total} · extracted \`${r.docId}\`${r.skipped ? ` (${r.skipped})` : ""}`
+        : `${results.length}/${total} · FAILED \`${r.docId}\` — ${r.reason}`);
+    }
+  }));
+
+  // Re-resolve from disk. A document uploaded while the sweep above was running
+  // is invisible to the list that sweep started from — which is the entire bug.
+  const fresh = await projectState(root, project);
+  queue = fresh.documents.filter((d) => d.state !== "ready" && !attempted.has(idOf(d)));
+  if (onlyFeature) queue = queue.filter((d) => d.scope === onlyFeature);
+  // An aimed retry is one named document, never a sweep for more work.
+  if (onlyDoc) queue = [];
+}
+
+if (queue.length) {
+  // Not any single document's failure, so it does not belong in a failure
+  // marker — but it must not be silent either. `validate-extracts.mjs` is what
+  // blocks the issue on it; this is what tells a reader why.
+  console.error(
+    `⚠ ${queue.length} document(s) still unextracted after ${MAX_SWEEPS} sweeps — ` +
+    `documents are arriving faster than they extract, or something is wrong:`);
+  for (const d of queue) console.error(`  - ${idOf(d)}`);
+}
 
 const failures = results.filter((r) => !r.ok);
 const skipped = results.filter((r) => r.ok && r.skipped);

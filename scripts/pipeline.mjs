@@ -105,7 +105,11 @@ export const STAGES = {
     // and a workflow is compiled at boot, before any document is known). So the
     // fan-out lives in the script, and the stage compiles to an exec that runs
     // it. `document-extract` is invoked by that script, once per document.
-    script: "node scripts/extract-documents.mjs <project>",
+    // `tsx`, not `node`: this script imports `buildArgs` and `extractUsage`
+    // from @scyne/orchestrator so it cannot drift from the runner's real flag
+    // list, and that package ships TypeScript source. Node 24 strips types but
+    // does not do the `.js` -> `.ts` resolution the package's own imports use.
+    script: "./node_modules/.bin/tsx scripts/extract-documents.mjs <project>",
     work: "solutions/Extracts",
     titlePrefix: "Extract documents",
     publishes: false,

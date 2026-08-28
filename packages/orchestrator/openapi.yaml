@@ -432,10 +432,24 @@ paths:
               properties:
                 workflow: { type: string, description: "A key from config.workflows." }
                 params:   { type: object, additionalProperties: true, description: "e.g. { project, feature }" }
+                coalesceKey:
+                  type: string
+                  description: >-
+                    Optional. When an issue for this workflow already carries
+                    this key and is neither `done` nor `cancelled`, that issue
+                    is returned with 200 and is NOT advanced again, instead of
+                    a second being created with 201. For a caller that fires
+                    once per event but wants one unit of work — the chatbot
+                    starts `extract` on every document upload.
             example:
               workflow: "requirements"
               params: { project: "RTWSA", feature: "Appeals & Reviews" }
       responses:
+        "200":
+          description: An open issue with this `coalesceKey` already existed; it is returned unchanged and was not advanced again
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
         "201":
           description: The created issue (workflow's first steps may already have run by the time this returns)
           content:
@@ -813,6 +827,58 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Run" }
 
+    post:
+      operationId: recordRun
+      summary: Record a run this step spawned itself
+      description: >-
+        For a step that fans out inside a single `exec` — `extract` spawns one
+        `document-extract` agent per document — so each invocation gets a row,
+        a transcript and a cost instead of vanishing into one opaque step.
+        Returns the row including `log_path`, where the caller should write its
+        transcript so `/runs/{id}/transcript` can render it. Close it with
+        `PATCH /runs/{id}`.
+      parameters:
+        - $ref: "#/components/parameters/IssueId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase]
+              properties:
+                phase:
+                  type: string
+                  description: >-
+                    Required — it is the row's label. Nine rows at one step
+                    index are only useful if a reader can tell which item each
+                    one is.
+                agentKey:  { type: string, description: "Whose spend this is, e.g. capArchitect." }
+                stepIndex: { type: integer, description: "Defaults to the issue's current step." }
+                adapter:   { type: string }
+                model:     { type: string }
+            example:
+              agentKey: "capArchitect"
+              phase: "extract: documents/Introduction.md"
+              adapter: "claude_local"
+              model: "claude-sonnet-5"
+      responses:
+        "201":
+          description: "The created run, with status running"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "400":
+          description: Missing `phase`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such issue in this organisation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /runs/{id}:
     get:
       operationId: getRun
@@ -827,6 +893,58 @@ paths:
               schema: { $ref: "#/components/schemas/Run" }
         "404":
           description: No run has this id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+    patch:
+      operationId: finishRun
+      summary: Close a run opened by POST /issues/{id}/runs
+      description: >-
+        Records the outcome and what it spent. `estCostUsd` is deliberately NOT
+        accepted: `cost_source` is derived from which figure is present, so a
+        caller-supplied estimate could be labelled as the orchestrator's own
+        arithmetic. A run whose runtime reported no cost stays unpriced, which
+        is the truth, rather than becoming zero.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:              { type: string, enum: [succeeded, failed, over_budget, cancelled] }
+                exitCode:            { type: integer }
+                sessionId:           { type: string }
+                inputTokens:         { type: integer }
+                outputTokens:        { type: integer }
+                cacheReadTokens:     { type: integer }
+                cacheCreationTokens: { type: integer }
+                costUsd:             { type: number }
+                durationMs:          { type: integer }
+                numTurns:            { type: integer }
+            example:
+              status: "succeeded"
+              exitCode: 0
+              inputTokens: 12040
+              outputTokens: 860
+              costUsd: 0.0412
+      responses:
+        "200":
+          description: The finished run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "400":
+          description: Missing `status`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No run has this id in this organisation
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

@@ -355,6 +355,35 @@ export function createRepo(db: Db) {
       return rows.map(parseIssueRow);
     },
 
+    /**
+     * An open issue for this workflow carrying this coalesce key, or null.
+     *
+     * "Open" is every status a run can still move out of. `done` and
+     * `cancelled` are terminal and deliberately excluded: the next start after
+     * a finished run gets a fresh issue rather than reopening one that has
+     * accumulated a project's entire history.
+     *
+     * `order by created_at asc` is not cosmetic. If two somehow exist, joining
+     * the OLDEST means work converges on one issue; joining the newest would
+     * let a pair ping-pong forever.
+     *
+     * The key lives in `params` because that column is already jsonb and
+     * already carries everything else a caller passes. A dedicated column
+     * would need a migration to express something one workflow uses.
+     */
+    async findOpenByCoalesceKey(
+      companyId: string, workflowKey: string, coalesceKey: string,
+    ): Promise<IssueRow | null> {
+      const { rows } = await db.query<IssueRow>(
+        `select * from issues
+          where company_id=$1 and workflow_key=$2
+            and params->>'coalesceKey' = $3
+            and status not in ('done','cancelled')
+          order by created_at asc limit 1`,
+        [companyId, workflowKey, coalesceKey]);
+      return rows[0] ? parseIssueRow(rows[0]) : null;
+    },
+
     async updateIssue(id: string, patch: UpdateIssuePatch): Promise<IssueRow | null> {
       const sets: string[] = [];
       const params: unknown[] = [];

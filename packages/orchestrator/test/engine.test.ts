@@ -1069,3 +1069,97 @@ describe("a step works in the tree it is given", () => {
     expect((await repo.getIssue(issue.id))?.status).toBe("in_review");
   });
 });
+
+describe("coalesceKey", () => {
+  // Nine uploads used to start nine `extract` issues, racing each other over
+  // one project's document tree; eight of them blocked. `requirements` stands
+  // in for `extract` here — coalescing is a property of the engine, not of any
+  // one workflow, and this file's config already defines it.
+
+  it("returns the open issue instead of creating a second", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+
+    expect(a.coalesced).toBe(false);
+    expect(b.coalesced).toBe(true);
+    expect(b.id).toBe(a.id);
+  });
+
+  it("does not coalesce onto a terminal issue", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "done" });
+
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    expect(b.coalesced).toBe(false);
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it("does not coalesce across projects", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    const b = await engine.start("requirements", { project: "Q" }, { coalesceKey: "extract:Q" });
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it("creates normally when no key is given", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" });
+    const b = await engine.start("requirements", { project: "P" });
+    expect(b.id).not.toBe(a.id);
+    expect(a.coalesced).toBe(false);
+  });
+
+  it("records the key on the issue it created, so a later start can find it", async () => {
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    // Read back from the DATABASE, not from the return value: the lookup
+    // queries params->>'coalesceKey', so it has to actually be persisted.
+    const stored = await repo.getIssue(a.id);
+    expect(stored?.params.coalesceKey).toBe("extract:P");
+    expect(stored?.params.project).toBe("P");
+  });
+});
+
+describe("attempt counting alongside fan-out runs", () => {
+  /**
+   * A fan-out step writes one run row per ITEM at a single step_index —
+   * scripts/extract-documents.mjs writes one per document. Those are the step's
+   * output, not attempts at it, and counting them as attempts makes the engine
+   * lie to whoever is reading the blocked issue: "after 11 attempts" when the
+   * agent ran twice.
+   *
+   * An engine-started run carries the step's own phase; a fan-out row carries
+   * `extract: <docId>`. `agent_id` cannot be the discriminator — fan-out rows
+   * deliberately carry one, because that spend must attribute to the agent that
+   * incurred it.
+   */
+  it("counts only runs of this step's phase, not a fan-out's rows", async () => {
+    // Fails instantly having accounted for nothing — the one case that retries.
+    const failing = { run: async () => { calls.push("run"); return {
+      exitCode: 1, status: "failed" as const, usage: null,
+      stderrTail: "Error: connect ETIMEDOUT" }; } };
+
+    const engine = createEngine({ repo, config: config(dir, failing), exec: fakeExec });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+
+    // Nine fan-out rows at the agent step's index, as the extract script writes.
+    for (let i = 0; i < 9; i++) {
+      await repo.startRun({
+        issueId: issue.id, stepIndex: 1, phase: `extract: documents/doc${i}.md`,
+        logPath: join(dir, `fanout-${i}.jsonl`),
+      });
+    }
+
+    await engine.advance(issue.id);
+
+    // The agent ran twice: one attempt plus its single automatic retry.
+    expect(calls.filter(c => c === "run").length).toBe(2);
+
+    const blocking = (await repo.listComments(issue.id)).map(c => c.body).join("\n");
+    expect(blocking).toMatch(/after 2 attempts/);
+    // The bug this pins: nine unrelated rows must not be read as nine attempts.
+    expect(blocking).not.toMatch(/after 11 attempts/);
+  });
+});

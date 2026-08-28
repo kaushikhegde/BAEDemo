@@ -12,6 +12,9 @@ const execFileAsync = promisify(execFile);
 
 let root;
 const SCRIPT = join(process.cwd(), "scripts/extract-documents.mjs");
+// Spawned exactly as the pipeline spawns it: the script imports from
+// @scyne/orchestrator, which ships TypeScript source that plain node cannot resolve.
+const TSX = join(process.cwd(), "node_modules/.bin/tsx");
 
 // A stub "agent" so the test never spends money. The script must honour
 // SCYNE_EXTRACT_CMD, which is also how a different adapter gets wired in.
@@ -26,7 +29,7 @@ beforeEach(() => {
 });
 
 const run = (...args) =>
-  execFileSync("node", [SCRIPT, "P", "--root", root, ...args],
+  execFileSync(TSX, [SCRIPT, "P", "--root", root, ...args],
     { encoding: "utf8", env: { ...process.env, SCYNE_EXTRACT_CMD: `node ${STUB}` } });
 
 test("writes one extract per document and reports it", async () => {
@@ -61,7 +64,7 @@ test("an edited document is re-extracted without --force", async () => {
 test("a failing agent leaves the document failed and exits non-zero", () => {
   let code = 0;
   try {
-    execFileSync("node", [SCRIPT, "P", "--root", root, "--concurrency", "1"],
+    execFileSync(TSX, [SCRIPT, "P", "--root", root, "--concurrency", "1"],
       { encoding: "utf8", env: { ...process.env, SCYNE_EXTRACT_CMD: "node -e \"process.exit(3)\"" } });
   } catch (e) { code = e.status; }
   assert.notEqual(code, 0, "must exit non-zero when a document fails");
@@ -73,7 +76,7 @@ test("an agent that writes an INVALID extract is recorded failed, not ready", as
     writeFileSync(process.argv[2], JSON.stringify({version:1,docId:"x"}));`);
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "P", "--root", root, "--concurrency", "1"],
+    execFileSync(TSX, [SCRIPT, "P", "--root", root, "--concurrency", "1"],
       { encoding: "utf8", env: { ...process.env, SCYNE_EXTRACT_CMD: `node ${bad}` } });
   } catch { threw = true; }
   assert.ok(threw);
@@ -98,7 +101,7 @@ const docA = () => join(root, "projects/P/documents/a.md");
 /** Run and capture stderr, which execFileSync otherwise forwards to the parent. */
 const runFailing = (agent, ...args) => {
   try {
-    execFileSync("node", [SCRIPT, "P", "--root", root, "--concurrency", "1", ...args],
+    execFileSync(TSX, [SCRIPT, "P", "--root", root, "--concurrency", "1", ...args],
       { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, SCYNE_EXTRACT_CMD: agent } });
     assert.fail("expected a non-zero exit");
@@ -163,7 +166,7 @@ test("takes over an abandoned .partial rather than failing", async () => {
   const old = new Date(Date.now() - 60_000);
   utimesSync(`${out}.partial`, old, old);
 
-  const res = JSON.parse(execFileSync("node",
+  const res = JSON.parse(execFileSync(TSX,
     [SCRIPT, "P", "--root", root, "--concurrency", "1"],
     { encoding: "utf8",
       env: { ...process.env, SCYNE_EXTRACT_CMD: `node ${STUB}`, SCYNE_EXTRACT_CLAIM_TTL_MS: "5000" } }));
@@ -177,7 +180,7 @@ test("waits for a live claim instead of re-extracting what another pass produced
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(`${out}.partial`, "");
 
-  const running = execFileAsync("node",
+  const running = execFileAsync(TSX,
     [SCRIPT, "P", "--root", root, "--concurrency", "1"],
     { encoding: "utf8",
       env: { ...process.env, SCYNE_EXTRACT_CMD: `node ${STUB}`, SCYNE_EXTRACT_CLAIM_TTL_MS: "60000" } });
@@ -202,7 +205,7 @@ test("--force breaks a live claim instead of waiting for it", async () => {
   writeFileSync(`${out}.partial`, "");
 
   const started = Date.now();
-  execFileSync("node", [SCRIPT, "P", "--root", root, "--concurrency", "1", "--force"],
+  execFileSync(TSX, [SCRIPT, "P", "--root", root, "--concurrency", "1", "--force"],
     { encoding: "utf8",
       env: { ...process.env, SCYNE_EXTRACT_CMD: `node ${STUB}`, SCYNE_EXTRACT_CLAIM_TTL_MS: "30000" } });
 

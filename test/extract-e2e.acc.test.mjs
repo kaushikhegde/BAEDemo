@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from "node:fs";
 const PROJECT = process.env.E2E_PROJECT || "SAPN_DEMO";
 
 test("every document extracts and validates", () => {
-  execFileSync("node", ["scripts/extract-documents.mjs", PROJECT, "--concurrency", "3"],
+  execFileSync("./node_modules/.bin/tsx", ["scripts/extract-documents.mjs", PROJECT, "--concurrency", "3"],
     { encoding: "utf8" });
   const out = execFileSync("node", ["scripts/validate-extracts.mjs", PROJECT],
     { encoding: "utf8" });

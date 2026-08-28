@@ -9,10 +9,14 @@ test("CLAUDE.md documents the extract stage", () => {
 });
 
 test("it names the spend gap honestly", () => {
-  // Map passes get no `runs` row. Somebody reading /spend must not conclude
-  // the extraction was free.
+  // The gap MOVED rather than closing. Map passes now record one run row per
+  // document, so /spend and the transcripts are right — but the engine's
+  // per-agent budget ceiling still cannot apply to a process it did not spawn,
+  // and somebody reading the budgets tab must not believe extraction is capped.
   const md = readFileSync("CLAUDE.md", "utf8");
-  assert.match(md, /no `runs` row|not tracked in \/spend|do not appear in/i);
+  assert.match(md, /budget ceiling does not apply|cannot cap a process it did not spawn/i);
+  assert.doesNotMatch(md, /extraction[^.]*no `runs` row/i,
+    "that has not been true since the map pass started recording its own runs");
 });
 
 test("it names the ready-not-present gate change", () => {

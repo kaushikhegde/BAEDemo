@@ -165,8 +165,14 @@ export const orchestrator = {
    * wrong for anything the server starts on its own behalf. Extraction has no
    * sentence behind it — a document arrived — so it names its workflow.
    */
-  startWorkflow: (workflow: string, params: Record<string, string>) =>
-    call<any>("POST", "/issues", { workflow, params }),
+  /**
+   * `coalesceKey` makes the start idempotent while the issue it made is still
+   * open: the server returns the existing issue (200) rather than creating a
+   * second (201). Optional, so every other caller is untouched — only a caller
+   * that fires once per event but wants one unit of work needs it.
+   */
+  startWorkflow: (workflow: string, params: Record<string, string>, coalesceKey?: string) =>
+    call<any>("POST", "/issues", { workflow, params, ...(coalesceKey ? { coalesceKey } : {}) }),
 
   /** Agents are addressed by key now. The key IS the id — nothing to look up. */
   agentId(specKey: string): string | null { return specKey || null; },

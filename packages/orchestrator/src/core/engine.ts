@@ -72,8 +72,23 @@ export interface Engine {
   start(
     workflowKey: string,
     params: Record<string, string>,
-    opts?: { companyId?: string; createdBy?: string | null },
-  ): Promise<IssueRow>;
+    /**
+     * `coalesceKey` makes a start IDEMPOTENT for as long as the issue it made
+     * is still open. A caller fired once per uploaded document used to create
+     * one issue per document — nine uploads, nine issues, racing each other
+     * over one project's tree, eight of them blocked.
+     */
+    opts?: { companyId?: string; createdBy?: string | null; coalesceKey?: string },
+    /**
+     * `coalesced` rides ON the row rather than wrapping it in
+     * `{ issue, coalesced }`, which would be the tidier shape and the wrong
+     * one: there are 72 `engine.start(` call sites, nearly all of them
+     * `const issue = await engine.start(...)` followed by `issue.id`. The flag
+     * is read by exactly one of them. It cannot reach the database —
+     * `createIssue` inserts named columns, so a field that is not one of them
+     * has nowhere to go.
+     */
+  ): Promise<IssueRow & { coalesced: boolean }>;
   advance(issueId: string): Promise<void>;
   retry(issueId: string): Promise<void>;
   /**
@@ -490,7 +505,14 @@ export function createEngine(deps: {
          */
         const attemptOnce = async (): Promise<{ res: RunResult; elapsedMs: number }> => {
           const attempt = (await repo.listRuns(issue.id))
-            .filter(r => r.step_index === issue.step_index).length;
+            // Scoped by PHASE, not step index alone. A fan-out step writes one
+            // run row per ITEM at a single step_index (extract-documents.mjs
+            // writes one per document); those are the step's OUTPUT, not
+            // attempts at it. An engine-started run carries the step's own
+            // phase, a fan-out row carries `extract: <docId>`. `agent_id`
+            // cannot be the discriminator — fan-out rows deliberately carry
+            // one, so their spend attributes to the agent that incurred it.
+            .filter(r => r.step_index === issue.step_index && r.phase === step.phase).length;
           // installRoot: run logs are this deployment's own runtime data, not
           // the project's. (They move into Postgres entirely in a later step.)
           const logPath = join(installRoot, ".orchestrator", "runs",
@@ -633,7 +655,14 @@ export function createEngine(deps: {
           // further one is coming. An operator staring at a blocked issue
           // should not have to infer the retry policy from the run list.
           const attempts = (await repo.listRuns(issue.id))
-            .filter(r => r.step_index === issue.step_index).length;
+            // Scoped by PHASE, not step index alone. A fan-out step writes one
+            // run row per ITEM at a single step_index (extract-documents.mjs
+            // writes one per document); those are the step's OUTPUT, not
+            // attempts at it. An engine-started run carries the step's own
+            // phase, a fan-out row carries `extract: <docId>`. `agent_id`
+            // cannot be the discriminator — fan-out rows deliberately carry
+            // one, so their spend attributes to the agent that incurred it.
+            .filter(r => r.step_index === issue.step_index && r.phase === step.phase).length;
           await block(issue.id,
             `Agent \`${agentKey}\` ${res.status} (exit ${res.exitCode}) after ` +
             `${attempts} attempt${attempts === 1 ? "" : "s"}. ` +
@@ -896,6 +925,15 @@ export function createEngine(deps: {
       // file every client's work under whichever organisation the config file
       // happens to name.
       const companyId = opts.companyId ?? await repo.ensureCompany(config.company ?? "Scyne");
+      // Before anything is created. An upload-triggered start fires once per
+      // document, so nine uploads meant nine issues sweeping one project's
+      // document tree at once — each resolving its own work list, each racing
+      // the others' `.partial` claims, eight of them ending blocked. Joining
+      // the open one is what makes this a single unit of work.
+      if (opts.coalesceKey) {
+        const open = await repo.findOpenByCoalesceKey(companyId, workflowKey, opts.coalesceKey);
+        if (open) return { ...open, coalesced: true };
+      }
       // The org chart is reconciled into the HOME organisation on boot, so an
       // agent lookup in any other organisation legitimately finds nothing. An
       // issue with no assignee is already a supported state — the engine
@@ -905,11 +943,16 @@ export function createEngine(deps: {
       const title = wf.title
         ? interpolate(wf.title, params)
         : `${wf.label} — ${params.project ?? ""}`.trim();
-      return repo.createIssue({
+      const issue = await repo.createIssue({
         companyId, title,
-        workflowKey, params, assigneeAgentId: agent?.id ?? null, status: "todo",
+        workflowKey,
+        // Persisted, because findOpenByCoalesceKey queries `params->>` — a key
+        // held only in memory would coalesce nothing.
+        params: opts.coalesceKey ? { ...params, coalesceKey: opts.coalesceKey } : params,
+        assigneeAgentId: agent?.id ?? null, status: "todo",
         createdBy: opts.createdBy ?? null,
       });
+      return { ...issue, coalesced: false };
     },
 
     advance,

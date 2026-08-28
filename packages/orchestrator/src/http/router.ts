@@ -23,6 +23,7 @@ import { createPlatformRepo } from "../core/platform.js";
 import { createAuth, type AuthedRequest } from "./auth-middleware.js";
 import { loadOverrides, saveOverrides, withAgentPatch } from "../core/overrides.js";
 import { listSkills, skillFilePath } from "../core/skills.js";
+import { newId } from "../core/ids.js";
 import { createDocsHandlers } from "./docs.js";
 import { renderConsole } from "./console.js";
 import type { createOrchestrator } from "../index.js";
@@ -68,7 +69,9 @@ const CORE_ROUTES = [
   { method: "POST",  path: "/gates/{id}/approve" },
   { method: "POST",  path: "/gates/{id}/reject" },
   { method: "GET",   path: "/issues/{id}/runs" },
+  { method: "POST",  path: "/issues/{id}/runs" },   // a fan-out step records its own
   { method: "GET",   path: "/runs/{id}" },
+  { method: "PATCH", path: "/runs/{id}" },          // …and closes it
   { method: "GET",   path: "/runs/{id}/log" },
   { method: "GET",   path: "/runs/{id}/transcript" },
   { method: "GET",   path: "/budgets" },
@@ -586,7 +589,8 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
   // ---- issues ---------------------------------------------------------------
 
   r.post("/issues", guard, wrap(async (req, res) => {
-    const { workflow, params } = (req.body ?? {}) as { workflow?: string; params?: Record<string, unknown> };
+    const { workflow, params, coalesceKey } = (req.body ?? {}) as
+      { workflow?: string; params?: Record<string, unknown>; coalesceKey?: string };
     if (!workflow) { badRequest(res, "workflow is required"); return; }
     let issue;
     try {
@@ -594,6 +598,7 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
       issue = await orch.engine.start(workflow, (params ?? {}) as Record<string, string>, {
         companyId: principal.companyId,
         createdBy: principal.user.id,
+        ...(coalesceKey ? { coalesceKey } : {}),
       });
     } catch (err) {
       badRequest(res, err instanceof Error ? err.message : String(err));
@@ -611,10 +616,21 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     // request dies with it. Logged (not swallowed): the issue row is left
     // exactly where it was, which is recoverable by a retry or a manual
     // POST /issues/{id} nudge; a dead process is not.
-    orch.engine.advance(issue.id).catch((err: unknown) => {
-      console.error(`[orchestrator] advance(${issue.id}) failed:`, err);
-    });
-    res.status(201).json(issue);
+    //
+    // Only a NEW issue is advanced. A coalesced one is already mid-run, and a
+    // second concurrent advance() on it would be dropped by the in-memory lock
+    // inside advance() — but relying on that guard is relying on it for
+    // something we can simply not do.
+    if (!issue.coalesced) {
+      orch.engine.advance(issue.id).catch((err: unknown) => {
+        console.error(`[orchestrator] advance(${issue.id}) failed:`, err);
+      });
+    }
+    // 200 means "one was already going", 201 means "I started one". A caller
+    // that cannot tell those apart is the bug this route was changed for: the
+    // chatbot fires this once per uploaded document and had no way to know it
+    // was creating a ninth issue rather than joining the first.
+    res.status(issue.coalesced ? 200 : 201).json(issue);
   }));
 
   r.get("/issues", guard, wrap(async (req, res) => {
@@ -891,11 +907,80 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
 
   // ---- runs ---------------------------------------------------------------
 
+  /**
+   * Record a run the ENGINE did not start.
+   *
+   * `scripts/extract-documents.mjs` spawns one agent per document inside a
+   * single `exec` step. Those are real agent invocations costing real money,
+   * and before this they had no run row at all: no transcript, no cost,
+   * nothing in /spend, and no way to tell a working pass from a wedged one
+   * during the twenty minutes it takes. The engine narrates STEPS and cannot
+   * narrate inside one, so the step records itself — the same narrow seam
+   * `SCYNE_ISSUE_ID` already opens for comments.
+   *
+   * Deliberately thin. It creates the row and hands back the log path the
+   * caller should write its transcript to; it does not spawn, supervise or
+   * budget anything. A step wanting those things should be an `agent` step.
+   */
+  r.post("/issues/:id/runs", guard, wrap(async (req, res) => {
+    const issue = await issueFor(req, res, pathParam(req.params.id));
+    if (!issue) return;
+
+    const { agentKey, phase, stepIndex, adapter, model } = (req.body ?? {}) as {
+      agentKey?: string; phase?: string; stepIndex?: number; adapter?: string; model?: string;
+    };
+    // Required, because the phase IS the label: nine rows at one step index are
+    // only useful if a reader can tell which document each one is.
+    if (!phase) { badRequest(res, "phase is required"); return; }
+
+    const agent = agentKey ? await orch.repo.getAgentByKey(org(req), agentKey) : null;
+    const idx = typeof stepIndex === "number" ? stepIndex : issue.step_index;
+    const run = await orch.repo.startRun({
+      issueId: issue.id,
+      // Carried on purpose: this spend belongs to the agent that incurred it,
+      // and /spend attributes by agent. It is also why `agent_id` cannot be
+      // what tells a fan-out row apart from an engine attempt — see engine.ts.
+      agentId: agent?.id ?? null,
+      stepIndex: idx, phase,
+      // installRoot: run logs are this deployment's own runtime data, exactly
+      // as the engine treats them.
+      logPath: resolve(orch.config.workspace, ".orchestrator", "runs",
+                       `${issue.id}-${idx}-${newId()}.jsonl`),
+      adapter: adapter ?? null, model: model ?? null,
+    });
+    res.status(201).json(run);
+  }));
+
   r.get("/runs/:id", guard, wrap(async (req, res) => {
     const id = pathParam(req.params.id);
     const run = await runFor(req, res, id);
     if (!run) return;
     ok(res, run);
+  }));
+
+  /** Close a run opened by POST /issues/{id}/runs. */
+  r.patch("/runs/:id", guard, wrap(async (req, res) => {
+    const run = await runFor(req, res, pathParam(req.params.id));
+    if (!run) return;
+
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.status !== "string") { badRequest(res, "status is required"); return; }
+    const num = (v: unknown) => (typeof v === "number" ? v : null);
+
+    // `estCostUsd` is deliberately NOT accepted from the caller. finishRun
+    // derives `cost_source` from which figure is present, so taking an estimate
+    // over the wire would let a caller label its own arithmetic as ours — and
+    // the whole point of two columns is that a reader can always tell whose
+    // they are looking at.
+    const finished = await orch.repo.finishRun(run.id, {
+      status: b.status,
+      exitCode: num(b.exitCode),
+      sessionId: typeof b.sessionId === "string" ? b.sessionId : null,
+      inputTokens: num(b.inputTokens), outputTokens: num(b.outputTokens),
+      cacheReadTokens: num(b.cacheReadTokens), cacheCreationTokens: num(b.cacheCreationTokens),
+      costUsd: num(b.costUsd), durationMs: num(b.durationMs), numTurns: num(b.numTurns),
+    });
+    ok(res, finished);
   }));
 
   r.get("/runs/:id/log", guard, wrap(async (req, res) => {

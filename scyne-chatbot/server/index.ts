@@ -2520,7 +2520,15 @@ function startExtraction(
     // ordinary run regardless, because `extract-documents.mjs` retries
     // everything whose state is not `ready`, which is the case retry exists
     // for.
-    void paperclip.startWorkflow("extract", { project })
+    // Coalesced per PROJECT, not per document. This function fires once per
+    // upload, and `POST /issues` had no dedupe: nine documents started nine
+    // `extract` issues, each resolving its own work list from a tree the
+    // others were still writing into, eight of them ending blocked. `extract`
+    // is a project-level stage — one pass sweeps the project's own documents
+    // and every feature's discovery folders — so one issue per project is the
+    // correct unit of work, and the server returns the open one rather than
+    // creating another.
+    void paperclip.startWorkflow("extract", { project }, `extract:${project}`)
       .then((issue: any) => console.log(
         `[extract] ${project}: started ${issue?.identifier ?? issue?.id ?? "?"}` +
         `${feature ? ` (triggered by ${feature})` : ""}` +

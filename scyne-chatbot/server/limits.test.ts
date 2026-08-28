@@ -105,6 +105,23 @@ describe("extraction starts when a document arrives", () => {
    * Only the engine materialises that tree per step and harvests the extracts
    * back, so only the workflow can do this work correctly.
    */
+  /**
+   * Nine uploads must not mean nine issues.
+   *
+   * This fires once per uploaded document, and `POST /issues` had no dedupe:
+   * nine documents started nine `extract` issues, each resolving its own work
+   * list from a tree the others were still writing into, eight of them ending
+   * blocked. The key is per PROJECT rather than per document because `extract`
+   * is a project-level stage — one pass sweeps the project's own documents and
+   * every feature's discovery folders.
+   */
+  it("coalesces onto the project's open extract issue", async () => {
+    const src = await readFile("server/index.ts", "utf8");
+    const fn = routeBody(src, "function startExtraction(");
+    const code = fn.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).toMatch(/coalesceKey|`extract:\$\{project\}`/);
+  });
+
   it("starts the extract workflow rather than spawning the extractor", async () => {
     const src = await readFile("server/index.ts", "utf8");
     const fn = routeBody(src, "function startExtraction(");

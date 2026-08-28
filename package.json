@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1120.0",
-    "@azure/storage-blob": "^12.33.0"
+    "@azure/storage-blob": "^12.33.0",
+    "@scyne/orchestrator": "file:packages/orchestrator"
   }
 }

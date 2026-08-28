@@ -977,3 +977,76 @@ describe("reading a work product's content", () => {
       .toBe(401);
   });
 });
+
+describe("a fan-out step records its own runs", () => {
+  /**
+   * `scripts/extract-documents.mjs` spawns one agent per document inside a
+   * single `exec` step. Those are real agent invocations costing real money,
+   * and they had no run row at all: no transcript, no cost, nothing in /spend,
+   * and no way to tell a working pass from a wedged one during the twenty
+   * minutes it takes. The engine cannot narrate inside a step, so the step
+   * records itself — the same seam `SCYNE_ISSUE_ID` already opens for comments.
+   */
+  it("opens a run and closes it with the tokens it spent", async () => {
+    const { issue } = await createAndSettle({ project: "RTWSA" });
+
+    const started = await fetch(`${baseUrl}/issues/${issue.id}/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agentKey: "ba", phase: "extract: documents/Introduction.md",
+        stepIndex: 1, adapter: "claude_local", model: "claude-sonnet-5",
+      }),
+    });
+    expect(started.status).toBe(201);
+    const run = await started.json();
+    expect(run.status).toBe("running");
+    // The caller writes its transcript here, so the console can render it.
+    expect(run.log_path).toBeTruthy();
+    expect(run.phase).toBe("extract: documents/Introduction.md");
+
+    const finished = await fetch(`${baseUrl}/runs/${run.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "succeeded", exitCode: 0,
+        inputTokens: 1200, outputTokens: 300, costUsd: 0.004, durationMs: 9000,
+      }),
+    });
+    expect(finished.status).toBe(200);
+    const done = await finished.json();
+    expect(done.status).toBe("succeeded");
+    expect(Number(done.cost_usd)).toBeCloseTo(0.004);
+    // A figure the CLI reported is "reported", never our estimate.
+    expect(done.cost_source).toBe("reported");
+
+    // And it shows up where a person looks for it.
+    const listed = await (await fetch(`${baseUrl}/issues/${issue.id}/runs`)).json();
+    expect(listed.some((r: { id: string }) => r.id === run.id)).toBe(true);
+  });
+
+  it("requires a phase — an unlabelled row among nine is useless", async () => {
+    const { issue } = await createAndSettle({ project: "RTWSA" });
+    const res = await fetch(`${baseUrl}/issues/${issue.id}/runs`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentKey: "ba" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s an issue that does not exist", async () => {
+    const res = await fetch(`${baseUrl}/issues/00000000-0000-0000-0000-000000000000/runs`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phase: "extract: x.md" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("404s a PATCH against a run that does not exist", async () => {
+    const res = await fetch(`${baseUrl}/runs/00000000-0000-0000-0000-000000000000`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "succeeded" }),
+    });
+    expect(res.status).toBe(404);
+  });
+});
