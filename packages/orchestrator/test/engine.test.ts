@@ -122,6 +122,29 @@ describe("engine", () => {
     expect(seen?.WORKSPACE_PATH).toBe(dir);
   });
 
+  /**
+   * The engine narrates STEPS and cannot narrate inside one. That is fine for a
+   * step that runs for a second, and wrong for a step that runs for twenty
+   * minutes — `extract` is a single exec that spawns one agent per document, so
+   * between "step 2 of 5 started" and "step 2 finished" the timeline a client
+   * watches showed nothing at all, and a healthy run was indistinguishable from
+   * a wedged one.
+   *
+   * Passing the id rather than a callback keeps the seam narrow: a script may
+   * POST a comment, and gains no other reach into the engine.
+   */
+  it("tells an exec step which issue it belongs to, so a long script can narrate itself", async () => {
+    let seen: NodeJS.ProcessEnv | undefined;
+    const capturing = async (_c: string, _w: string, _t?: number, env?: NodeJS.ProcessEnv) => {
+      seen = env; return { code: 0, stdout: "", stderr: "" };
+    };
+    const engine = createEngine({ repo, config: config(dir), exec: capturing });
+    const issue = await engine.start("requirements", { project: "P", feature: "F" });
+    await engine.advance(issue.id);
+
+    expect(seen?.SCYNE_ISSUE_ID).toBe(issue.id);
+  });
+
   it("narrates an exec step's label when it has one", async () => {
     const cfg = config(dir);
     cfg.workflows[0].steps[0] = { type: "exec", cmd: "stage {project}", label: "Gathering the inputs" };

@@ -18,6 +18,9 @@
 // question about another organisation's project returns nothing rather than
 // leaking its name.
 
+import { projectStateFromStore, type StoreDocRow } from "./extract-state-store.js";
+import type { ProjectExtractState } from "../../scripts/extract-state.mjs";
+
 const BASE = process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100";
 
 export interface Project {
@@ -39,6 +42,12 @@ export interface DocumentRow {
   path: string;
   category: string | null;
   feature?: string | null;
+  /** The store's own id for this version, for reading its bytes back. */
+  id?: string;
+  /** Content hash. Extraction keys its output by the first 16 characters. */
+  sha256?: string;
+  /** null means the document belongs to the project itself, not to a feature. */
+  featureId?: string | null;
 }
 
 async function get<T>(token: string | null, path: string, fallback: T): Promise<T> {
@@ -798,4 +807,55 @@ export async function readDocumentByPath(
   } catch {
     return null;
   }
+}
+
+/**
+ * Extraction state for a project, computed from the STORE.
+ *
+ * The disk equivalent is `projectState` in `scripts/extract-state.mjs`, and it
+ * stays where it is: inside a materialised tree, during a run, walking disk is
+ * the right thing to do. Outside one it is not, and that stopped being an
+ * academic distinction when the plugin's ingest began writing documents to the
+ * store and not to `projects/<p>/documents/` — the walk answered "0 documents"
+ * for a project holding nine, `capabilities` refused with
+ * `documents_not_ready`, and no retry could have fixed it.
+ *
+ * Reads are bounded: one document list, one feature list, and one fetch per
+ * document that HAS an extract. An extract is roughly a kilobyte, so a
+ * fifty-document project costs fifty small reads — the price of keeping the
+ * guarantee that a malformed extract is reported `failed` rather than `ready`,
+ * which is the whole reason the disk version parses them too.
+ */
+export async function extractState(
+  token: string | null, project: string,
+): Promise<ProjectExtractState | null> {
+  if (!token) return null;
+  const row = (await listProjects(token)).find((p) => p.name === project);
+  if (!row) return null;
+
+  const [docs, features] = await Promise.all([
+    listDocuments(token, row.id, { all: true }),
+    listFeatures(token, row.id),
+  ]);
+
+  const rows: StoreDocRow[] = docs
+    // A row with no hash cannot be keyed to an extract. Dropped rather than
+    // reported `missing`, which would invite a retry that could not help.
+    .filter((d): d is DocumentRow & { sha256: string } => typeof d.sha256 === "string")
+    .map((d) => ({ path: d.path, sha256: d.sha256, featureId: d.featureId ?? null }));
+
+  const byKey = new Map(docs.map((d) => [`${d.featureId ?? ""} ${d.path}`, d.id]));
+  const read = async (path: string, featureId: string | null): Promise<string | null> => {
+    const id = byKey.get(`${featureId ?? ""} ${path}`);
+    if (!id) return null;
+    try {
+      const res = await fetch(`${BASE}/projects/${row.id}/documents/${id}`, {
+        headers: { accept: "application/octet-stream", authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      return await res.text();
+    } catch { return null; }
+  };
+
+  return await projectStateFromStore(rows, new Map(features.map((f) => [f.id, f.name])), read);
 }

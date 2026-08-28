@@ -157,6 +157,17 @@ export const orchestrator = {
     return { ...issue, title: issue.title ?? title };
   },
 
+  /**
+   * Start one workflow by KEY, with no title to parse.
+   *
+   * `createIssue` derives the workflow from a generated markdown title, which
+   * is right for the chat (that title is what the user's sentence became) and
+   * wrong for anything the server starts on its own behalf. Extraction has no
+   * sentence behind it — a document arrived — so it names its workflow.
+   */
+  startWorkflow: (workflow: string, params: Record<string, string>) =>
+    call<any>("POST", "/issues", { workflow, params }),
+
   /** Agents are addressed by key now. The key IS the id — nothing to look up. */
   agentId(specKey: string): string | null { return specKey || null; },
   deliveryLeadId(): string { return "pm"; },

@@ -93,6 +93,8 @@ export interface Config {
   overlapChars: number;
   pageWindow: number;
   maxDequeueCount: number;
+  /** Ceiling on ONE structured-converter call. See markdown.ts. */
+  convertTimeoutMs: number;
   tempDir: string;
   /** Above this, `document.md` is produced by the STREAMING extractor instead
    *  of markitdown — flat text, but one page of memory rather than the whole
@@ -239,6 +241,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
     overlapChars: num(env, "DEFAULT_OVERLAP_CHARS", 200),
     pageWindow: num(env, "DEFAULT_PAGE_WINDOW", 25),
     maxDequeueCount: num(env, "MAX_DEQUEUE_COUNT", 3),
+    // Long enough for a 200 MB .docx on a busy worker, short enough that a
+    // wedged engine costs one document's conversion quality rather than the
+    // whole job. The fallback is the streaming extractor, which always
+    // finishes — so the cost of hitting this is flat text, not a failure.
+    convertTimeoutMs: num(env, "CONVERT_TIMEOUT_MS", 120_000),
     tempDir: env.SCYNE_AWS_TEMP_DIR || env.TEMP_DIR || "/tmp/scyne-aws-files",
     markdownMaxBytes: num(env, "MARKDOWN_MAX_BYTES", defaultMarkdownMaxBytes()),
     allowLocalPathUpload: bool(env, "ALLOW_LOCAL_PATH_UPLOAD", !env.MCP_BEARER_TOKEN),

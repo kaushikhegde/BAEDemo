@@ -44,7 +44,14 @@ if (!project || project.startsWith("--")) {
 }
 
 const root = path.resolve(val("--root", process.env.WORKSPACE_PATH || process.cwd()));
-const concurrency = Math.max(1, Number(val("--concurrency", "3")));
+// One agent per document, N at a time. Eight rather than three because the
+// wall clock is what a person waiting on this experiences and the token cost
+// is identical either way — every document is extracted exactly once, so
+// raising this trades concurrent processes on the box for a shorter run, not
+// spend. Overridable without editing the compiled workflow, which passes no
+// flag: `SCYNE_EXTRACT_CONCURRENCY=3` on a small machine.
+const concurrency = Math.max(1, Number(
+  val("--concurrency", process.env.SCYNE_EXTRACT_CONCURRENCY || "8")));
 const onlyFeature = val("--feature", null);
 
 /**
@@ -360,14 +367,66 @@ if (flag("--dry-run")) {
   process.exit(0);
 }
 
+/**
+ * Say what is happening, on the issue whose step this is.
+ *
+ * The engine narrates STEPS, and cannot narrate inside one: this stage is a
+ * single `exec` that spawns N agents itself, so between "step 2 of 5 started"
+ * and "step 2 finished" there was twenty minutes of nothing. An `exec` also
+ * gets no run rows — only `agent` steps do — so the console showed no runs, no
+ * transcripts and no cost either. A healthy run and a wedged one looked
+ * identical, and the only way to tell them apart was to wait.
+ *
+ * Best-effort in every direction. No issue id (a hand-run from the CLI), no
+ * token, an unreachable orchestrator or a rejected insert must never fail an
+ * extraction that is otherwise working — the comment is commentary, and the
+ * extracts are the work.
+ */
+const ISSUE_ID = process.env.SCYNE_ISSUE_ID || "";
+const ORCH = (process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100").replace(/\/+$/, "");
+const narrate = async (body) => {
+  if (!ISSUE_ID) return;
+  try {
+    const headers = { "content-type": "application/json" };
+    if (process.env.SCYNE_ORCH_TOKEN) headers.authorization = `Bearer ${process.env.SCYNE_ORCH_TOKEN}`;
+    await fetch(`${ORCH}/issues/${ISSUE_ID}/comments`, {
+      method: "POST", headers, body: JSON.stringify({ body }),
+    });
+  } catch { /* commentary, never the work */ }
+};
+
 const absOf = (d) => d.scope === "project"
   ? path.join(root, "projects", project, d.docId)
   : path.join(root, "projects", project, d.scope, d.docId);
 
 const results = [];
 const queue = [...todo];
-await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-  while (queue.length) results.push(await extractOne(absOf(queue.shift())));
+const lanes = Math.min(concurrency, queue.length);
+
+// An estimate up front, because "how long will this take" is the question
+// somebody watching a blank panel is actually asking. Deliberately a RANGE and
+// deliberately rough: a document's extraction time is dominated by its length
+// and this knows only how many there are. A wrong-but-honest range beats a
+// spinner, and beats a precise number that is also wrong.
+const waves = Math.ceil(queue.length / Math.max(1, lanes));
+await narrate(
+  `Extracting ${queue.length} document(s), ${lanes} at a time — about ` +
+  `${waves * 2}\u2013${waves * 5} minutes. One agent reads each document once and ` +
+  `fills in a fixed form; a long PDF is the slow one.` +
+  (st.ready ? ` ${st.ready} already extracted and skipped.` : ""));
+
+let done = 0;
+await Promise.all(Array.from({ length: lanes }, async () => {
+  while (queue.length) {
+    const r = await extractOne(absOf(queue.shift()));
+    results.push(r);
+    done++;
+    // Per document rather than per wave: a wave boundary tells you nothing
+    // while the wave is running, which is the whole interval being reported on.
+    await narrate(r.ok
+      ? `${done}/${todo.length} \u00b7 extracted \`${r.docId}\`${r.skipped ? ` (${r.skipped})` : ""}`
+      : `${done}/${todo.length} \u00b7 FAILED \`${r.docId}\` \u2014 ${r.reason}`);
+  }
 }));
 
 const failures = results.filter((r) => !r.ok);
@@ -395,5 +454,10 @@ console.log(JSON.stringify({
   failed: failures.length,
   failures: failures.map((f) => ({ doc: f.docId, reason: f.reason })),
 }, null, 2));
+
+await narrate(failures.length
+  ? `Extraction finished: ${results.length - failures.length} extracted, ${failures.length} failed. ` +
+    `A document that failed the same way more than once will not extract \u2014 replace it rather than retrying.`
+  : `Extraction finished: ${results.length} document(s) extracted.`);
 
 process.exit(failures.length === 0 ? 0 : 1);

@@ -173,11 +173,26 @@ export function createEngine(deps: {
    * scripts already read. Agent steps are the other way round (cwd = workRoot),
    * because their prompts name `projects/{project}/…` relatively.
    */
-  const execEnv = (vars: Record<string, string> = {}, root: string = workRoot): NodeJS.ProcessEnv => ({
+  const execEnv = (
+    vars: Record<string, string> = {}, root: string = workRoot, issueId?: string,
+  ): NodeJS.ProcessEnv => ({
     ...process.env,
     WORKSPACE_PATH: root,
     SCYNE_WORK_ROOT: root,
     SCYNE_INSTALL_ROOT: installRoot,
+    // Which issue this step belongs to, so a script can narrate ITSELF.
+    //
+    // The engine narrates steps and cannot narrate inside one. That is fine
+    // for a step that runs for a second and wrong for `extract`, which is a
+    // single exec that spawns one agent per document and takes twenty minutes:
+    // a client watching the chatbot timeline saw the step start and then
+    // nothing at all, with no way to tell a working run from a wedged one.
+    //
+    // Passing the id rather than a callback keeps the seam narrow — a script
+    // may POST a comment, which is the one thing it needs, and gains no other
+    // reach into the engine. Absent for a script run by hand from the CLI,
+    // where there is no issue to narrate to.
+    ...(issueId ? { SCYNE_ISSUE_ID: issueId } : {}),
     // How an exec step reaches an OPTIONAL param. It cannot name one in its
     // command: `interpolate` throws on a placeholder the issue does not carry,
     // so `--parent {adoParentEpicId}` would block every run that omits it —
@@ -378,7 +393,7 @@ export function createEngine(deps: {
         // installRoot: the command says `node scripts/stage.mjs …`, and that
         // path is relative to where the scripts live. The project tree reaches
         // it through WORKSPACE_PATH in execEnv() instead.
-        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars, root));
+        const r = await exec(cmd, step.cwd ?? installRoot, step.timeoutMs, execEnv(vars, root, issue.id));
         if (r.code !== 0) {
           // The label in the headline, the command inside the fence with
           // whatever the command said. A failure is the one moment the exact

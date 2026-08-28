@@ -31,6 +31,7 @@ import { createRequire } from "node:module";
 // this file can see a call it cannot see through a template literal.
 import { pathToFileURL } from "node:url";
 import { INSTALL_ROOT, WORK_ROOT } from "./lib/roots.mjs";
+import { csvToMarkdown } from "./lib/csv-to-markdown.mjs";
 
 // The project tree this run operates on. See scripts/lib/roots.mjs for why
 // this is not the same question as "where does this code live".
@@ -98,8 +99,11 @@ const NATIVE_FORMATS = new Set([
   ".pptx", ".ppt", ".pptm", ".ppsx", ".pps", ".pot", ".ppsm",   // PowerPoint
   ".odt", ".ods", ".odp",                                       // OpenDocument
   ".xls", ".xlsm", ".xlsb", ".docm",                            // older Office
-  ".rtf", ".epub", ".csv",
+  ".rtf", ".epub",
 ]);
+
+/** Rendered here rather than by a native addon — see lib/csv-to-markdown.mjs. */
+const CSV_FORMATS = new Set([".csv"]);
 
 /**
  * Extensions worth converting. Deliberately EXCLUDED even though the libraries
@@ -111,6 +115,7 @@ const NATIVE_FORMATS = new Set([
 export const CONVERTIBLE = new Set([
   ".docx", ".doc", ".pdf", ".xlsx", ".html", ".htm", ".xml", ".ipynb",   // markitdown-ts
   ...NATIVE_FORMATS,                                                     // anydoc
+  ...CSV_FORMATS,                                                        // built in
 ]);
 /** Already text, but not `.md` — copied across verbatim under a `.md` name. */
 export const PLAIN_TEXT = new Set([".txt"]);
@@ -214,6 +219,12 @@ export async function convertTree(root, opts = {}) {
           markdown = (await fs.readFile(full, "utf8")).trim();
           if (!markdown) throw new Error("file is empty");
           markdown = header(entry.name, "verbatim copy") + markdown + "\n";
+        } else if (CSV_FORMATS.has(ext)) {
+          // No native call and no deadline needed: a string parser with no I/O
+          // and no addon, so there is nothing here that can hang.
+          const body = csvToMarkdown(await fs.readFile(full, "utf8")).trim();
+          if (!body) throw new Error("converter produced no text");
+          markdown = header(entry.name, "csv") + body + "\n";
         } else if (NATIVE_FORMATS.has(ext)) {
           if (!toMarkdownNative) toMarkdownNative = await loadAnydoc();
           // The PATH form rather than the buffer one, because a signature-less

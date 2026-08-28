@@ -33,9 +33,25 @@ import { userError, serviceError, authError } from "../shared/errors.js";
  * A miss is not cached: a project created a moment ago must resolve on the
  * next call rather than after a restart.
  */
-const idCache = new Map<string, string>();
+const idCache = new Map<string, { id: string; name: string }>();
 
-export const resolveProjectId = async (ctx: OrchCtx, name: string): Promise<string> => {
+/**
+ * The store's id AND the project's canonical name.
+ *
+ * Both, because the two are needed by different callers and only one lookup
+ * should pay for them. The NAME matters more than it looks: this resolver is
+ * deliberately forgiving — it matches slug and case as well as name, so a
+ * person can type `sa-demo` for `SA-DEMO` — while the engine's `createIssue`
+ * matches `projects.name` exactly when it resolves a workflow's `project`
+ * param to `issues.project_id`. Hand it the string the caller typed and a
+ * project can resolve here and NOT there, which does not fail: the issue is
+ * created with a null `project_id`, the scratch-tree provider finds nothing to
+ * materialise, and the run proceeds against an empty tree. Pass this name on
+ * instead.
+ */
+export const resolveProject = async (
+  ctx: OrchCtx, name: string,
+): Promise<{ id: string; name: string }> => {
   const hit = idCache.get(name);
   if (hit) return hit;
 
@@ -56,9 +72,13 @@ export const resolveProjectId = async (ctx: OrchCtx, name: string): Promise<stri
       `no project called ${JSON.stringify(name)}`
       + (known.length ? `. Projects: ${known.join(", ")}` : ". No projects exist yet."));
   }
-  idCache.set(name, found.id);
-  return found.id;
+  const resolved = { id: found.id, name: String(found.name ?? name) };
+  idCache.set(name, resolved);
+  return resolved;
 };
+
+export const resolveProjectId = async (ctx: OrchCtx, name: string): Promise<string> =>
+  (await resolveProject(ctx, name)).id;
 
 /** Only for tests — the cache is otherwise process-lifetime by design. */
 export const forgetProjectIds = () => idCache.clear();

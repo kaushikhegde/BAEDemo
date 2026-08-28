@@ -10,7 +10,7 @@ import { extractPages } from "./extract/index.js";
  *  inferred, because the two produce genuinely different documents — one keeps
  *  headings and tables, the other does not — and a reader deciding whether a
  *  capability map's input was any good needs to know which they got. */
-export type Converter = "markitdown" | "anydoc" | "stream";
+export type Converter = "markitdown" | "anydoc" | "csv" | "stream";
 
 export interface MarkdownResult { converter: Converter; chars: number }
 
@@ -31,8 +31,21 @@ const ANYDOC_FORMATS = new Set([
   ".pptx", ".ppt", ".pptm", ".ppsx", ".pps", ".pot", ".ppsm",
   ".odt", ".ods", ".odp",
   ".xls", ".xlsm", ".xlsb", ".docm",
-  ".rtf", ".epub", ".csv",
+  ".rtf", ".epub",
 ]);
+
+/** Comma-separated values, rendered here rather than by a native addon.
+ *
+ *  A CSV is already text. Handing it to a prebuilt NAPI binary to be told so
+ *  bought a markdown table and risked the whole job on a dependency that can
+ *  be absent, wrong for the platform, or — the case that cost a client an
+ *  afternoon — simply never return. Nothing below can hang: it is a parser
+ *  over a string with no I/O and no native code.
+ *
+ *  Kept in step with `scripts/convert-to-md.mjs`, which owns the same format
+ *  by the same rule. The two engines must not disagree, or the same file
+ *  converts differently depending on which door it came in by. */
+const CSV_FORMATS = new Set([".csv"]);
 
 /** Already text: there is nothing to convert, so the bytes are the markdown.
  *  Still written out as `document.md` so every succeeded job has one, and a
@@ -41,7 +54,8 @@ const PLAIN_FORMATS = new Set([".md", ".markdown", ".txt"]);
 
 export const isConvertible = (ext: string): boolean => {
   const e = ext.toLowerCase();
-  return MARKITDOWN_FORMATS.has(e) || ANYDOC_FORMATS.has(e) || PLAIN_FORMATS.has(e);
+  return MARKITDOWN_FORMATS.has(e) || ANYDOC_FORMATS.has(e) || PLAIN_FORMATS.has(e)
+    || CSV_FORMATS.has(e);
 };
 
 const require_ = createRequire(import.meta.url);
@@ -70,6 +84,92 @@ const loadAnydoc = (): ((buf: Buffer, opts: { extension: string }) => Promise<an
   } catch {
     return null;
   }
+};
+
+/**
+ * Give one converter call a deadline.
+ *
+ * Both engines are opaque once entered — markitdown-ts is synchronous inside a
+ * promise and anydoc is a native addon — so neither can be cancelled. This does
+ * not stop the work; it stops US WAITING for it, and lets the caller fall
+ * through to the streaming extractor, which always finishes.
+ *
+ * That distinction is the whole point. The `try/catch` around each engine
+ * catches a THROW. A call that wedges never throws, it just never returns, so
+ * the catch is no defence at all and the fallback below it is unreachable.
+ * A 176-page PDF and seven CSVs sat at `running` for twenty minutes on exactly
+ * this: the job could not fail, so nothing reported it, and the caller's own
+ * timeout was the only thing that ever fired.
+ */
+const withTimeout = async <T>(work: Promise<T>, ms: number, engine: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${engine} did not return within ${ms}ms`)), ms);
+        // The loser of the race must not hold the process open: a converter
+        // still running when the job is done would keep node alive past it.
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * A CSV as a markdown table.
+ *
+ * RFC 4180 quoting — doubled quotes inside a quoted field, and separators or
+ * newlines that only count when unquoted. An unterminated quote ends at the
+ * end of input rather than throwing: a truncated export is still worth reading,
+ * and refusing it would send the whole document down the flat-text path over
+ * one bad row.
+ */
+export const csvToMarkdown = (text: string): string => {
+  const rows: string[][] = [];
+  let row: string[] = [], field = "", quoted = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }   // an escaped quote
+        else quoted = false;
+      } else field += c;
+      continue;
+    }
+    if (c === '"') { quoted = true; continue; }
+    if (c === ",") { row.push(field); field = ""; continue; }
+    if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); rows.push(row); row = []; field = "";
+      continue;
+    }
+    field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+
+  const real = rows.filter(r => r.some(cell => cell.trim() !== ""));
+  if (!real.length) return "";
+
+  // A pipe would end the cell it sits in, and a newline would end the row.
+  const cell = (v: string) => v.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ").trim();
+  // Ragged rows are normal in exported CSVs. Padding to the widest row keeps
+  // the table valid rather than dropping the columns that overflow a short
+  // header — losing a column silently is how a data model ends up missing a
+  // field nobody can trace.
+  const width = Math.max(...real.map(r => r.length));
+  const line = (r: string[]) =>
+    `| ${Array.from({ length: width }, (_, i) => cell(r[i] ?? "")).join(" | ")} |`;
+
+  return [
+    line(real[0]),
+    `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+    ...real.slice(1).map(line),
+  ].join("\n");
 };
 
 const header = (filename: string, how: Converter): string =>
@@ -105,6 +205,7 @@ export const chooseConverter = async (
   const { size } = await stat(path);
   if (size > cfg.markdownMaxBytes) return "stream";
   if (PLAIN_FORMATS.has(e)) return "markitdown";
+  if (CSV_FORMATS.has(e)) return "csv";
   if (MARKITDOWN_FORMATS.has(e)) return "markitdown";
   if (ANYDOC_FORMATS.has(e) && loadAnydoc()) return "anydoc";
   return "stream";
@@ -131,10 +232,21 @@ export const writeMarkdownFile = async (
     return writeString(scratch, e === ".txt" ? header(filename, "markitdown") + text : text, "markitdown");
   }
 
+  if (buffered && CSV_FORMATS.has(e)) {
+    // No try/catch and no timeout: this is a string parser with no I/O and no
+    // native code, so there is nothing here that can hang or throw on content.
+    // An empty result still falls through, the same as any other engine's.
+    const body = csvToMarkdown(await readFile(path, "utf8")).trim();
+    if (body) return writeString(scratch, header(filename, "csv") + body + "\n", "csv");
+    log.warn("markdown.empty", { filename, ext: e, engine: "csv" });
+  }
+
   if (buffered && MARKITDOWN_FORMATS.has(e)) {
     try {
       const MarkItDown = loadMarkItDown();
-      const r = await new MarkItDown().convertBuffer(await readFile(path), { file_extension: e });
+      const r = await withTimeout<any>(
+        new MarkItDown().convertBuffer(await readFile(path), { file_extension: e }),
+        cfg.convertTimeoutMs, "markitdown");
       const body = String(r?.markdown ?? "").trim();
       if (body) return writeString(scratch, header(filename, "markitdown") + body + "\n", "markitdown");
       log.warn("markdown.empty", { filename, ext: e, engine: "markitdown" });
@@ -153,7 +265,9 @@ export const writeMarkdownFile = async (
     const toMarkdown = loadAnydoc();
     if (toMarkdown) {
       try {
-        const r = await toMarkdown(await readFile(path), { extension: e.slice(1) });
+        const r = await withTimeout(
+          toMarkdown(await readFile(path), { extension: e.slice(1) }),
+          cfg.convertTimeoutMs, "anydoc");
         const body = String(r?.markdown ?? r ?? "").trim();
         if (body) return writeString(scratch, header(filename, "anydoc") + body + "\n", "anydoc");
         log.warn("markdown.empty", { filename, ext: e, engine: "anydoc" });

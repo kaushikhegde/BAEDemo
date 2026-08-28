@@ -10,6 +10,8 @@ import { readArtifactJson } from "../../orchestrator/artifacts.js";
 import type { JobResult } from "../../worker/artifacts.js";
 import { log } from "../../shared/logger.js";
 import { postDocument, type DocKind } from "./attach-document.js";
+import { startStage } from "./start-stage.js";
+import { resolveProject } from "../doc-store.js";
 import { userError, serviceError } from "../../shared/errors.js";
 
 /** Long enough for a large PDF on a busy worker pool, short enough that a
@@ -35,6 +37,12 @@ export interface IngestResult {
   /** false when identical content already sat at that path: a real answer the
    *  store gives, not a failure. */
   changed: boolean;
+  /**
+   * Extraction starts here, on arrival — a document is not usable until it is
+   * extracted. Reported rather than thrown: the document is stored either way,
+   * and `extract_status` is where the outcome is read.
+   */
+  extraction: { started: boolean; issueId: string | null; error: string | null };
 }
 
 /**
@@ -62,6 +70,44 @@ export interface IngestResult {
  *   under `<uploads bucket>/<jobId>/` IS the archive, and it is the only copy
  *   that was never size-limited. `delete_job` is what disposes of it.
  */
+
+/**
+ * Kick off extraction for the project this document just landed in.
+ *
+ * It starts the `extract` WORKFLOW rather than running the extractor, and the
+ * difference is the whole point. `scripts/extract-documents.mjs` enumerates
+ * its inputs by walking `projects/<p>/`, which holds nothing on a machine
+ * where documents live in the store — the engine is what materialises that
+ * tree per step and harvests the extracts back out of it. Running the script
+ * directly finds no documents and exits 0: a silent no-op wearing the costume
+ * of a successful run.
+ *
+ * `extract` is project-level and idempotent — extracts are keyed by their
+ * source document's content hash — so one run after each upload converges, and
+ * a second run over an already-extracted document does nothing.
+ *
+ * Never fatal. The document and its row are real whatever happens here, and
+ * `extract_status` reports what is still missing, so a failure to START is
+ * reported in the result rather than thrown over an ingest that succeeded.
+ */
+const startExtraction = async (
+  ctx: OrchCtx, project: string,
+): Promise<{ started: boolean; issueId: string | null; error: string | null }> => {
+  try {
+    // The CANONICAL name, not the string the caller typed. `startStage` passes
+    // it as the workflow's `project` param, and the engine resolves that to
+    // `issues.project_id` by matching `projects.name` EXACTLY — so a caller who
+    // typed a slug would get an issue with no project, and therefore a run
+    // against an empty tree rather than a failure naming the cause.
+    const { name } = await resolveProject(ctx, project);
+    const started = await startStage(ctx, { workflow: "extract", project: name });
+    return { started: true, issueId: started.issueId, error: null };
+  } catch (e: any) {
+    const message = e?.message ?? String(e);
+    log.warn("workspace.extraction_not_started", { project, error: message });
+    return { started: false, issueId: null, error: message };
+  }
+};
 
 export const ingestDocument = async (
   ctx: OrchCtx, args: IngestArgs,
@@ -145,6 +191,15 @@ export const ingestDocument = async (
   // so a third copy is one more thing to fall out of step — and reading the
   // tree off local disk never worked anywhere the plugin did not share a
   // filesystem with it.
+  //
+  // What went with it, and should not have, is extraction. A document is not
+  // USABLE until it has been extracted — `capabilities` hard-requires every
+  // document to be ready and refuses `documents_not_ready` otherwise — and the
+  // three chatbot upload routes have always started it on arrival for exactly
+  // that reason. This door did not, so nine documents ingested here left the
+  // project permanently unable to run its first stage, with no failure
+  // anywhere to explain why.
+  const extraction = await startExtraction(ctx, args.project);
 
   log.info("workspace.document_ingested", {
     project: args.project, feature: args.feature ?? "",
@@ -163,5 +218,6 @@ export const ingestDocument = async (
     subfolder: posted.subfolder,
     version: posted.version,
     changed: posted.changed,
+    extraction,
   };
 };

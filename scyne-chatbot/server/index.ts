@@ -3,6 +3,7 @@
 // `dotenv/config` (that resolved against cwd, which is scyne-chatbot/).
 import "./env.js";
 import express from "express";
+import type { Request as ExpressRequest } from "express";
 import cors from "cors";
 import multer from "multer";
 import fs from "node:fs/promises";
@@ -64,6 +65,7 @@ import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
 // readiness — see `extractionGate` below for why the gates read this instead
 // of `countProjectDocs`/`countFeatureDocs` for the capability-map path.
 import { projectState } from "../../scripts/extract-state.mjs";
+import type { ProjectExtractState, DocumentExtractState } from "../../scripts/extract-state.mjs";
 import { planRetry } from "./services/extractRetry.js";
 import {
   carryAuth, requireSession, login, logout, whoami,
@@ -567,7 +569,7 @@ function stageTrigger(stage: {
         // in scripts/pipeline.mjs). Presence on disk is no longer enough — a
         // document that has not been extracted contributes nothing to the map,
         // so starting anyway produces a capability map with a silent hole.
-        const gate = await extractionGate(project);
+        const gate = await extractionGate(req, project);
         if (gate.code) {
           return res.status(409).json({
             error: gate.code,
@@ -2065,7 +2067,7 @@ app.post("/api/project/bootstrap", async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
-    const gate = await extractionGate(project);
+    const gate = await extractionGate(req, project);
     if (gate.code) {
       return res.status(409).json({
         error: gate.code,
@@ -2435,30 +2437,96 @@ function syncProjectToBlob(project: string): void {
 }
 
 /**
+ * Extraction state for a project, from BOTH places a document can live.
+ *
+ * Neither alone is the whole truth right now, and answering from one is how
+ * this broke in the first place:
+ *
+ *   - The STORE holds everything uploaded since ingest moved off disk. Walking
+ *     the tree cannot see any of it, so a project with nine documents reported
+ *     zero and every stage that hard-requires extraction refused.
+ *   - DISK holds every project created before that, which was never migrated.
+ *     Answering only from the store would break those the same way, in the
+ *     opposite direction.
+ *
+ * Merged by (scope, docId) with the store winning, because the store is the
+ * system of record where both have an opinion. Over-reporting is the safe
+ * direction: an extra document reads as `missing` and costs one cheap
+ * extraction, where a missed one costs a capability map with a silent hole.
+ */
+async function extractionState(req: ExpressRequest, project: string): Promise<ProjectExtractState> {
+  const [onDisk, inStore] = await Promise.all([
+    projectState(WORKSPACE_PATH, project).catch(() => null),
+    // Never fatal: the orchestrator can be down while this server is up, and a
+    // disk-era project must still answer.
+    store.extractState(tokenFor(req), project).catch(() => null),
+  ]);
+
+  const merged = new Map<string, DocumentExtractState>();
+  for (const d of onDisk?.documents ?? []) merged.set(`${d.scope}/${d.docId}`, d);
+  for (const d of inStore?.documents ?? []) merged.set(`${d.scope}/${d.docId}`, d);
+
+  const documents = [...merged.values()];
+  const count = (st: string) => documents.filter(d => d.state === st).length;
+  return {
+    ready: count("ready"), missing: count("missing"),
+    failed: count("failed"), extracting: count("extracting"),
+    documents,
+  };
+}
+
+/**
  * Start extraction for one project, without waiting.
  *
- * Extraction is what makes a document USABLE, not merely stored — so it
- * starts the moment a document arrives rather than when a stage runs. Fire-
- * and-forget because a 300 MB PDF is not something to hold an HTTP request
- * open for; the caller polls `/api/extract-status/:project`.
+ * Extraction is what makes a document USABLE, not merely stored — so it starts
+ * the moment a document arrives rather than when a stage runs. Fire-and-forget
+ * because a 300 MB PDF is not something to hold an HTTP request open for; the
+ * caller polls `/api/extract-status/:project`.
  *
- * A spawn failure is reported and never fatal, exactly as `adoError` and
- * `dbError` are: the file and its row are real regardless, and
- * `extract-documents.mjs` is idempotent, so the stage's own `extract` step
- * will pick up anything missed here.
+ * ## Why this starts a WORKFLOW rather than spawning the script
+ *
+ * It used to run `node scripts/extract-documents.mjs <project> --root
+ * WORKSPACE_PATH` directly, and that stopped working the moment documents
+ * stopped being written to `projects/<p>/documents/`. The script enumerates
+ * its inputs by walking that tree (`projectState` in extract-state.mjs), so
+ * against a checkout holding no documents it found none, extracted none, and
+ * exited 0 — a silent no-op reported as a successful start. Nine documents in
+ * the store, `{"ready":0,"missing":0,"documents":[]}` out.
+ *
+ * The `extract` WORKFLOW does the same work with the one thing the bare spawn
+ * cannot have: the engine's per-step scratch tree, materialised out of the
+ * store and harvested back (`storage/scratch-workspaces.ts`). The documents
+ * are on disk because the engine put them there, and the extracts it writes
+ * are pulled back into the store instead of dying with the temp directory.
+ *
+ * A failure to start is reported and never fatal, exactly as `adoError` and
+ * `dbError` are: the document and its row are real regardless, and extraction
+ * is idempotent and content-hash keyed, so a later `extract` run picks up
+ * anything missed here.
  */
 function startExtraction(
   project: string, feature?: string, extra: string[] = [],
 ): { started: boolean; error: string | null } {
   try {
-    const args = [path.join(WORKSPACE_PATH, "scripts", "extract-documents.mjs"), project, "--root", WORKSPACE_PATH];
-    if (feature) args.push("--feature", feature);
-    args.push(...extra);
-    const child = spawn("node", args, {
-      cwd: WORKSPACE_PATH, detached: true, stdio: "ignore",
-    });
-    child.on("error", (e) => console.warn(`[extract] ${project}: spawn failed — ${e.message}`));
-    child.unref();
+    // `extract` is a PROJECT-level stage: it sweeps the project's own
+    // documents and every feature's discovery folders in one pass. A feature
+    // name would be refused by the workflow and buys nothing — one run already
+    // covers that feature's documents.
+    //
+    // `extra` is logged rather than passed: a compiled workflow's command is
+    // fixed, so `--doc` and `--force` have nowhere to go. Only `--force` is
+    // actually lost, and only its narrow meaning — re-extracting documents
+    // that are already READY. A failed or wedged document is picked up by an
+    // ordinary run regardless, because `extract-documents.mjs` retries
+    // everything whose state is not `ready`, which is the case retry exists
+    // for.
+    void paperclip.startWorkflow("extract", { project })
+      .then((issue: any) => console.log(
+        `[extract] ${project}: started ${issue?.identifier ?? issue?.id ?? "?"}` +
+        `${feature ? ` (triggered by ${feature})` : ""}` +
+        `${extra.length ? ` [${extra.join(" ")}]` : ""}`))
+      .catch((e: any) => console.warn(
+        `[extract] ${project}: could not start extraction — ${e?.message ?? e}`));
     return { started: true, error: null };
   } catch (e: any) {
     console.warn(`[extract] ${project}: could not start extraction — ${e?.message ?? e}`);
@@ -2473,11 +2541,11 @@ function startExtraction(
  * stay separate refusals because their fixes are different: upload something,
  * versus wait or investigate.
  */
-async function extractionGate(project: string): Promise<
+async function extractionGate(req: ExpressRequest, project: string): Promise<
   { code: "no_documents" | "documents_not_ready"; st: Awaited<ReturnType<typeof projectState>> } |
   { code: null; st: Awaited<ReturnType<typeof projectState>> }
 > {
-  const st = await projectState(WORKSPACE_PATH, project);
+  const st = await extractionState(req, project);
   if (st.documents.length === 0) return { code: "no_documents", st };
   if (st.ready < st.documents.length) return { code: "documents_not_ready", st };
   return { code: null, st };
@@ -2487,7 +2555,7 @@ app.get("/api/extract-status/:project", async (req, res) => {
   try {
     const project = String(req.params.project);
     if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
-    res.json(await projectState(WORKSPACE_PATH, project));
+    res.json(await extractionState(req, project));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -2517,7 +2585,7 @@ app.post("/api/extract-retry/:project", async (req, res) => {
     const doc = req.body?.doc ? String(req.body.doc).trim() : undefined;
     const force = Boolean(req.body?.force);
 
-    const st = await projectState(WORKSPACE_PATH, project);
+    const st = await extractionState(req, project);
     const plan = planRetry(st.documents, { doc, force });
     if (!plan.ok) {
       // A name that resolves to nothing is the caller's mistake; the other three
