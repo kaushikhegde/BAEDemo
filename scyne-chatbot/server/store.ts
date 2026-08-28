@@ -20,6 +20,7 @@
 
 import { projectStateFromStore, type StoreDocRow } from "./extract-state-store.js";
 import type { ProjectExtractState } from "../../scripts/extract-state.mjs";
+import { isDiscoveryDocument, type StoreDocument } from "./services/document-list.js";
 
 const BASE = process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100";
 
@@ -48,6 +49,14 @@ export interface DocumentRow {
   sha256?: string;
   /** null means the document belongs to the project itself, not to a feature. */
   featureId?: string | null;
+  /**
+   * Size, version and creation time, as the platform route returns them
+   * (`toRef` in the orchestrator's core/documents.ts). Declared here because
+   * the Docs tab renders all three and used to get them from `fs.stat`.
+   */
+  bytes?: number;
+  version?: number;
+  createdAt?: string;
 }
 
 async function get<T>(token: string | null, path: string, fallback: T): Promise<T> {
@@ -416,6 +425,60 @@ export async function documentRowsFor(
     // The orchestrator being unreachable must not fail a list that reads disk.
     // Reported as "nothing recorded", which is what the caller can act on.
     return { projectInDb: false, paths: [] };
+  }
+}
+
+/**
+ * Every document a project holds, as the Docs tab needs them.
+ *
+ * `documentRowsFor` above answers a narrower question — "does the database know
+ * about this file?" — and is keyed on path alone, which is why it could never
+ * have been the LIST: it drops the size, the version and the feature name, and
+ * its `d.feature` is always undefined because the platform route returns
+ * `featureId`, not a name. This resolves the name the way `extractState` does,
+ * from the feature list.
+ *
+ * The level split matches the disk walk it replaces: the project's own material
+ * is returned whether or not a feature was asked for, because a feature is
+ * always read in the context of its project and the two share a screen.
+ */
+export async function documentsFor(
+  token: string | null, project: string, feature: string | null,
+): Promise<{ projectInDb: boolean; documents: StoreDocument[] }> {
+  if (!token) return { projectInDb: false, documents: [] };
+  try {
+    const row = (await listProjects(token)).find((p) => p.name === project);
+    if (!row) return { projectInDb: false, documents: [] };
+
+    const [docs, features] = await Promise.all([
+      listDocuments(token, row.id, { all: true }),
+      listFeatures(token, row.id),
+    ]);
+    const nameOf = new Map(features.map((f) => [f.id, f.name]));
+
+    const documents = docs
+      .map((d) => ({
+        path: d.path,
+        feature: d.featureId ? nameOf.get(d.featureId) ?? null : null,
+        bytes: Number(d.bytes ?? 0),
+        createdAt: d.createdAt ?? "",
+        version: Number(d.version ?? 1),
+        category: d.category ?? null,
+      }))
+      // `all: true` is one round trip for both levels; the filtering is here
+      // rather than in the query so a feature's documents and its project's
+      // come back together.
+      .filter((d) => d.feature === null || d.feature === feature)
+      // The store holds every document a project owns, generated artefacts
+      // included. The tab wants what the CLIENT gave us.
+      .filter((d) => isDiscoveryDocument(d.path, d.feature));
+
+    return { projectInDb: true, documents };
+  } catch {
+    // The orchestrator being unreachable must not fail the tab. Reported as
+    // "nothing recorded", which is a state the route already renders, and the
+    // disk walk still contributes whatever it can find.
+    return { projectInDb: false, documents: [] };
   }
 }
 

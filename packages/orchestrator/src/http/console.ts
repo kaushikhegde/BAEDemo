@@ -939,12 +939,17 @@ async function renderRuns() {
     return;
   }
 
-  // Attempts per step, so a retry is legible as a retry rather than as two
-  // unexplained runs a second apart.
+  // Attempts per step AND PHASE, so a retry is legible as a retry rather than
+  // as two unexplained runs a second apart — and so a fan-out is not read as a
+  // retry at all. A fan-out step writes one row per ITEM at a single
+  // step_index (extract-documents.mjs writes one per document, phased
+  // "extract: <docId>"); keyed on the step alone, a 50-document extraction
+  // renders as "attempt 2" through "attempt 50". engine.ts:517 draws the same
+  // distinction for its own retry counting, and the two have to agree.
   const seq = {};
   const ordered = both.runs.slice().sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
   ordered.forEach(r => {
-    const k = r.issue_id + ":" + r.step_index;
+    const k = r.issue_id + ":" + r.step_index + ":" + (r.phase || "");
     seq[k] = (seq[k] || 0) + 1;
     r._attempt = seq[k];
   });

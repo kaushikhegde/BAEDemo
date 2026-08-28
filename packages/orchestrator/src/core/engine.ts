@@ -268,6 +268,51 @@ export function createEngine(deps: {
     }
   }
 
+  /**
+   * Cancel the blocked issues a freshly-created one has just stepped past.
+   *
+   * Left standing, each sits in the console's `blocked` counter for ever asking
+   * a human for a decision that no longer exists: its successor sweeps the same
+   * work and reaches `done`, so there is nothing in it left to resume.
+   *
+   * Direct, not through `cancel()`: that path requests control and waits for a
+   * running step to notice, which is machinery for an issue still executing. A
+   * blocked one has already stopped.
+   */
+  async function supersedeStranded(
+    companyId: string, workflowKey: string, coalesceKey: string, successor: IssueRow,
+  ): Promise<void> {
+    const stranded = await repo.findByCoalesceKey(
+      companyId, workflowKey, coalesceKey, ["blocked"]);
+    for (const old of stranded) {
+      await repo.updateIssue(old.id, { status: "cancelled" });
+      // A gate left `pending` on a cancelled issue sits in every reviewer's
+      // queue for ever — the same cleanup cancel() does, for the same reason.
+      for (const g of await repo.listGates(old.id)) {
+        if (g.status === "pending") {
+          await repo.decideGate(g.id, "cancelled", `Superseded by ${successor.identifier}`, "orchestrator");
+        }
+      }
+      await note(old.id,
+        `**Superseded by ${successor.identifier}**, which covers the same work. ` +
+        `This issue was blocked and its successor starts from the top, so ` +
+        `there is nothing left here to resume.`);
+    }
+  }
+
+  /**
+   * The statuses a coalescing start may JOIN.
+   *
+   * Deliberately a whitelist of the two the engine will reach on its own, not
+   * a blacklist of the terminal ones. `blocked`, `paused` and `in_review` are
+   * all statuses that only a PERSON moves, and the router does not advance() an
+   * issue a start coalesced onto — so joining one parks the new work behind a
+   * decision nobody knows they owe, and the document that triggered the start
+   * is never extracted. That failure is silent and permanent, which is exactly
+   * the failure this whole mechanism exists to remove.
+   */
+  const JOINABLE = ["todo", "in_progress"] as const;
+
   /** "step 2 of 6" — the position a person actually asks about. */
   const where = (issue: IssueRow, wf: WorkflowDef): string =>
     `Step ${issue.step_index + 1} of ${wf.steps.length}`;
@@ -931,8 +976,9 @@ export function createEngine(deps: {
       // the others' `.partial` claims, eight of them ending blocked. Joining
       // the open one is what makes this a single unit of work.
       if (opts.coalesceKey) {
-        const open = await repo.findOpenByCoalesceKey(companyId, workflowKey, opts.coalesceKey);
-        if (open) return { ...open, coalesced: true };
+        const open = await repo.findByCoalesceKey(
+          companyId, workflowKey, opts.coalesceKey, JOINABLE);
+        if (open[0]) return { ...open[0], coalesced: true };
       }
       // The org chart is reconciled into the HOME organisation on boot, so an
       // agent lookup in any other organisation legitimately finds nothing. An
@@ -946,12 +992,35 @@ export function createEngine(deps: {
       const issue = await repo.createIssue({
         companyId, title,
         workflowKey,
-        // Persisted, because findOpenByCoalesceKey queries `params->>` — a key
+        // Persisted, because findByCoalesceKey queries `params->>` — a key
         // held only in memory would coalesce nothing.
         params: opts.coalesceKey ? { ...params, coalesceKey: opts.coalesceKey } : params,
         assigneeAgentId: agent?.id ?? null, status: "todo",
         createdBy: opts.createdBy ?? null,
       });
+      // Stepping PAST a blocked issue is what leaves it stranded: its successor
+      // sweeps the same documents and reaches `done`, so there is no work left
+      // in it to resume, and it sits in the console's `blocked` counter for
+      // ever asking a human for a decision that no longer exists. Cancelling is
+      // what keeps that counter meaning "needs a human".
+      //
+      // `blocked` only, and only under a coalesce key. A `paused` issue is
+      // somebody's deliberate act and they intend to come back to it; a bare
+      // start carries no key and must never reach across to cancel anything.
+      //
+      // Wrapped, for the same reason `note` is: the issue above is CREATED by
+      // the time this runs, so a throw here would report a failed start over
+      // one that succeeded — and the caller's retry would then create a second
+      // issue, which is the exact duplication this whole path exists to stop.
+      // Tidying up the predecessor is bookkeeping; the new issue is the work.
+      if (opts.coalesceKey) {
+        try {
+          await supersedeStranded(companyId, workflowKey, opts.coalesceKey, issue);
+        } catch (err) {
+          console.error(`[orchestrator] could not supersede blocked issues for ` +
+                        `${opts.coalesceKey}:`, err);
+        }
+      }
       return { ...issue, coalesced: false };
     },
 

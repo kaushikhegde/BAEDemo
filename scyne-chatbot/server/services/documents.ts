@@ -67,6 +67,29 @@ export interface DocumentEntry {
   inDb?: boolean;
   /** The opening of the document. Attached by the route, on request. */
   excerpt?: string;
+  /**
+   * The store's version number. A document is never edited in place — a
+   * re-upload of changed bytes writes a new version — so this is what tells a
+   * reader their replacement actually landed. Absent for a disk-only file,
+   * which has no row and therefore no version.
+   */
+  version?: number;
+  /**
+   * How far this document has got through extraction. Attached by the route.
+   *
+   * A document is not USABLE until it is extracted: `capabilities` refuses
+   * `documents_not_ready` until every one of them is `ready`. Absent on a
+   * non-markdown document, which is never extracted.
+   */
+  extract?: {
+    state: "ready" | "missing" | "failed" | "extracting";
+    /** Why it failed, from its `.extract.failed.json`. */
+    reason?: string;
+    /** How many times it has failed. Separates a bad night from a bad file. */
+    attempts?: number;
+    firstFailedAt?: string;
+    lastFailedAt?: string;
+  };
 }
 
 export interface DocumentList {
@@ -80,7 +103,7 @@ const projectRoot = (workspace: string, project: string) =>
 const levelRoot = (workspace: string, project: string, feature: string | null) =>
   feature ? path.join(workspace, "projects", project, feature) : projectRoot(workspace, project);
 
-function kindOf(name: string): DocumentKind {
+export function kindOf(name: string): DocumentKind {
   const ext = path.extname(name).toLowerCase();
   if (ext === ".md" || ext === ".markdown") return "markdown";
   if (IMAGE.has(ext)) return "image";
@@ -224,7 +247,7 @@ export interface DocumentContent {
 }
 
 /** `<!-- Converted from X.pdf by markitdown-ts. … -->`, written as line 1. */
-const CONVERTED_BANNER = /^\s*<!--\s*Converted from\s+(.+?)\s+by\s+[\s\S]*?-->/;
+export const CONVERTED_BANNER = /^\s*<!--\s*Converted from\s+(.+?)\s+by\s+[\s\S]*?-->/;
 
 /**
  * Read one document as text.

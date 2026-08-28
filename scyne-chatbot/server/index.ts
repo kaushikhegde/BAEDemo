@@ -24,8 +24,11 @@ import { WORKSPACE_PATH } from "./workspace.js";
 import { slugProjectName, isNewProjectName, decideCreate } from "./names.js";
 import {
   listDocuments, deleteDocument, resolveDocument, readDocument, excerptOf,
-  type DocumentEntry,
+  CONVERTED_BANNER, type DocumentEntry, type DocumentContent,
 } from "./services/documents.js";
+import {
+  entryFromStoreRow, mergeDocumentSources, attachExtractState, deleteOutcome,
+} from "./services/document-list.js";
 import { verifyAdoTarget, adoConfigured } from "./services/adoVerify.js";
 import { verifyAtlassianTarget, atlassianConfigured } from "./services/atlassianVerify.js";
 
@@ -67,6 +70,7 @@ import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
 import { projectState } from "../../scripts/extract-state.mjs";
 import type { ProjectExtractState, DocumentExtractState } from "../../scripts/extract-state.mjs";
 import { planRetry } from "./services/extractRetry.js";
+import { pickExtractRun } from "./services/extract-log.js";
 import {
   carryAuth, requireSession, login, logout, whoami,
   tokenFor, setSessionCookie, clearSessionCookie,
@@ -2585,6 +2589,86 @@ app.get("/api/extract-status/:project", async (req, res) => {
  * what went wrong in the same round trip, then polls
  * `/api/extract-status/:project`.
  */
+/**
+ * Why ONE document's extraction failed, and what the agent actually did.
+ *
+ * Two halves, because they answer different questions and either can be absent:
+ *
+ * - The failure RECORD (`.extract.failed.json`, via `extractionState`) — the
+ *   reason, how many times, and over what period. `attempts` is the field that
+ *   separates "the model had a bad night" from "this is a scanned PDF with no
+ *   text layer and never will extract", which is the difference between
+ *   retrying and replacing the file.
+ * - The TRANSCRIPT of the run that read it. Extraction is a fan-out inside one
+ *   `exec` step, so the run is found by its `extract: <docId>` phase — see
+ *   `services/extract-log.ts` for why that string is the only handle there is.
+ *
+ * The issue lookup goes through `store.listIssues` with the CALLER's token, not
+ * through `paperclip` — that client falls back to `SCYNE_API_TOKEN`, which is
+ * right for the unattended staleness sweep and exactly wrong for a browser
+ * read. Finding the issue under the caller's own credential is what scopes this
+ * route: a run whose issue they cannot see is a run they cannot read.
+ */
+app.get("/api/extract-log/:project", async (req, res) => {
+  try {
+    const project = String(req.params.project);
+    if (!SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
+    const docId = String(req.query.doc || "").trim();
+    const feature = String(req.query.feature || "").trim();
+    if (!docId) return res.status(400).json({ error: "missing_doc", message: "doc is required" });
+
+    const st = await extractionState(req, project);
+    const scope = feature || "project";
+    const record = st.documents.find((d) => d.docId === docId && d.scope === scope) ?? null;
+
+    // Newest first: a project can hold several extract issues, and the most
+    // recent one is where this document was last tried.
+    const issues = await store.listIssues(tokenFor(req), { project });
+    const extractIssues = (issues.data ?? [])
+      .filter((i) => i.workflow === "extract")
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
+    let hit: { run: ReturnType<typeof pickExtractRun>; identifier: string } | null = null;
+    for (const issue of extractIssues) {
+      const runs = (await paperclip.listIssueRuns(issue.id)).map((r: any) => ({
+        runId: r.runId, issueId: issue.id, phase: r.phase ?? null,
+        status: r.status, startedAt: r.startedAt ?? null,
+      }));
+      const run = pickExtractRun(runs, docId);
+      if (run) { hit = { run, identifier: issue.identifier }; break; }
+    }
+
+    // No run is an ordinary answer, not an error: a document uploaded a minute
+    // ago has not been tried yet. The failure record still stands on its own.
+    if (!hit?.run) {
+      return res.json({ project, doc: docId, record, run: null, events: [] });
+    }
+
+    const [log, run] = await Promise.all([
+      paperclip.getRunLog(hit.run.runId),
+      paperclip.getRun(hit.run.runId),
+    ]);
+    // The run's own adapter, or a Codex run decodes through the Claude-only
+    // default and renders empty — same reason /api/runs/:runId/transcript does.
+    const { events } = filterRunLog(log.content || "", run?.adapter);
+
+    res.json({
+      project, doc: docId, record,
+      run: {
+        runId: hit.run.runId,
+        issue: hit.identifier,
+        status: run?.status ?? hit.run.status,
+        startedAt: hit.run.startedAt,
+        durationMs: run?.duration_ms ?? null,
+      },
+      events,
+    });
+  } catch (e: any) {
+    console.error("[extract-log] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.post("/api/extract-retry/:project", async (req, res) => {
   try {
     const project = String(req.params.project);
@@ -2707,10 +2791,35 @@ app.get("/api/documents", async (req, res) => {
     if (!project) return res.status(400).json({ error: "missing_target", message: "project is required" });
     if (feature) assertSafeProjectFeature(project, feature); else assertSafeProject(project);
 
-    const docs = await listDocuments(WORKSPACE_PATH, project, feature || null);
-    // Returned from the SAME call, so the tab cannot render a document list and
-    // a staleness banner that disagree about what is on disk.
-    const stale = await pipeline.staleness(WORKSPACE_PATH, project, feature || undefined);
+    // The STORE is the list; disk is a fault report.
+    //
+    // This walked disk and used the database only to annotate what it found,
+    // which stopped working the moment documents moved into the store: outside
+    // a run there is no `projects/<p>/` at all — the engine materialises one per
+    // step and deletes it — so the walk returned nothing, the rows were mapped
+    // over an empty array, and a project holding nine documents rendered "0
+    // documents". Measured on SA-DEMO.
+    //
+    // Both are still read, and neither is fatal: the orchestrator can be down
+    // while this server is up, and a disk-era project (SAPN_DEMO) must still
+    // answer. Same shape as `extractionState` below, for the same reason.
+    const [onDisk, fromStore, stale] = await Promise.all([
+      listDocuments(WORKSPACE_PATH, project, feature || null)
+        .catch(() => ({ project: [], feature: [] })),
+      store.documentsFor(tokenFor(req), project, feature || null),
+      // Returned from the SAME call, so the tab cannot render a document list
+      // and a staleness banner that disagree about what exists.
+      pipeline.staleness(WORKSPACE_PATH, project, feature || undefined),
+    ]);
+
+    const merged = mergeDocumentSources(
+      fromStore.documents.map(entryFromStoreRow),
+      [...onDisk.project, ...onDisk.feature],
+    );
+    const docs = {
+      project: merged.filter((d) => d.level === "project"),
+      feature: merged.filter((d) => d.level === "feature"),
+    };
 
     // OPT-IN, because it costs one file read per markdown document and only the
     // grid has anywhere to put the result. The chat assistant's list_documents
@@ -2719,28 +2828,41 @@ app.get("/api/documents", async (req, res) => {
     if (req.query.excerpts === "true") {
       const attach = async (entry: DocumentEntry): Promise<DocumentEntry> => {
         if (entry.kind !== "markdown") return entry;
+        // Disk first — it is a local read and it is where a disk-only file is —
+        // then the store, which is where everything else now lives. Reading
+        // only disk left every store document with no excerpt and an empty
+        // preview card, which reads as "this document is blank".
         const read = await readDocument(WORKSPACE_PATH, project, entry.feature, entry.path)
           .catch(() => null);
-        return read ? { ...entry, excerpt: excerptOf(read.content, EXCERPT_CHARS) } : entry;
+        if (read) return { ...entry, excerpt: excerptOf(read.content, EXCERPT_CHARS) };
+        const bytes = await store.readDocumentByPath(tokenFor(req), project, entry.path)
+          .catch(() => null);
+        return bytes
+          ? { ...entry, excerpt: excerptOf(bytes.toString("utf8"), EXCERPT_CHARS) }
+          : entry;
       };
       docs.project = await Promise.all(docs.project.map(attach));
       docs.feature = await Promise.all(docs.feature.map(attach));
     }
 
-    // Which of these the DATABASE also knows about.
+    // How far each document has got through extraction, on its own card.
     //
-    // Two stores, and only one of them is what the agents read. Disk wins for
-    // "what exists" — every stage counts `.md` there — but `scyne doc list`,
-    // the console and every platform route read rows, so a document with no row
-    // is invisible to all of them. Measured on this installation before the
-    // sync existed: 20 documents on disk, 2 rows. Saying so here is what stops
-    // that from being silent again.
-    const rows = await store.documentRowsFor(tokenFor(req), project);
-    const known = new Set(rows.paths.map((r) => `${r.feature ?? ""}::${r.path}`));
-    const mark = (d: DocumentEntry): DocumentEntry =>
-      ({ ...d, inDb: known.has(`${d.feature ?? ""}::${d.path}`) });
-    docs.project = docs.project.map(mark);
-    docs.feature = docs.feature.map(mark);
+    // A document is not USABLE until it is extracted — `capabilities` refuses
+    // `documents_not_ready` until every one is `ready` — so "uploaded" and
+    // "ready" are different states and the tab has to say which. From the SAME
+    // call as the list, for the reason the staleness banner is: two requests
+    // can disagree, and a card showing a document the status does not know
+    // about is how somebody concludes the tab is broken.
+    const extraction = await extractionState(req, project).catch(() => null);
+    if (extraction) {
+      docs.project = attachExtractState(docs.project, extraction.documents);
+      docs.feature = attachExtractState(docs.feature, extraction.documents);
+    }
+
+    // A document on disk with no row is invisible to `scyne doc list`, the
+    // console and every platform route. This installation has been measured at
+    // 20 documents on disk against 2 rows, so it is reported rather than
+    // dropped — the same safety net as before, now pointing the other way.
     const notInDb = [...docs.project, ...docs.feature].filter((d) => !d.inDb).length;
 
     res.json({
@@ -2749,7 +2871,7 @@ app.get("/api/documents", async (req, res) => {
       counts: { project: docs.project.length, feature: docs.feature.length },
       // `projectInDb: false` is a different problem from a missing document row
       // and has a different fix — there is no project to attach anything to.
-      db: { projectInDb: rows.projectInDb, notInDb },
+      db: { projectInDb: fromStore.projectInDb, notInDb },
       stale,
     });
   } catch (e: any) {
@@ -2759,6 +2881,49 @@ app.get("/api/documents", async (req, res) => {
 
 /** How much of a document a grid card can show. */
 const EXCERPT_CHARS = 420;
+
+/**
+ * One document's text, read from the STORE.
+ *
+ * The disk twin is `readDocument` in `services/documents.ts` and it keeps its
+ * job — inside a materialised tree the file really is there. This is the same
+ * question asked of the store, for the preview, which is the only reader that
+ * is never inside a run.
+ *
+ * The binary guard is repeated rather than shared because it has to be: an
+ * unconverted `.pdf` reaches here as a convertible KIND and is still binary,
+ * and decoding it as utf8 renders screens of mojibake that look like a
+ * document. Same check, same reason, against bytes from a different place.
+ */
+async function readStoredDocument(
+  token: string | null, project: string, feature: string | null, docPath: string,
+): Promise<DocumentContent | null> {
+  const name = docPath.split("/").pop() ?? docPath;
+  const [bytes, listed] = await Promise.all([
+    store.readDocumentByPath(token, project, docPath).catch(() => null),
+    store.documentsFor(token, project, feature).catch(() => ({ documents: [] })),
+  ]);
+  if (!bytes) return null;
+  if (bytes.subarray(0, 8192).includes(0)) {
+    throw nameError(`not text: ${docPath} is a binary file that has not been converted`);
+  }
+
+  const row = listed.documents.find((d) => d.path === docPath);
+  const text = bytes.toString("utf8");
+  return {
+    name,
+    path: docPath,
+    bytes: bytes.byteLength,
+    // The version's creation. A document is never edited in place in the store.
+    modifiedAt: row?.createdAt ?? new Date(0).toISOString(),
+    // Genuinely unknowable: the upload source is archived in S3 under its job
+    // id, not in `original-files/`. The converter's own banner below is what
+    // still says the markdown was machine-generated.
+    original: null,
+    convertedFrom: CONVERTED_BANNER.exec(text)?.[1] ?? null,
+    content: text,
+  };
+}
 
 /**
  * One document's text, for the preview.
@@ -2785,6 +2950,17 @@ app.get("/api/documents/content", async (req, res) => {
       // A path outside `documents/`, a climb out of the project, or a binary
       // file. All three are the caller asking for the wrong thing, not a fault.
       return res.status(400).json({ error: "bad_path", message: e?.message ?? String(e) });
+    }
+    // Not on disk is the NORMAL case now, not a 404. Documents live in the
+    // store; `projects/<p>/` is a scratch tree the engine creates per step and
+    // deletes after. This route was left reading disk when the list moved, so
+    // every card in a tab that had just been fixed opened onto "No document at
+    // …" — the list proving the document exists and the preview denying it.
+    //
+    // `readDocument` has already run `resolveDocument`, so the path is known
+    // safe by the time we get here: it throws for a climb-out before it stats.
+    if (!doc) {
+      doc = await readStoredDocument(tokenFor(req), project, feature || null, docPath);
     }
     if (!doc) return res.status(404).json({ error: "no_document", message: `No document at ${docPath}.` });
 
@@ -2820,13 +2996,26 @@ app.delete("/api/documents", async (req, res) => {
       // generated artefact, not a server fault.
       return res.status(400).json({ error: "bad_path", message: e?.message ?? String(e) });
     }
-    if (!result.found) {
-      return res.status(404).json({ error: "no_document", message: `No document at ${docPath}.` });
-    }
 
+    // BOTH stores, and the row is the one that matters. This used to 404 the
+    // moment the disk delete found nothing — before it ever reached the row —
+    // so a document that lives only in the store could not be deleted at all,
+    // which is now every document. Disk is still asked because it also takes
+    // the archived original in `original-files/`, and leaving that behind lets
+    // the next conversion pass rebuild the document somebody just removed.
     const db = await store.deleteDocumentRow(tokenFor(req), { project, feature: feature || null, path: docPath });
     if (db.state === "failed") {
       console.warn(`[documents] ${project}: row not retired for ${docPath} — ${db.reason}`);
+    }
+
+    const outcome = deleteOutcome(result.found, db.state as any);
+    if (!outcome.removed) {
+      return res.status(404).json({
+        error: "no_document",
+        message: outcome.reason
+          ? `Could not delete ${docPath} — ${outcome.reason}.`
+          : `No document at ${docPath}.`,
+      });
     }
 
     // Recomputed AFTER the delete: removing an input is exactly as much a

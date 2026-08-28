@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, LayoutGrid, Rows3, Search, Check, X, Loader2 } from "lucide-react";
 import {
   listDocuments, deleteDocument, replaceDocument, uploadFile, uploadProjectFile,
-  rerunStage, canRerun,
+  rerunStage, canRerun, retryExtraction,
   type DocumentEntry, type DocumentsResult, type StaleArtefact, type UploadHint,
 } from "../api";
 import { OpsState, FilterSelect, ClearFilters } from "./OpsState";
 import { TargetPicker } from "./TargetPicker";
 import { DocumentFolder, type FolderSpec } from "./DocumentFolder";
 import { DocumentPreview } from "./DocumentPreview";
+import { ExtractLogDialog } from "./ExtractLogDialog";
 import { DOC_ACCEPT, AUDIO_ACCEPT, IMAGE_ACCEPT } from "../lib/uploadFormats";
 
 /**
@@ -71,6 +72,7 @@ export function DocumentsView({
   const [note, setNote] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [preview, setPreview] = useState<DocumentEntry | null>(null);
+  const [logFor, setLogFor] = useState<DocumentEntry | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [view, setViewRaw] = useState<"table" | "grid">(() => {
@@ -144,6 +146,32 @@ export function DocumentsView({
     kinds: [...new Set(all.map((d) => d.kind))].sort(),
     levels: [...new Set(all.map((d) => d.level))].sort(),
   }), [all]);
+
+  /**
+   * How many documents are not usable yet.
+   *
+   * `capabilities` refuses `documents_not_ready` until every one is `ready`, so
+   * this number IS "what is stopping the pipeline". `extracting` is excluded —
+   * that work is already happening and pressing the button would not add to it.
+   */
+  const outstanding = useMemo(
+    () => all.filter((d) => d.extract && (d.extract.state === "missing" || d.extract.state === "failed")).length,
+    [all]);
+
+  const extractOutstanding = async () => {
+    if (!project) return;
+    setBusy("extract");
+    try {
+      // No `doc` and no `force`: the server's own retry planner decides what is
+      // outstanding, so this cannot disagree with what the badges say.
+      await retryExtraction(project);
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const matches = useCallback((d: DocumentEntry) => {
     const q = search.trim().toLowerCase();
@@ -349,6 +377,21 @@ export function DocumentsView({
               ))}
             </span>
 
+            {/* Only when there is something to do. A button that starts a
+                twenty-minute run and reports "nothing outstanding" is worse
+                than no button, and the count is what makes it worth pressing. */}
+            {outstanding > 0 && (
+              <button
+                type="button"
+                onClick={extractOutstanding}
+                disabled={busy === "extract"}
+                title="Extract every document that is not ready yet"
+                className="flex items-center gap-1.5 rounded-full border border-scyne-line px-3 py-1 text-xs font-medium text-scyne-ink/70 transition-colors hover:border-scyne-ink hover:text-scyne-ink disabled:opacity-50"
+              >
+                <RefreshCw className={`size-3.5 ${busy === "extract" ? "animate-spin" : ""}`} aria-hidden />
+                {busy === "extract" ? "Starting…" : `Extract ${outstanding}`}
+              </button>
+            )}
             <button
               type="button"
               onClick={load}
@@ -421,6 +464,7 @@ export function DocumentsView({
                     busy={busy}
                     onUpload={upload}
                     onPreview={setPreview}
+                    onShowLog={setLogFor}
                     onReplace={pickReplacement}
                     onDelete={remove}
                   />
@@ -453,6 +497,12 @@ export function DocumentsView({
       )}
 
       <DocumentPreview doc={preview} project={project ?? ""} onClose={() => setPreview(null)} />
+      <ExtractLogDialog
+        doc={logFor}
+        project={project ?? ""}
+        onClose={() => setLogFor(null)}
+        onRetried={load}
+      />
     </div>
   );
 }

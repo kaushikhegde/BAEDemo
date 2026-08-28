@@ -1120,6 +1120,128 @@ describe("coalesceKey", () => {
     expect(stored?.params.coalesceKey).toBe("extract:P");
     expect(stored?.params.project).toBe("P");
   });
+
+  it("does not coalesce onto a BLOCKED issue", async () => {
+    // `blocked` is not "still going" — the router deliberately does not
+    // advance() a coalesced issue, so joining one that nothing will move is a
+    // silent drop: the document that triggered the start never gets extracted
+    // and nothing anywhere reports a fault. SA-DEMO's SCY-1 and SCY-2 are the
+    // measured case, both parked at the validator for ever.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "blocked" });
+
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    expect(b.coalesced).toBe(false);
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it("does not coalesce onto an issue waiting on a human", async () => {
+    // Same reasoning as `blocked`, for the other two statuses only a person
+    // moves. Joining any of them parks the new work behind a decision nobody
+    // knows they owe.
+    for (const status of ["paused", "in_review"]) {
+      const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+      const key = `extract:${status}`;
+      const a = await engine.start("requirements", { project: "P" }, { coalesceKey: key });
+      await repo.updateIssue(a.id, { status });
+
+      const b = await engine.start("requirements", { project: "P" }, { coalesceKey: key });
+      expect(b.coalesced, `should not join a ${status} issue`).toBe(false);
+    }
+  });
+
+  it("still coalesces onto an issue the engine will reach on its own", async () => {
+    // The other half of the rule: `todo` and `in_progress` are exactly the
+    // statuses where the work IS still coming, and joining them is the whole
+    // point — 50 uploads, one issue.
+    for (const status of ["todo", "in_progress"]) {
+      const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+      const key = `extract:live-${status}`;
+      const a = await engine.start("requirements", { project: "P" }, { coalesceKey: key });
+      await repo.updateIssue(a.id, { status });
+
+      const b = await engine.start("requirements", { project: "P" }, { coalesceKey: key });
+      expect(b.coalesced, `should join a ${status} issue`).toBe(true);
+      expect(b.id).toBe(a.id);
+    }
+  });
+
+  it("supersedes the blocked issue it stepped past", async () => {
+    // Left standing, the blocked issue sits in the console's `blocked` counter
+    // for ever with nothing to do: its successor extracts the same documents
+    // and reaches `done`, so there is no work left in it to resume. Cancelling
+    // is what makes the count mean "needs a human" again.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "blocked" });
+
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+
+    const old = await repo.getIssue(a.id);
+    expect(old?.status).toBe("cancelled");
+    // Named, so the timeline says where the work went rather than just ending.
+    const said = (await repo.listComments(a.id)).map(c => c.body).join("\n");
+    expect(said).toContain(b.identifier);
+  });
+
+  it("supersedes every blocked issue carrying the key, not just the newest", async () => {
+    // SA-DEMO ended with TWO. Cancelling one would have left the counter at 1
+    // and the same question unanswered.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "blocked" });
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(b.id, { status: "blocked" });
+
+    await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+
+    expect((await repo.getIssue(a.id))?.status).toBe("cancelled");
+    expect((await repo.getIssue(b.id))?.status).toBe("cancelled");
+  });
+
+  it("supersedes ONLY the blocked ones — never a paused issue", async () => {
+    // A pause is somebody's deliberate act and they intend to come back to it.
+    // A block is the engine giving up. Only the second is ours to clear.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "paused" });
+
+    await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    expect((await repo.getIssue(a.id))?.status).toBe("paused");
+  });
+
+  it("supersedes nothing when it JOINED an issue rather than creating one", async () => {
+    // The supersede is a consequence of stepping past a dead issue. A start
+    // that coalesced stepped past nothing.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    const b = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+
+    expect(b.id).toBe(a.id);
+    expect((await repo.getIssue(a.id))?.status).not.toBe("cancelled");
+  });
+
+  it("supersedes nothing across coalesce keys", async () => {
+    // A blocked extract on project P must survive a start for project Q.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "blocked" });
+
+    await engine.start("requirements", { project: "Q" }, { coalesceKey: "extract:Q" });
+    expect((await repo.getIssue(a.id))?.status).toBe("blocked");
+  });
+
+  it("supersedes nothing when no key is given", async () => {
+    // Every other caller in the system starts without a key, and a bare start
+    // must never reach across and cancel somebody else's blocked issue.
+    const engine = createEngine({ repo, config: config(dir), exec: fakeExec });
+    const a = await engine.start("requirements", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "blocked" });
+
+    await engine.start("requirements", { project: "P" });
+    expect((await repo.getIssue(a.id))?.status).toBe("blocked");
+  });
 });
 
 describe("attempt counting alongside fan-out runs", () => {

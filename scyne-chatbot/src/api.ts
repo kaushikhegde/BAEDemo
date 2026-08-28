@@ -218,6 +218,28 @@ export interface DocumentEntry {
   excerpt?: string;
   /** Whether the database also has a row for this file. */
   inDb?: boolean;
+  /**
+   * The store's version. A document is never edited in place — replacing it
+   * writes a new version — so this is what confirms a re-upload landed.
+   * Absent for a file that is only on disk and has no row.
+   */
+  version?: number;
+  /**
+   * How far this document has got through extraction.
+   *
+   * A document is not USABLE until it is extracted: `capabilities` refuses
+   * `documents_not_ready` until every one is `ready`. Absent on a non-markdown
+   * document, which is never extracted.
+   */
+  extract?: {
+    state: "ready" | "missing" | "failed" | "extracting";
+    /** Why it failed, from its `.extract.failed.json`. */
+    reason?: string;
+    /** How many times. Separates a bad night from a file that never will. */
+    attempts?: number;
+    firstFailedAt?: string;
+    lastFailedAt?: string;
+  };
 }
 
 export interface DocumentContent {
@@ -270,6 +292,67 @@ export async function readDocument(
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body?.message || body?.error || `Could not read that document (${r.status})`);
+  }
+  return r.json();
+}
+
+/** One transcript event, as `filterRunLog` emits them. */
+export interface RunEvent {
+  kind?: string;
+  text?: string;
+  tool?: string;
+  detail?: string;
+  [k: string]: unknown;
+}
+
+export interface ExtractLog {
+  project: string;
+  doc: string;
+  /** The failure record from `.extract.failed.json`, when there is one. */
+  record: {
+    state: "ready" | "missing" | "failed" | "extracting";
+    reason?: string; attempts?: number;
+    firstFailedAt?: string; lastFailedAt?: string;
+  } | null;
+  /** null when nothing has extracted this document yet — an ordinary state. */
+  run: {
+    runId: string; issue: string; status: string;
+    startedAt: string | null; durationMs: number | null;
+  } | null;
+  events: RunEvent[];
+}
+
+/** Why one document's extraction failed, and what the agent did. */
+export async function extractLog(
+  project: string, feature: string | null, docId: string,
+): Promise<ExtractLog> {
+  const qs = new URLSearchParams({ doc: docId });
+  if (feature) qs.set("feature", feature);
+  const r = await apiFetch(`/api/extract-log/${encodeURIComponent(project)}?${qs}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || body?.error || `Could not read that log (${r.status})`);
+  }
+  return r.json();
+}
+
+/**
+ * Re-run extraction — for one document, or for everything outstanding.
+ *
+ * `force` re-extracts a document that is already `ready`; without it the server
+ * refuses, because an extract keyed to unchanged content cannot differ.
+ */
+export async function retryExtraction(
+  project: string, opts: { doc?: string; force?: boolean } = {},
+): Promise<{ ok: true; retrying: string[] }> {
+  const r = await apiFetch(`/api/extract-retry/${encodeURIComponent(project)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body?.message || body?.error || `Could not start extraction (${r.status})`);
   }
   return r.json();
 }

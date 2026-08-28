@@ -356,12 +356,8 @@ export function createRepo(db: Db) {
     },
 
     /**
-     * An open issue for this workflow carrying this coalesce key, or null.
-     *
-     * "Open" is every status a run can still move out of. `done` and
-     * `cancelled` are terminal and deliberately excluded: the next start after
-     * a finished run gets a fresh issue rather than reopening one that has
-     * accumulated a project's entire history.
+     * Issues for this workflow carrying this coalesce key, in the statuses asked
+     * for, oldest first.
      *
      * `order by created_at asc` is not cosmetic. If two somehow exist, joining
      * the OLDEST means work converges on one issue; joining the newest would
@@ -370,18 +366,25 @@ export function createRepo(db: Db) {
      * The key lives in `params` because that column is already jsonb and
      * already carries everything else a caller passes. A dedicated column
      * would need a migration to express something one workflow uses.
+     *
+     * The statuses are the CALLER's, not a fixed list here, because the two
+     * questions the engine asks of this table are different questions:
+     * "which issue may I join" and "which issue did I just step past".
      */
-    async findOpenByCoalesceKey(
+    async findByCoalesceKey(
       companyId: string, workflowKey: string, coalesceKey: string,
-    ): Promise<IssueRow | null> {
+      statuses: readonly string[],
+    ): Promise<IssueRow[]> {
+      if (!statuses.length) return [];
+      const slots = statuses.map((_, i) => `$${i + 4}`).join(",");
       const { rows } = await db.query<IssueRow>(
         `select * from issues
           where company_id=$1 and workflow_key=$2
             and params->>'coalesceKey' = $3
-            and status not in ('done','cancelled')
-          order by created_at asc limit 1`,
-        [companyId, workflowKey, coalesceKey]);
-      return rows[0] ? parseIssueRow(rows[0]) : null;
+            and status in (${slots})
+          order by created_at asc`,
+        [companyId, workflowKey, coalesceKey, ...statuses]);
+      return rows.map(parseIssueRow);
     },
 
     async updateIssue(id: string, patch: UpdateIssuePatch): Promise<IssueRow | null> {

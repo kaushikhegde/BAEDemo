@@ -5,6 +5,23 @@ import { resolveTheme } from "../src/http/theme.js";
 const html = renderConsole(resolveTheme());
 
 describe("console", () => {
+  it("numbers attempts per PHASE, not per step index", () => {
+    // A fan-out step writes one run row per ITEM at a single step_index —
+    // scripts/extract-documents.mjs writes one per document, phased
+    // `extract: <docId>`. Keyed on step_index alone, a 50-document extraction
+    // renders as "attempt 2" through "attempt 50": fifty different documents
+    // labelled as retries of the first, which is the opposite of what happened
+    // and the exact reading somebody uses to decide a run is looping.
+    //
+    // engine.ts already draws this distinction for its own retry counting —
+    // `r.step_index === issue.step_index && r.phase === step.phase` — and the
+    // console has to draw it the same way or the two disagree on screen.
+    const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+    const key = /const k = r\.issue_id \+ ":" \+ r\.step_index([^;]*);/.exec(script);
+    expect(key, "the attempt key moved — check it still includes the phase").not.toBeNull();
+    expect(key![1]).toContain("r.phase");
+  });
+
   it("is a complete, self-contained HTML document", () => {
     expect(html.startsWith("<!doctype html>")).toBe(true);
     expect(html).toContain("</html>");

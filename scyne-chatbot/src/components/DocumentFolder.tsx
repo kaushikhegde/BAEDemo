@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   FileText, Image as ImageIcon, Music, AlertTriangle, ChevronRight, ChevronDown,
-  Trash2, Upload, FolderOpen, Plus,
+  Trash2, Upload, FolderOpen, Plus, CheckCircle2, Clock, Loader2,
 } from "lucide-react";
 import type { DocumentEntry } from "../api";
 import { ago } from "./OpsState";
@@ -38,6 +38,68 @@ function Unconverted() {
   );
 }
 
+/**
+ * How far one document has got through extraction.
+ *
+ * Stored is not the same as usable: every stage that reads the corpus refuses
+ * `documents_not_ready` until each document has an extract, and until now the
+ * tab gave no hint of that — an uploaded document and a ready one looked
+ * identical, and the only way to tell them apart was a separate API call.
+ *
+ * "Not extracted yet" rather than `missing`, which is the word the API uses and
+ * the wrong word for a person: it is the NORMAL state for the first minute
+ * after an upload, and "missing" reads as something having gone wrong. Only
+ * `failed` is a fault, and it is the only one coloured as one.
+ */
+function ExtractBadge({
+  extract, onShowLog,
+}: {
+  extract: NonNullable<DocumentEntry["extract"]>;
+  /** Absent means render it as plain text — nothing to open. */
+  onShowLog?: () => void;
+}) {
+  const look = {
+    ready:      { className: "text-emerald-700", Icon: CheckCircle2, label: "extracted" },
+    extracting: { className: "text-scyne-ink/60", Icon: Loader2,     label: "extracting…" },
+    missing:    { className: "text-scyne-ink/50", Icon: Clock,       label: "not extracted yet" },
+    failed:     { className: "text-red-700",      Icon: AlertTriangle, label: "extraction failed" },
+  }[extract.state];
+
+  // The reason and the attempt count are the whole point of surfacing this: a
+  // document that failed the same way twice will not extract and needs
+  // replacing, not retrying. Both go in the tooltip rather than the badge —
+  // a stderr tail is 500 characters and a card is not.
+  const detail = [
+    extract.reason,
+    extract.attempts ? `${extract.attempts} attempt${extract.attempts === 1 ? "" : "s"}` : null,
+  ].filter(Boolean).join(" · ");
+
+  const body = (
+    <>
+      <look.Icon className={`size-3 ${extract.state === "extracting" ? "animate-spin" : ""}`} aria-hidden />
+      {look.label}
+      {extract.attempts ? ` (${extract.attempts})` : ""}
+    </>
+  );
+  const className = `flex items-center gap-1 text-[11px] ${look.className}`;
+
+  // `stopPropagation`: the card and the table row are themselves buttons that
+  // open the document preview, so without it opening the log opens the document
+  // behind it as well.
+  return onShowLog ? (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onShowLog(); }}
+      title={detail ? `${detail} — open the log` : "Open the extraction log"}
+      className={`${className} underline decoration-dotted underline-offset-2 hover:decoration-solid`}
+    >
+      {body}
+    </button>
+  ) : (
+    <span className={className} title={detail || undefined}>{body}</span>
+  );
+}
+
 export interface FolderSpec {
   /** Stable key, unique across the page: `project:documents`, `MVP:SOP`. */
   id: string;
@@ -53,7 +115,7 @@ export interface FolderSpec {
 }
 
 export function DocumentFolder({
-  spec, docs, hiddenByFilter, view, busy, onUpload, onPreview, onReplace, onDelete,
+  spec, docs, hiddenByFilter, view, busy, onUpload, onPreview, onShowLog, onReplace, onDelete,
 }: {
   spec: FolderSpec;
   docs: DocumentEntry[];
@@ -64,6 +126,8 @@ export function DocumentFolder({
   busy: string | null;
   onUpload: (spec: FolderSpec, files: File[]) => void;
   onPreview: (d: DocumentEntry) => void;
+  /** Open the extraction log for one document. */
+  onShowLog: (d: DocumentEntry) => void;
   onReplace: (d: DocumentEntry) => void;
   onDelete: (d: DocumentEntry) => void;
 }) {
@@ -149,11 +213,11 @@ export function DocumentFolder({
           ) : view === "grid" ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {docs.map((d) => (
-                <Card key={d.path} d={d} busy={busy} onPreview={onPreview} onReplace={onReplace} onDelete={onDelete} />
+                <Card key={d.path} d={d} busy={busy} onPreview={onPreview} onShowLog={onShowLog} onReplace={onReplace} onDelete={onDelete} />
               ))}
             </div>
           ) : (
-            <Table docs={docs} busy={busy} onPreview={onPreview} onReplace={onReplace} onDelete={onDelete} />
+            <Table docs={docs} busy={busy} onPreview={onPreview} onShowLog={onShowLog} onReplace={onReplace} onDelete={onDelete} />
           )}
         </div>
       )}
@@ -194,10 +258,11 @@ function Actions({
 }
 
 function Card({
-  d, busy, onPreview, onReplace, onDelete,
+  d, busy, onPreview, onShowLog, onReplace, onDelete,
 }: {
   d: DocumentEntry; busy: string | null;
   onPreview: (d: DocumentEntry) => void;
+  onShowLog: (d: DocumentEntry) => void;
   onReplace: (d: DocumentEntry) => void;
   onDelete: (d: DocumentEntry) => void;
 }) {
@@ -242,9 +307,15 @@ function Card({
         )}
 
       {d.kind === "unconverted" && <span className="mt-2"><Unconverted /></span>}
+      {d.extract && (
+        <span className="mt-2"><ExtractBadge extract={d.extract} onShowLog={() => onShowLog(d)} /></span>
+      )}
 
       <span className="mt-2 flex items-center justify-between border-t border-scyne-line pt-2">
-        <span className="text-[11px] text-scyne-ink/50">{bytes(d.bytes)} · {ago(d.modifiedAt)}</span>
+        <span className="text-[11px] text-scyne-ink/50">
+          {bytes(d.bytes)} · {ago(d.modifiedAt)}
+          {d.version && d.version > 1 ? ` · v${d.version}` : ""}
+        </span>
         <span className="flex items-center"><Actions d={d} busy={busy} onReplace={onReplace} onDelete={onDelete} /></span>
       </span>
     </article>
@@ -252,10 +323,11 @@ function Card({
 }
 
 function Table({
-  docs, busy, onPreview, onReplace, onDelete,
+  docs, busy, onPreview, onShowLog, onReplace, onDelete,
 }: {
   docs: DocumentEntry[]; busy: string | null;
   onPreview: (d: DocumentEntry) => void;
+  onShowLog: (d: DocumentEntry) => void;
   onReplace: (d: DocumentEntry) => void;
   onDelete: (d: DocumentEntry) => void;
 }) {
@@ -266,6 +338,10 @@ function Table({
         <thead>
           <tr className="text-left text-[11px] uppercase tracking-wider text-scyne-ink/50">
             <th scope="col" className="px-1 py-1.5 font-semibold">Document</th>
+            {/* Its own column here, not a line under the name as the grid shows
+                it: a table is scanned DOWN, and "which of these forty are not
+                extracted yet" is the question this view exists to answer. */}
+            <th scope="col" className="px-1 py-1.5 font-semibold">Extraction</th>
             <th scope="col" className="px-1 py-1.5 font-semibold">Size</th>
             <th scope="col" className="px-1 py-1.5 font-semibold">Changed</th>
             <th scope="col" className="px-1 py-1.5 font-semibold text-right">Actions</th>
@@ -301,8 +377,16 @@ function Table({
                   )}
                   {d.kind === "unconverted" && <span className="ml-6 mt-0.5 block"><Unconverted /></span>}
                 </td>
+                <td className="whitespace-nowrap px-1 py-2">
+                  {d.extract
+                    ? <ExtractBadge extract={d.extract} onShowLog={() => onShowLog(d)} />
+                    : <span className="text-scyne-ink/30">—</span>}
+                </td>
                 <td className="whitespace-nowrap px-1 py-2 text-scyne-ink/60">{bytes(d.bytes)}</td>
-                <td className="whitespace-nowrap px-1 py-2 text-scyne-ink/60">{ago(d.modifiedAt)}</td>
+                <td className="whitespace-nowrap px-1 py-2 text-scyne-ink/60">
+                  {ago(d.modifiedAt)}
+                  {d.version && d.version > 1 ? <span className="text-scyne-ink/40"> · v{d.version}</span> : null}
+                </td>
                 <td className="whitespace-nowrap px-1 py-2 text-right">
                   <Actions d={d} busy={busy} onReplace={onReplace} onDelete={onDelete} />
                 </td>

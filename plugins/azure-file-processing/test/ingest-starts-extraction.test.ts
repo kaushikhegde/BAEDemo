@@ -39,7 +39,7 @@ describe("ingest_document starts extraction", () => {
     // out of it, which a bare spawn would leave in a temp directory to be
     // deleted. Running the script directly finds nothing and exits 0.
     const s = await src("workspace/tools/ingest-document.ts");
-    expect(s).toMatch(/startStage\(ctx, \{ workflow: "extract"/);
+    expect(s).toMatch(/startStage\(ctx, \{\s*workflow: "extract"/);
     expect(s).not.toMatch(/spawn\(|extract-documents\.mjs['"]/);
   });
 
@@ -50,7 +50,7 @@ describe("ingest_document starts extraction", () => {
     // and a run against an empty tree rather than a failure naming the cause.
     const s = await src("workspace/tools/ingest-document.ts");
     expect(s).toMatch(/const \{ name \} = await resolveProject\(ctx, project\)/);
-    expect(s).toMatch(/startStage\(ctx, \{ workflow: "extract", project: name \}\)/);
+    expect(s).toMatch(/startStage\(ctx, \{\s*workflow: "extract", project: name,/);
   });
 
   it("never fails the ingest when extraction cannot be started", async () => {
@@ -66,7 +66,40 @@ describe("ingest_document starts extraction", () => {
 
   it("reports the outcome in the result rather than only logging it", async () => {
     const s = await src("workspace/tools/ingest-document.ts");
-    expect(s).toMatch(/extraction: \{ started: boolean; issueId: string \| null; error: string \| null \}/);
+    expect(s).toMatch(/extraction: \{ started: boolean; issueId: string \| null; coalesced: boolean; error: string \| null \}/);
     expect(s).toMatch(/^\s*extraction,$/m);
+  });
+
+  it("coalesces onto the project's open extract issue", async () => {
+    // Extraction starts once per DOCUMENT, and an upload of fifty documents is
+    // fifty calls. Without a key that is fifty issues, each materialising its
+    // own scratch tree and sweeping the same document set — `claimPartial` is a
+    // `wx` lock on local disk and cannot see across trees, so the same document
+    // is extracted by several of them and paid for several times. SA-DEMO's
+    // three-file upload measured it: 3 issues, 6 agent runs for 3 documents.
+    //
+    // The key is per PROJECT because `extract` is a project-level stage: one
+    // pass sweeps the project's own documents and every feature's discovery
+    // folders, so there is exactly one useful unit of work per project.
+    const s = await src("workspace/tools/ingest-document.ts");
+    const fn = s.slice(s.indexOf("const startExtraction ="), s.indexOf("export const ingestDocument"));
+    expect(fn).toMatch(/coalesceKey: `extract:\$\{name\}`/);
+  });
+
+  it("keys the coalesce on the CANONICAL name, as it does the project", async () => {
+    // A key built from the caller's string would put `sa-demo` and `SA-DEMO` on
+    // different keys and coalesce neither onto the other — the same class of
+    // bug as the project param itself, and invisible until two doors disagree.
+    const s = await src("workspace/tools/ingest-document.ts");
+    const fn = s.slice(s.indexOf("const startExtraction ="), s.indexOf("export const ingestDocument"));
+    expect(fn).not.toMatch(/extract:\$\{project\}/);
+  });
+
+  it("reports whether it joined an existing issue or started one", async () => {
+    // Fifty ingests returning the same issueId is the SUCCESS case, and a
+    // caller that cannot tell it from fifty separate starts cannot report what
+    // happened. This is the plugin-side half of the router's 200-vs-201.
+    const s = await src("workspace/tools/ingest-document.ts");
+    expect(s).toMatch(/coalesced: boolean/);
   });
 });

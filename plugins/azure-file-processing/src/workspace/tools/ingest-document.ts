@@ -42,7 +42,7 @@ export interface IngestResult {
    * extracted. Reported rather than thrown: the document is stored either way,
    * and `extract_status` is where the outcome is read.
    */
-  extraction: { started: boolean; issueId: string | null; error: string | null };
+  extraction: { started: boolean; issueId: string | null; coalesced: boolean; error: string | null };
 }
 
 /**
@@ -86,13 +86,25 @@ export interface IngestResult {
  * source document's content hash — so one run after each upload converges, and
  * a second run over an already-extracted document does nothing.
  *
+ * It COALESCES, and it has to. This fires once per document, so a fifty-file
+ * upload is fifty calls; without a key that was fifty issues, each
+ * materialising its own scratch tree and sweeping the same document set. The
+ * `.partial` claim in `extract-documents.mjs` is a `wx` lock on local disk and
+ * cannot see across trees, so the same document was extracted by several
+ * passes at once and paid for several times over — SA-DEMO's three-file upload
+ * produced three issues and six agent runs for three documents. One key per
+ * PROJECT, because `extract` is a project-level stage: one pass sweeps the
+ * project's own documents and every feature's discovery folders, so there is
+ * exactly one useful unit of work in flight per project. Documents that arrive
+ * while that pass is running are picked up by its resweep (`MAX_SWEEPS`).
+ *
  * Never fatal. The document and its row are real whatever happens here, and
  * `extract_status` reports what is still missing, so a failure to START is
  * reported in the result rather than thrown over an ingest that succeeded.
  */
 const startExtraction = async (
   ctx: OrchCtx, project: string,
-): Promise<{ started: boolean; issueId: string | null; error: string | null }> => {
+): Promise<{ started: boolean; issueId: string | null; coalesced: boolean; error: string | null }> => {
   try {
     // The CANONICAL name, not the string the caller typed. `startStage` passes
     // it as the workflow's `project` param, and the engine resolves that to
@@ -100,12 +112,20 @@ const startExtraction = async (
     // typed a slug would get an issue with no project, and therefore a run
     // against an empty tree rather than a failure naming the cause.
     const { name } = await resolveProject(ctx, project);
-    const started = await startStage(ctx, { workflow: "extract", project: name });
-    return { started: true, issueId: started.issueId, error: null };
+    const started = await startStage(ctx, {
+      workflow: "extract", project: name,
+      // The canonical name again, for the same reason it is the param: a key
+      // built from the caller's string would put `sa-demo` and `SA-DEMO` on
+      // different keys and coalesce neither onto the other.
+      coalesceKey: `extract:${name}`,
+    });
+    return {
+      started: true, issueId: started.issueId, coalesced: started.coalesced, error: null,
+    };
   } catch (e: any) {
     const message = e?.message ?? String(e);
     log.warn("workspace.extraction_not_started", { project, error: message });
-    return { started: false, issueId: null, error: message };
+    return { started: false, issueId: null, coalesced: false, error: message };
   }
 };
 
