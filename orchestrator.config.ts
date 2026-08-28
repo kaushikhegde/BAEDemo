@@ -10,7 +10,7 @@ import {
   createGeminiProvider, createAzureProvider, type Runner,
 } from "./packages/orchestrator/src/index.js";
 import { ORG, buildWorkflows } from "./orchestrator.workflows.js";
-import { azureBlobBackend } from "./storage/azure-blobs.js";
+import { selectBlobBackend, describeBlobConfig } from "./storage/blobs.js";
 import { scratchWorkspaces } from "./storage/scratch-workspaces.js";
 
 const installRoot = process.env.SCYNE_INSTALL_ROOT ?? process.cwd();
@@ -202,13 +202,19 @@ if (!registry[defaultAdapter]) {
  * Built once and referenced twice — by `blobs` and by `workspaces`, which must
  * be the same backend or a step would materialise from one store and harvest
  * into another.
+ *
+ * Awaited at module scope because `selectBlobBackend` reaches its SDK through
+ * a dynamic import, so that a Claude/AWS install loads nothing from
+ * `@azure/storage-blob` and a Codex/Azure install nothing from the AWS SDK.
+ * This module is only ever loaded with `await import()`, so the top-level
+ * await costs nothing.
  */
-const blobs = process.env.AZURE_STORAGE_CONNECTION_STRING
-  ? azureBlobBackend({
-      connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-      container: process.env.AZURE_DOCUMENTS_CONTAINER ?? "documents",
-    })
-  : undefined;
+const blobs = await selectBlobBackend();
+
+// Which store, said once at boot. An install with BOTH configured reads from
+// both and writes to one, and the one it writes to is worth seeing rather than
+// discovering later from a blob in the wrong bucket.
+console.error(`[scyne] document store: ${describeBlobConfig()}`);
 
 export default defineOrchestrator({
   workspace: installRoot,
@@ -217,8 +223,11 @@ export default defineOrchestrator({
     ? { driver: "external", url: process.env.DATABASE_URL }
     : { driver: "pglite", dir: ".orchestrator/pgdata" },
 
-  // Where document BYTES live. Azure when a connection string is present,
-  // Postgres (`blobs.content`) otherwise.
+  // Where document BYTES live. S3 for the Claude stack, Azure Blob for the
+  // Codex stack, both at once when both are configured — reads span every
+  // configured store because a locator names its owner, writes go to one.
+  // Undefined when neither is set, which is in-memory and does not survive
+  // the process.
   //
   // Absent is the safe default: an install that has not migrated its blobs
   // keeps working exactly as before, and setting this is the one step that

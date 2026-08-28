@@ -51,8 +51,21 @@ describe("Claude Code plugin packaging", () => {
     // processes on separate ports and either runs without the other.
     expect(Object.keys(mcp.mcpServers).sort()).toEqual(["scyne", "scyne-workspace"]);
     expect(mcp.mcpServers["scyne"].type).toBe("http");
-    expect(mcp.mcpServers["scyne"].url).toBe("http://127.0.0.1:8080/mcp");
-    expect(mcp.mcpServers["scyne-workspace"].url).toBe("http://127.0.0.1:8081/mcp");
+    // Env-expanded with a DEFAULT, not a literal. The two plugins are meant to
+    // run at the same time, and they both used to hardcode 8080/8081 — so
+    // installing both gave two servers fighting for one port and a workspace
+    // answering for the wrong cloud. The variable is namespaced per plugin for
+    // the same reason: a shared ORCH_PORT in the root .env moved both at once.
+    expect(mcp.mcpServers["scyne"].url)
+      .toBe("http://127.0.0.1:${SCYNE_AWS_FILE_PORT:-8080}/mcp");
+    expect(mcp.mcpServers["scyne-workspace"].url)
+      .toBe("http://127.0.0.1:${SCYNE_AWS_WORKSPACE_PORT:-8081}/mcp");
+
+    // The default in the manifest must be the default `stack.sh` binds, or the
+    // client connects to a port nothing is listening on.
+    const stack = readFileSync(resolve(pluginDir, "scripts/stack.sh"), "utf8");
+    expect(stack).toContain("SCYNE_AWS_FILE_PORT:-8080");
+    expect(stack).toContain("SCYNE_AWS_WORKSPACE_PORT:-8081");
   });
 
   it("is registered in the repo's Claude Code marketplace by a relative local path", () => {

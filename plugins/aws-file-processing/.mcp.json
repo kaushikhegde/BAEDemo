@@ -2,11 +2,11 @@
   "mcpServers": {
     "scyne": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:${SCYNE_AWS_FILE_PORT:-8080}/mcp"
     },
     "scyne-workspace": {
       "type": "http",
-      "url": "http://127.0.0.1:8081/mcp"
+      "url": "http://127.0.0.1:${SCYNE_AWS_WORKSPACE_PORT:-8081}/mcp"
     }
   }
 }

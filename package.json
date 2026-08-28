@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local orchestration for the Scyne requirements generator stack. Runs on @scyne/orchestrator (packages/orchestrator) \u2014 no Paperclip.",
+  "description": "Local orchestration for the Scyne requirements generator stack. Runs on @scyne/orchestrator (packages/orchestrator) — no Paperclip.",
   "scripts": {
     "setup": "npm install && npm --prefix packages/orchestrator install && npm --prefix scyne-chatbot install",
     "chatbot": "cd scyne-chatbot && npm run dev",
@@ -44,6 +44,7 @@
     "scyne": "./cli/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1120.0",
     "@azure/storage-blob": "^12.33.0"
   }
 }

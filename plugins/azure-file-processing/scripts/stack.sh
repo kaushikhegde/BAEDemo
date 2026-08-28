@@ -2,11 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT="${ORCH_PORT:-8080}"
+PORT="${SCYNE_AZURE_FILE_PORT:-8090}"
 ORCH_LOG=".orchestrator.log"
 ORCH_PID=".orchestrator.pid"
 
-WS_PORT="${WORKSPACE_PORT:-8081}"
+WS_PORT="${SCYNE_AZURE_WORKSPACE_PORT:-8091}"
 WS_LOG=".workspace.log"
 WS_PID=".workspace.pid"
 

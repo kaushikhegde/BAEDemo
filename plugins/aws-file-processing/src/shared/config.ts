@@ -239,7 +239,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
     overlapChars: num(env, "DEFAULT_OVERLAP_CHARS", 200),
     pageWindow: num(env, "DEFAULT_PAGE_WINDOW", 25),
     maxDequeueCount: num(env, "MAX_DEQUEUE_COUNT", 3),
-    tempDir: env.TEMP_DIR || "/tmp/afp",
+    tempDir: env.SCYNE_AWS_TEMP_DIR || env.TEMP_DIR || "/tmp/scyne-aws-files",
     markdownMaxBytes: num(env, "MARKDOWN_MAX_BYTES", defaultMarkdownMaxBytes()),
     allowLocalPathUpload: bool(env, "ALLOW_LOCAL_PATH_UPLOAD", !env.MCP_BEARER_TOKEN),
     publicS3Endpoint: env.S3_PUBLIC_ENDPOINT || null,

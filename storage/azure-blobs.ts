@@ -1,29 +1,14 @@
 import { BlobServiceClient } from "@azure/storage-blob";
 import type { BlobBackend } from "../packages/orchestrator/src/index.js";
+import { blobNameFor } from "./blob-name.js";
 
 /** One block. Matches the plugin's own staged upload so the two agree. */
 const BLOCK_BYTES = 8 * 1024 * 1024;
 const CONCURRENCY = 4;
 
-const SHA256 = /^[0-9a-f]{64}$/;
-
-/**
- * The blob's name IS its content hash, fanned out two levels.
- *
- * Fan-out because a single flat prefix holding millions of keys is slow to list
- * and unpleasant to browse; two levels of two hex characters gives 65,536
- * buckets, which is ample and costs nothing.
- *
- * Validated rather than trusted: the name is derived from caller-supplied text,
- * and a value that is not a hash would either create a blob nothing can find
- * again or — with `../` in it — address a key space this backend does not own.
- */
-export const blobNameFor = (sha256: string): string => {
-  if (!SHA256.test(sha256)) {
-    throw new Error(`blob name must be a lowercase hex sha256, got ${JSON.stringify(sha256)}`);
-  }
-  return `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}`;
-};
+/** Re-exported so an existing importer of this module is unaffected by the
+ *  move; the definition now lives in `blob-name.ts`, which carries no SDK. */
+export { blobNameFor };
 
 export interface AzureBlobOptions {
   connectionString: string;
