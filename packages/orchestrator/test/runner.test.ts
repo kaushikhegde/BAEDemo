@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildArgs, createClaudeRunner } from "../src/core/runner.js";
 import { filterRunLog } from "../src/core/transcript.js";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,54 @@ describe("buildArgs", () => {
 // network call, no cost, and each one targets a path the buildArgs tests
 // above cannot reach (log envelope shape, stdout-vs-stderr usage sourcing,
 // budget-kill status semantics).
+describe("a step that names a skill it cannot discover", () => {
+  // SAPN's capability map, verbatim from the transcript:
+  //
+  //     Unknown skill: capability-process-map
+  //     The skill isn't available. Let me proceed with the task directly.
+  //
+  // It then wrote the deliverable itself. That is why this is checked BEFORE
+  // spawning rather than left to the CLI: an undiscoverable skill does not stop
+  // a run, it changes what the run produces — a full stage spent on a plausible
+  // document that followed none of the discipline in the SKILL.md, put in front
+  // of a human who cannot tell which one they are reading.
+
+  it("fails without spawning, and names the fix", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "runner-noskill-"));
+    // A binary that would fail loudly if it were ever reached.
+    const runner = createClaudeRunner({ bin: "/definitely/not/a/real/binary-xyz" });
+    const r = await runner.run({
+      agent: { key: "capArchitect" }, prompt: "generate", skill: "capability-process-map",
+      cwd, logPath: join(cwd, "run.jsonl"),
+    });
+
+    expect(r.status).toBe("failed");
+    expect(r.usage).toBeNull();
+    expect(r.stderrTail).toContain("Unknown skill: capability-process-map");
+    expect(r.stderrTail).toContain("link-skills");
+    // Nothing was spawned, so nothing was logged.
+    expect(existsSync(join(cwd, "run.jsonl"))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("passes a skill that IS discoverable straight through", async () => {
+    // The guard must test the same path Claude Code discovers by, or it blocks
+    // runs that would have worked.
+    const cwd = mkdtempSync(join(tmpdir(), "runner-skill-"));
+    mkdirSync(join(cwd, ".claude", "skills", "capability-process-map"), { recursive: true });
+    writeFileSync(join(cwd, ".claude/skills/capability-process-map/SKILL.md"), "# the skill");
+
+    const runner = createClaudeRunner({ bin: fakeClaudeBin });
+    const r = await runner.run({
+      agent: { key: "capArchitect" }, prompt: "generate", skill: "capability-process-map",
+      cwd, logPath: join(cwd, "run.jsonl"),
+    });
+
+    expect(r.status).toBe("succeeded");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
 describe("createClaudeRunner (fake binary)", () => {
   function tmpLog() {
     const dir = mkdtempSync(join(tmpdir(), "orch-run-fake-"));

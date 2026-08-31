@@ -35,10 +35,29 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { sha256Of, type DocumentStore } from "./documents.js";
 
-/** Install directories linked into the work root so an agent's cwd can reach them. */
+/**
+ * Install directories linked into the work root so an agent's cwd can reach them.
+ *
+ * `.claude` is in this list for a reason that is easy to miss: Claude Code
+ * discovers a skill by looking for `.claude/skills/<slug>/` UNDER ITS CWD, and
+ * an agent step's cwd is the scratch tree, not the install. Without the link a
+ * run reports
+ *
+ *     Unknown skill: capability-process-map
+ *
+ * and — worse than failing — carries on without it, because a model told to
+ * invoke a skill that does not exist will improvise the deliverable instead.
+ * The stage then produces something plausible that followed none of the
+ * discipline in the SKILL.md.
+ *
+ * `skills/` is linked as well and is NOT a substitute: that is the source the
+ * `.claude/skills/<slug>` links point at, and nothing discovers it by name.
+ * `npm run link-skills` builds `.claude/skills/` in the install; this puts it
+ * where the agent is standing.
+ */
 export const LINKED_FROM_INSTALL = [
   "scripts", "skills", "examples", "datamodel-reference", "agent-instructions",
-  "scyne-chatbot", ".mcp.json",
+  "scyne-chatbot", ".claude", ".mcp.json",
 ] as const;
 
 /** Real (non-linked) top-level directories that belong to the project and are harvested. */

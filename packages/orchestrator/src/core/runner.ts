@@ -8,6 +8,8 @@
 // confirmed against a real invocation of Claude Code 2.1.232, not assumed:
 // see fixtures/result-event.jsonl (Task 4) and this task's own E2E run.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { extractUsage, type RunUsage } from "./usage.js";
 import { runChild } from "./spawn.js";
 
@@ -109,10 +111,52 @@ export function buildArgs(req: RunRequest): string[] {
   return a;
 }
 
+/**
+ * Where Claude Code looks for a skill: `.claude/skills/<slug>/SKILL.md`, under
+ * its own CWD. Nowhere else — not `skills/`, which is only what those entries
+ * point at.
+ */
+const skillIsDiscoverable = (cwd: string, slug: string): boolean =>
+  existsSync(join(cwd, ".claude", "skills", slug, "SKILL.md"));
+
 export function createClaudeRunner(opts: { bin?: string } = {}): Runner {
   const bin = opts.bin ?? "claude";
   return {
-    run(req: RunRequest): Promise<RunResult> {
+    async run(req: RunRequest): Promise<RunResult> {
+      /**
+       * Checked BEFORE spawning, because an undiscoverable skill does not stop
+       * the run — it changes what the run produces. Measured on SAPN's
+       * capability map, verbatim from the transcript:
+       *
+       *     Unknown skill: capability-process-map
+       *     The skill isn't available. Let me proceed with the task directly.
+       *
+       * The model then improvised the deliverable. That is the expensive
+       * outcome: a full stage spent on a plausible document that followed none
+       * of the discipline in the SKILL.md, gated by a human who has no way to
+       * see which one they are reading. Failing here costs nothing and names
+       * the fix.
+       *
+       * Only this runner needs the check. The Codex and shared agent loops load
+       * the SKILL.md from the install themselves and already throw on a missing
+       * one; Claude Code discovers it from the filesystem, and the filesystem
+       * it discovers from is the step's scratch tree.
+       */
+      if (req.skill && !skillIsDiscoverable(req.cwd, req.skill)) {
+        return {
+          exitCode: 1,
+          status: "failed",
+          usage: null,
+          // No path in the message: this text reaches a client-visible issue
+          // comment, and an absolute path on our machine is neither actionable
+          // nor theirs to see.
+          stderrTail:
+            `Unknown skill: ${req.skill}. Claude Code discovers a skill at ` +
+            `.claude/skills/<slug>/SKILL.md under its working directory, and there is ` +
+            `none for this one. Run \`npm run link-skills\` in the install — ` +
+            `\`.claude/\` is gitignored, so a fresh clone has none.`,
+        };
+      }
       return runChild(req, { bin, args: buildArgs(req), extractUsage });
     },
   };

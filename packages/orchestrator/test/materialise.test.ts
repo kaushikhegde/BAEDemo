@@ -37,6 +37,9 @@ beforeEach(async () => {
     await mkdir(join(installRoot, d), { recursive: true });
   }
   await writeFile(join(installRoot, "scripts", "stage.mjs"), "// the real script");
+  // What `npm run link-skills` builds: the directory Claude Code discovers by.
+  await mkdir(join(installRoot, ".claude", "skills", "capability-process-map"), { recursive: true });
+  await writeFile(join(installRoot, ".claude/skills/capability-process-map/SKILL.md"), "# the skill");
 
   workRoot = await createWorkRoot("orch-test-work-");
 });
@@ -71,6 +74,23 @@ describe("materialise", () => {
     expect(st.isSymbolicLink()).toBe(true);
     // and it resolves — an agent told to run `node scripts/stage.mjs` finds it
     expect(await readFile(join(workRoot, "scripts", "stage.mjs"), "utf8")).toBe("// the real script");
+  });
+
+  it("links `.claude/` in, or an agent's cwd can discover no skill at all", async () => {
+    // An agent step's cwd is the SCRATCH TREE, and Claude Code finds a skill by
+    // looking for `.claude/skills/<slug>/SKILL.md` beneath it. Linking
+    // `skills/` is not a substitute — that is only what those entries point at,
+    // and nothing discovers it by name. Without this, every stage that names a
+    // skill ran without one: `Unknown skill: capability-process-map`, and then
+    // the model improvised the deliverable rather than stopping.
+    await materialise({ store, projectId, projectName: "RTWSA", features: FEATURES(), installRoot, workRoot });
+
+    expect((await lstat(join(workRoot, ".claude"))).isSymbolicLink()).toBe(true);
+    // Resolving MATTERS: the entries inside are themselves relative symlinks
+    // (`../../skills/<slug>`), so this asserts the whole chain lands on real
+    // content rather than just that a link exists.
+    expect(await readFile(join(workRoot, ".claude/skills/capability-process-map/SKILL.md"), "utf8"))
+      .toBe("# the skill");
   });
 
   it("creates the directories the renderers write into even with nothing stored", async () => {
