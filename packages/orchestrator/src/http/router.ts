@@ -617,15 +617,17 @@ export function createRouter(orch: Awaited<ReturnType<typeof createOrchestrator>
     // exactly where it was, which is recoverable by a retry or a manual
     // POST /issues/{id} nudge; a dead process is not.
     //
-    // Only a NEW issue is advanced. A coalesced one is already mid-run, and a
-    // second concurrent advance() on it would be dropped by the in-memory lock
-    // inside advance() — but relying on that guard is relying on it for
-    // something we can simply not do.
-    if (!issue.coalesced) {
-      orch.engine.advance(issue.id).catch((err: unknown) => {
-        console.error(`[orchestrator] advance(${issue.id}) failed:`, err);
-      });
-    }
+    // A COALESCED issue is advanced too, and that is a change: it used to be
+    // skipped on the reasoning that it was already mid-run. It usually is, and
+    // the in-memory lock inside advance() drops the second call — but "usually"
+    // is not a guarantee, and a join now carries WORK (engine.start records a
+    // rerun on the issue it joined). An issue whose loop has already returned —
+    // a process restart, an advance() that threw — would otherwise hold that
+    // request for ever with nothing scheduled to notice it, which is the silent
+    // drop the coalesce rules exist to prevent.
+    orch.engine.advance(issue.id).catch((err: unknown) => {
+      console.error(`[orchestrator] advance(${issue.id}) failed:`, err);
+    });
     // 200 means "one was already going", 201 means "I started one". A caller
     // that cannot tell those apart is the bug this route was changed for: the
     // chatbot fires this once per uploaded document and had no way to know it

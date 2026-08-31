@@ -387,6 +387,69 @@ export function createRepo(db: Db) {
       return rows.map(parseIssueRow);
     },
 
+    /**
+     * Record that MORE work joined an issue that had already started.
+     *
+     * Coalescing is what turns nine uploads into one issue. This is what makes
+     * that one issue actually cover all nine — and without it, joining was a
+     * NO-OP. The router does not advance() a coalesced issue, so a start that
+     * landed while the run was mid-flight changed nothing: the extract step had
+     * already materialised its tree and resolved its work list, and the
+     * document that triggered the join was never extracted.
+     *
+     * Measured on SAPN. `documents/Introduction.md` at 03:04:52 created SCY-4
+     * 33ms later; two more documents arrived at 03:04:56 and 03:05:05, both
+     * coalesced onto the running issue, and neither was extracted. One extract
+     * was written, and the validator two steps on blocked the issue with
+     * `2 problem(s) across 3 document(s)`.
+     *
+     * Guarded on STATUS inside the same statement as the write, because the
+     * caller's `findByCoalesceKey` and this update are two round trips and the
+     * issue can finish in between. Zero rows back means "it is over, this start
+     * does not belong to it" — the caller then creates a fresh issue, which is
+     * the only thing that still gets the document extracted.
+     */
+    async requestRerun(issueId: string, statuses: readonly string[]): Promise<IssueRow | null> {
+      if (!statuses.length) return null;
+      const slots = statuses.map((_, i) => `$${i + 2}`).join(",");
+      const { rows } = await db.query<IssueRow>(
+        `update issues
+            set params = jsonb_set(params, '{rerunRequestedAt}', to_jsonb(now()::text), true),
+                updated_at = now()
+          where id=$1 and status in (${slots})
+          returning *`,
+        [issueId, ...statuses]);
+      return rows[0] ? parseIssueRow(rows[0]) : null;
+    },
+
+    /** Honoured, or overtaken. Either way the request is spent — as `clearControl` is. */
+    async clearRerun(issueId: string): Promise<IssueRow | null> {
+      const { rows } = await db.query<IssueRow>(
+        `update issues set params = params - 'rerunRequestedAt', updated_at = now()
+          where id=$1 returning *`, [issueId]);
+      return rows[0] ? parseIssueRow(rows[0]) : null;
+    },
+
+    /**
+     * Reach `done`, unless a rerun landed since the caller read the row.
+     *
+     * The other half of `requestRerun`'s compare-and-set, and the reason the
+     * two together are airtight rather than merely narrow. advance() re-reads
+     * the issue at the top of every iteration, so a rerun recorded while a step
+     * was running is always seen — except in the one window between that read
+     * and the write that finishes the issue. Testing the marker in the same
+     * statement as the transition closes it: zero rows back means a rerun
+     * arrived, the issue is still `in_progress`, and the loop goes round again
+     * to honour it.
+     */
+    async finishUnlessRerunRequested(issueId: string): Promise<IssueRow | null> {
+      const { rows } = await db.query<IssueRow>(
+        `update issues set status='done', updated_at=now()
+          where id=$1 and params->>'rerunRequestedAt' is null
+          returning *`, [issueId]);
+      return rows[0] ? parseIssueRow(rows[0]) : null;
+    },
+
     async updateIssue(id: string, patch: UpdateIssuePatch): Promise<IssueRow | null> {
       const sets: string[] = [];
       const params: unknown[] = [];

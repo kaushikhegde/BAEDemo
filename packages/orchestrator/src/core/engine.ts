@@ -305,11 +305,16 @@ export function createEngine(deps: {
    *
    * Deliberately a whitelist of the two the engine will reach on its own, not
    * a blacklist of the terminal ones. `blocked`, `paused` and `in_review` are
-   * all statuses that only a PERSON moves, and the router does not advance() an
-   * issue a start coalesced onto — so joining one parks the new work behind a
-   * decision nobody knows they owe, and the document that triggered the start
-   * is never extracted. That failure is silent and permanent, which is exactly
-   * the failure this whole mechanism exists to remove.
+   * all statuses that only a PERSON moves — joining one parks the new work
+   * behind a decision nobody knows they owe, and the document that triggered
+   * the start is never extracted. Not joining them is what lets `start` create
+   * a successor and `supersedeStranded` cancel the one it stepped past.
+   *
+   * `todo` and `in_progress` are joined, and a join is not passive: it records
+   * a rerun on the issue (see `repo.requestRerun`) so the run covers work that
+   * arrived after it began. This same list guards that write, so an issue that
+   * reached a terminal status between the lookup and the update is not joined
+   * after the fact.
    */
   const JOINABLE = ["todo", "in_progress"] as const;
 
@@ -879,8 +884,41 @@ export function createEngine(deps: {
         // `paused` leaves only through resume(); `blocked` only through retry().
         if (issue.status === "blocked" || issue.status === "in_review" || issue.status === "paused") return;
 
+        // MORE work joined this issue while it was already running.
+        //
+        // Coalescing makes nine uploads one issue; this is what makes that one
+        // issue cover all nine. A step resolves its work list ONCE, from the
+        // tree it materialised when it started, so a document that arrived
+        // after that is invisible to it — and to every step already past. The
+        // only honest answer is to run the workflow again from the top.
+        //
+        // Rewinding is safe because the whole extract workflow is idempotent:
+        // every extract is keyed by its source document's content hash, so a
+        // second pass skips the documents that already have one and spends
+        // only on the new arrivals. Cleared BEFORE the rewind, so a third
+        // upload landing during the second pass sets it again and is honoured
+        // in turn, rather than being swallowed by the pass it just missed.
+        if (issue.params.rerunRequestedAt) {
+          await repo.clearRerun(issueId);
+          if (issue.step_index > 0) {
+            await repo.updateIssue(issueId, { stepIndex: 0, status: "in_progress" });
+            await note(issueId,
+              `**Starting again from the top.** More work joined this issue after it had ` +
+              `reached ${where(issue, wf)}, so the earlier steps never saw it. The workflow ` +
+              `runs again from the beginning; work that is already finished is not paid ` +
+              `for twice.`);
+          }
+          continue;
+        }
+
         if (!step) {
-          await repo.updateIssue(issueId, { status: "done" });
+          // Compare-and-set, not a plain write. advance() re-reads the issue at
+          // the top of every iteration, so a rerun recorded mid-step is always
+          // seen — except between that read and this transition. Testing the
+          // marker inside the same statement closes the window: null back means
+          // a rerun landed, the issue is still `in_progress`, and the loop goes
+          // round to honour it instead of finishing with work outstanding.
+          if (!await repo.finishUnlessRerunRequested(issueId)) continue;
           // The closing line of the timeline. Cost is summed from the runs
           // rather than tracked as we go, so a resumed issue reports its whole
           // spend and not just this pass's.
@@ -978,7 +1016,23 @@ export function createEngine(deps: {
       if (opts.coalesceKey) {
         const open = await repo.findByCoalesceKey(
           companyId, workflowKey, opts.coalesceKey, JOINABLE);
-        if (open[0]) return { ...open[0], coalesced: true };
+        // Joining is not enough on its own. The issue may already be PAST the
+        // step that would have picked this work up — on SAPN it was: three
+        // documents uploaded over thirteen seconds, the second and third
+        // coalesced onto a run whose extract step had already resolved its work
+        // list, one extract written, and the validator blocked the issue with
+        // `2 problem(s) across 3 document(s)`. So a join RECORDS the arrival,
+        // and advance() runs the workflow again from the top.
+        //
+        // Guarded on the same statuses the join is allowed for, inside the
+        // statement that writes: the select above and this update are two round
+        // trips, and an issue that finished in between must not be joined at
+        // all. Null back means exactly that, and falls through to creating a
+        // fresh issue — the only thing that still gets the document extracted.
+        if (open[0]) {
+          const joined = await repo.requestRerun(open[0].id, JOINABLE);
+          if (joined) return { ...joined, coalesced: true };
+        }
       }
       // The org chart is reconciled into the HOME organisation on boot, so an
       // agent lookup in any other organisation legitimately finds nothing. An

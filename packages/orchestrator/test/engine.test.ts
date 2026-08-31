@@ -1244,6 +1244,128 @@ describe("coalesceKey", () => {
   });
 });
 
+describe("a coalesced start joins WORK, not just an issue", () => {
+  // The SAPN failure. `documents/Introduction.md` landed at 03:04:52 and created
+  // SCY-4 33ms later; two more documents arrived at 03:04:56 and 03:05:05 and
+  // both coalesced onto it. Joining was all they did — the extract step had
+  // already materialised its tree and resolved its work list, so one extract was
+  // written for three documents and the validator two steps later blocked the
+  // issue with `2 problem(s) across 3 document(s)`.
+  //
+  // "One issue, several passes, every document extracted" is the contract. A
+  // join therefore RECORDS the arrival, and advance() runs the workflow again
+  // from the top. Nothing is redone that was already done: every extract is
+  // keyed by its source document's content hash, so a second pass spends only
+  // on the new arrivals.
+
+  /**
+   * Nothing but exec steps, so a rewind is observable as steps re-running.
+   * `requirements` parks at a gate before it could show one.
+   */
+  const execOnly = (workspace: string) => defineOrchestrator({
+    workspace,
+    db: { driver: "pglite", dir: join(workspace, "pg") },
+    adapters: { claude_local: fakeRunner },
+    defaults: { adapter: "claude_local", model: "claude-sonnet-4-6", effort: "medium" },
+    org: [{ key: "ba", name: "BA", model: "claude-sonnet-4-6" }],
+    workflows: [{
+      key: "extract", label: "Document Extraction", assignee: "ba",
+      steps: [
+        { type: "exec", cmd: "stage {project}" },
+        { type: "exec", cmd: "extract {project}" },
+        { type: "exec", cmd: "validate {project}" },
+      ],
+    }],
+  });
+
+  it("records the arrival on the issue it joined", async () => {
+    const engine = createEngine({ repo, config: execOnly(dir), exec: fakeExec });
+    const a = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "in_progress", stepIndex: 2 });
+
+    const b = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+
+    expect(b.coalesced).toBe(true);
+    expect(b.id).toBe(a.id);
+    // Read back from the DATABASE: the loop that honours it re-reads the row.
+    expect((await repo.getIssue(a.id))?.params.rerunRequestedAt).toBeTruthy();
+  });
+
+  it("re-runs the workflow, so a document that arrived mid-run is extracted", async () => {
+    let engine!: ReturnType<typeof createEngine>;
+    // A second upload lands while the extract step is running — 4 seconds after
+    // the first, which is what actually happened. Once only, or the run would
+    // never converge.
+    const joiningExec = async (cmd: string) => {
+      calls.push(`exec:${cmd}`);
+      if (cmd === "extract P" && calls.filter(c => c === "exec:extract P").length === 1) {
+        await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    engine = createEngine({ repo, config: execOnly(dir), exec: joiningExec });
+
+    const a = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await engine.advance(a.id);
+
+    // Twice: once before the second document existed, once after. Before this
+    // fix it ran once and the run finished with the document unextracted.
+    expect(calls.filter(c => c === "exec:extract P").length).toBe(2);
+    // And the validator only ever saw the complete set, so it never blocked.
+    expect(calls.filter(c => c === "exec:validate P").length).toBe(1);
+
+    const after = await repo.getIssue(a.id);
+    expect(after?.status).toBe("done");
+    // Spent. A request left on a finished issue would rewind the next resume.
+    expect(after?.params.rerunRequestedAt).toBeUndefined();
+  });
+
+  it("says so on the timeline, rather than silently repeating itself", async () => {
+    // The Activity panel is what a client watches. A step running a second time
+    // with nothing explaining why reads as a fault.
+    const engine = createEngine({ repo, config: execOnly(dir), exec: fakeExec });
+    const a = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "in_progress", stepIndex: 2 });
+    await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await engine.advance(a.id);
+
+    const timeline = (await repo.listComments(a.id)).map(c => c.body).join("\n");
+    expect(timeline).toContain("Starting again from the top");
+    expect((await repo.getIssue(a.id))?.step_index).toBe(3);
+  });
+
+  it("does not record a rerun on an issue that finished first", async () => {
+    // `findByCoalesceKey` and the write that joins are two round trips, and the
+    // engine can reach `done` in between. Guarding on status INSIDE the update
+    // is what makes the pair a compare-and-set: null back means the issue is
+    // over, and the caller creates a fresh one instead of filing work into a
+    // run that will never look at it again.
+    const engine = createEngine({ repo, config: execOnly(dir), exec: fakeExec });
+    const a = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "done" });
+
+    expect(await repo.requestRerun(a.id, ["todo", "in_progress"])).toBeNull();
+    expect((await repo.getIssue(a.id))?.params.rerunRequestedAt).toBeUndefined();
+  });
+
+  it("refuses to finish an issue carrying a rerun request", async () => {
+    // The other half of the compare-and-set. advance() re-reads the issue every
+    // iteration, so the only window left is between that read and the write
+    // that closes the issue — which is exactly the window a document uploaded
+    // during the last step falls into.
+    const engine = createEngine({ repo, config: execOnly(dir), exec: fakeExec });
+    const a = await engine.start("extract", { project: "P" }, { coalesceKey: "extract:P" });
+    await repo.updateIssue(a.id, { status: "in_progress" });
+    await repo.requestRerun(a.id, ["todo", "in_progress"]);
+
+    expect(await repo.finishUnlessRerunRequested(a.id)).toBeNull();
+    expect((await repo.getIssue(a.id))?.status).toBe("in_progress");
+
+    await repo.clearRerun(a.id);
+    expect((await repo.finishUnlessRerunRequested(a.id))?.status).toBe("done");
+  });
+});
+
 describe("attempt counting alongside fan-out runs", () => {
   /**
    * A fan-out step writes one run row per ITEM at a single step_index —
