@@ -480,18 +480,25 @@ function ensureAdoProjectStep(): Step {
  * BEFORE the publish, deliberately, not inside the verifier: a judge that
  * repairs what it is judging cannot fail it.
  */
-function ensureConfluenceSpaceStep(): Step {
+function ensureConfluenceSpaceStep(key: string): Step {
+  // `--with-jira` only where a backlog is actually delivered. Every other stage
+  // publishes a page and nothing else, and a Jira project provisioned by a run
+  // that was never going to put an issue in it is a change to a client's site
+  // that nothing asked for. Same condition as `createWorkItemsStep` below —
+  // the two must agree, or the requirements publish creates issues in a project
+  // this step did not make.
+  const withJira = key === "requirements" ? " --with-jira" : "";
   return {
     type: "exec",
     label: "Making sure the Confluence space exists",
-    cmd: `node scripts/ensure-confluence-space.mjs "{project}"`,
+    cmd: `node scripts/ensure-confluence-space.mjs "{project}"${withJira}`,
     timeoutMs: 5 * MINUTES,
   };
 }
 
 /** The right pre-publish check for whichever back end this install uses. */
-function ensurePublishTargetStep(): Step {
-  return PUBLISH_TARGET === "atlassian" ? ensureConfluenceSpaceStep() : ensureAdoProjectStep();
+function ensurePublishTargetStep(key: string): Step {
+  return PUBLISH_TARGET === "atlassian" ? ensureConfluenceSpaceStep(key) : ensureAdoProjectStep();
 }
 
 /**
@@ -657,7 +664,7 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
   }
 
   if (s.publishes) {
-    steps.push(ensurePublishTargetStep());
+    steps.push(ensurePublishTargetStep(key));
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -764,7 +771,7 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     });
   }
   if (s.publishes) {
-    steps.push(ensurePublishTargetStep());
+    steps.push(ensurePublishTargetStep(key));
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
     // its verifier cannot silently point the rewind at the wrong step.
@@ -826,7 +833,7 @@ export function publishWorkflow(key: string, s: Stage): WorkflowDef {
       ].join("\n"),
     },
   ];
-  steps.push(ensurePublishTargetStep());
+  steps.push(ensurePublishTargetStep(key));
   const publishAt = steps.length;
   steps.push({ type: "agent", agent: "publisher", phase: "publish", effort: "medium", prompt: publishPrompt(key, s) });
   // Requirements is the only stage delivering a backlog as well as a page.

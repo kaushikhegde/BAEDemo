@@ -17,7 +17,7 @@ import { NewProjectWizard } from "./components/NewProjectWizard";
 import { SuggestionChips } from "./components/SuggestionChips";
 import { Login, loadSession, clearSession, type LoginSession } from "./components/Login";
 import { clearPersistedSession } from "./lib/session";
-import { Rail, type View } from "./components/Rail";
+import { Rail, RAIL_WIDTH_PX, type View } from "./components/Rail";
 import { IssuesView } from "./components/IssuesView";
 import { DocumentsView } from "./components/DocumentsView";
 import { SpendView } from "./components/SpendView";
@@ -1730,8 +1730,20 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         </aside>
       </main>
 
-      {/* Fixed composer dock — aligned under the chat column */}
-      <div className="fixed inset-x-0 bottom-4 z-20 pointer-events-none">
+      {/* Fixed composer dock — aligned under the chat column.
+
+          `left` is the rail's width, not 0. `fixed` positions against the
+          VIEWPORT, so this element knows nothing about the rail its sibling
+          `<main>` sits beside: with `inset-x-0` the dock's grid started 74px
+          left of main's and was 74px wider, so its `col-span-4` was both
+          offset from the chat column and the wrong size — and `z-20` drew the
+          overhang on top of the rail rather than behind it. Everything else
+          here (px, cols, gap) already mirrors `<main>`; this is the one part
+          that could not, because the rail is not in this element's ancestry. */}
+      <div
+        style={{ left: RAIL_WIDTH_PX }}
+        className="fixed right-0 bottom-4 z-20 pointer-events-none"
+      >
         <div className="px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card
             ref={composerRef}

@@ -33,7 +33,7 @@
     "pack:cli": "node scripts/build-cli.mjs && npm pack ./dist/cli --pack-destination ./dist",
     "typecheck": "./packages/orchestrator/node_modules/.bin/tsc --noEmit -p packages/orchestrator/tsconfig.json && ./packages/orchestrator/node_modules/.bin/tsc --noEmit -p cli/tsconfig.json",
     "test": "npm --prefix packages/orchestrator test",
-    "check:publish": "node scripts/lib/publish-shared.test.mjs && node scripts/lib/ado.test.mjs"
+    "check:publish": "node scripts/lib/publish-shared.test.mjs && node scripts/lib/ado.test.mjs && node scripts/lib/atlassian.test.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

@@ -12,6 +12,22 @@ import { MessageSquare, ListTodo, Receipt, ScrollText, FolderOpen } from "lucide
 
 export type View = "workspace" | "documents" | "issues" | "spend" | "actions" | "history";
 
+/**
+ * The rail's width, in pixels.
+ *
+ * Exported, and applied as a style rather than a Tailwind class, because ONE
+ * other thing has to know it: the composer dock in `App.tsx` is
+ * `position: fixed`, so it is laid out against the VIEWPORT and not against
+ * the rail's sibling column. It has to start where the rail ends, or it is
+ * drawn 74px to the left of the chat column it is meant to sit under — which
+ * is exactly where it was, sliding beneath the rail with a `z-20` that put it
+ * on top of the border.
+ *
+ * A second `w-[74px]` over there would be the same number written twice, and
+ * the failure when they drift is silent: the dock simply stops lining up.
+ */
+export const RAIL_WIDTH_PX = 74;
+
 /** Which views exist, in rail order. `admin` gates the commercially sensitive two. */
 const ITEMS: Array<{ view: View; label: string; Icon: typeof MessageSquare; admin?: boolean }> = [
   { view: "workspace", label: "Chat", Icon: MessageSquare },
@@ -42,7 +58,8 @@ export function Rail({
   return (
     <nav
       aria-label="Sections"
-      className="shrink-0 w-[74px] border-r border-scyne-line bg-white/60 flex flex-col items-stretch gap-1 py-4 px-2"
+      style={{ width: RAIL_WIDTH_PX }}
+      className="shrink-0 border-r border-scyne-line bg-white/60 flex flex-col items-stretch gap-1 py-4 px-2"
     >
       {ITEMS.filter((i) => !i.admin || isAdmin).map(({ view: v, label, Icon }) => {
         const active = view === v;

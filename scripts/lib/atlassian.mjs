@@ -182,3 +182,29 @@ export async function recordAtlassianTarget(file, target) {
   if (!file || !target?.space) return;
   await mergePublished(file, { atlassianTarget: target });
 }
+
+/**
+ * The Confluence space key and Jira project key a project gets by default.
+ *
+ * DERIVED from the project name rather than asked for, so the common case needs
+ * no extra field: SAPN -> SAPN, "Review & Verify" -> REVIEWVERI. An operator who
+ * wants different ones edits `.published.json` before the first publish, and a
+ * recorded key always wins over this.
+ *
+ * Both key spaces are uppercase alphanumeric and must START WITH A LETTER —
+ * Jira rejects `1STENERGY` outright, and a project named for a year or a
+ * release number is not unusual. The `S` prefix is not decoration; it is the
+ * difference between a derived key and a 400.
+ *
+ * `scyne-chatbot/server/index.ts` derives the same thing when IT creates a
+ * project. The two only ever run on different projects — this one fires when
+ * nothing is recorded — so they cannot disagree about a single project, but
+ * keep them in step anyway.
+ */
+export function atlassianKeyFor(project) {
+  const cleaned = String(project ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (!cleaned) return "SCYNE";
+  // Also covers the one-character case: a key must be at least two.
+  const keyed = /^[A-Z]/.test(cleaned) ? cleaned : `S${cleaned}`;
+  return (keyed.length < 2 ? `${keyed}X` : keyed).slice(0, 10);
+}
