@@ -39,7 +39,18 @@ import { verifyAtlassianTarget, atlassianConfigured } from "./services/atlassian
  * other. Both read the same environment variable rather than one importing the
  * other, because this file must not pull in the workflow compiler.
  */
-const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
+const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado" | "none";
+/**
+ * Whether this installation publishes at all.
+ *
+ * `none` compiles the ensure / publish / verify steps out of every workflow,
+ * so on such an install an approval is the end of the road for an artefact —
+ * and every pre-approval check below is verifying a destination the run will
+ * never visit. Skipping them is not laxness: a 502 refusing an approval
+ * because Confluence is unreachable, on a machine that was never going to
+ * contact Confluence, is a gate that cannot be passed.
+ */
+const PUBLISHES = PUBLISH_TARGET !== "none";
 import { ensureAdoProject } from "./services/adoProject.js";
 import { publishedLinks, mergeLinks } from "./publishedLinks.js";
 // filterRunLog is the orchestrator package's own decoder — imported directly
@@ -1088,7 +1099,7 @@ app.post("/api/approve/:approvalId", async (req, res) => {
     // this request: the target is recorded in `.published.json` and every
     // publishing script reads it from there, so keying this check off anything
     // else could verify a system the publish is not going to use — and pass.
-    if (atlassianConfigured()) {
+    if (PUBLISHES && atlassianConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
         const desc = String(issue?.description || "");
@@ -1126,13 +1137,42 @@ app.post("/api/approve/:approvalId", async (req, res) => {
                 checks: result.checks,
               });
             }
+          } else if (PUBLISH_TARGET === "atlassian" && !published?.adoTarget?.project) {
+            // NO recorded target at all, on an install that publishes to
+            // Confluence. This used to fall straight through — `if
+            // (target?.space)` is false, nothing else looked, and the approval
+            // succeeded. The workflow then blocked one step later on
+            // `ensure-confluence-space.mjs`, which refuses a project with no
+            // space recorded.
+            //
+            // That is precisely the failure this guard exists to prevent, and
+            // it walked past it. A SAPN capability map was approved by a human
+            // at 09:21 and blocked at 09:23 with every artefact on disk, four
+            // steps short of the companion-app render.
+            //
+            // `.published.json` is written at project creation (see POST
+            // /api/projects), so what reaches here is a project made before
+            // that code existed. Refusing names the fix; passing hides it
+            // behind a step nobody is watching.
+            return res.status(502).json({
+              error: "atlassian_target_missing",
+              message:
+                `Approving would publish ${scyneProject} to Confluence, but the project has no ` +
+                `Confluence space recorded.\n  Expected atlassianTarget.space in ` +
+                `projects/${scyneProject}/.published.json.\n\n` +
+                `Nothing has been approved, and nothing is lost — the artefacts are on disk. ` +
+                `This is written when a project is created, so a project made before that needs ` +
+                `one backfilled. Alternatively set PUBLISH_TARGET=none to run this installation ` +
+                `without publishing at all.`,
+              checks: [{ label: "atlassianTarget.space recorded", ok: false, detail: "not in .published.json" }],
+            });
           }
         }
       } catch (e: any) {
         return res.status(502).json({ error: "atlassian_verify_failed", message: e?.message ?? String(e) });
       }
     }
-    if (adoConfigured()) {
+    if (PUBLISHES && adoConfigured()) {
       try {
         const issue: any = await paperclip.getIssue(parentIssueId);
         const desc = String(issue?.description || "");
@@ -3593,6 +3633,53 @@ app.post("/api/preview/:project/:feature/:action", async (req, res) => {
     res.json({ ok: true, action, entry: result.entry });
   } catch (e: any) {
     console.error("[preview/action] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * Re-render the companion app for a project, now, without running a stage.
+ *
+ * The companion app is refreshed by every workflow, but a workflow that blocks
+ * before its render step leaves the page stale with no way back short of
+ * running the whole stage again — an agent call and a human approval to redraw
+ * a page from files that are already on disk. A SAPN capability map sat like
+ * that: three correct artefacts written, and the page a client looks at four
+ * days out of date.
+ *
+ * Project-keyed and no feature, because the companion app IS one page per
+ * project. `/api/preview/:project/:feature/start` already shells out to the
+ * same script, but it demands a feature it does not use and is named for
+ * starting a dev server that does not exist — a route the UI would be
+ * borrowing rather than calling.
+ *
+ * `render-companion-app.mjs` refuses when a project has produced nothing yet.
+ * That is a correct answer, not a failure, so it comes back 409 with the
+ * renderer's own words rather than a 500 the UI would show as an error.
+ */
+app.post("/api/companion-app/:project/render", async (req, res) => {
+  try {
+    const { project } = req.params;
+    assertSafeProject(project);
+    const result = await runHelper("render-companion-app.mjs", [project]);
+    if (!result.ok) {
+      const stderr = result.stderr?.trim() || "";
+      if (/nothing to render/i.test(stderr)) {
+        return res.status(409).json({
+          error: "nothing_to_render",
+          message:
+            `${project} has no artefacts to show yet. Run a stage — a capability map or a ` +
+            `product summary — and the page will have something to draw.`,
+        });
+      }
+      return res.status(500).json({
+        error: "render_failed",
+        message: stderr || `render-companion-app.mjs exited with ${result.code}`,
+      });
+    }
+    res.json({ ok: true, entry: result.entry });
+  } catch (e: any) {
+    console.error("[companion-app/render] failed:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

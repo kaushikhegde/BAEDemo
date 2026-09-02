@@ -15,6 +15,17 @@
 
 import { parseParams, workflowFor } from "../scyne-chatbot/server/orchestrator.js";
 
+/**
+ * Whether this installation publishes at all.
+ *
+ * Under `PUBLISH_TARGET=none` the orchestrator compiles no `publish-*`
+ * workflows, so the three republish cases below have no key to route TO —
+ * `workflowFor` refuses instead, and refusing is the correct routing on such an
+ * install. Asserting the key there would demand a workflow that does not exist;
+ * asserting nothing would let the refusal quietly become a stack trace.
+ */
+const PUBLISHES = (process.env.PUBLISH_TARGET ?? "atlassian") !== "none";
+
 // The exact title + description shapes server/index.ts builds, verbatim.
 const cases: Array<[string, string, string]> = [
   ["Generate requirements — Review & Verify Evidence (SADA/interim-benefit)",
@@ -53,9 +64,16 @@ for (const [title, desc, want] of cases) {
   const params = parseParams(desc);
   let got: string;
   try { got = workflowFor(title, params); } catch (e) { got = `THREW: ${(e as Error).message}`; }
-  const ok = got === want;
+  // A republish on a non-publishing install must refuse IN THOSE WORDS. The
+  // message is the deliverable: the person asked to push a document to a wiki
+  // this installation has no credentials for, and "publishing is disabled" is
+  // an answer they can act on where an unknown-workflow error is not.
+  const mustRefuse = !PUBLISHES && want.startsWith("publish-");
+  const ok = mustRefuse ? /publishing is disabled/i.test(got) : got === want;
   if (!ok) bad++;
-  console.log(ok ? "ok  " : "BAD ", title.slice(0, 46).padEnd(48), got.padEnd(20), ok ? "" : `(want ${want})`);
+  console.log(ok ? "ok  " : "BAD ", title.slice(0, 46).padEnd(48),
+    (mustRefuse ? (ok ? "refused" : got) : got).padEnd(20),
+    ok ? "" : `(want ${mustRefuse ? "a 'publishing is disabled' refusal" : want})`);
 }
 
 console.log("\n--- params extracted from the requirements description ---");

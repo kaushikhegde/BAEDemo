@@ -74,7 +74,12 @@ export async function mergePublished(file, patch) {
   await fs.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
 }
 
+/** The back ends a project can publish THROUGH. `none` is not one of them —
+ *  it is a statement about the installation, handled separately below. */
 export const TARGETS = ["atlassian", "ado"];
+
+/** Every accepted `PUBLISH_TARGET` value, including the opt-out. */
+export const CONFIGURABLE_TARGETS = [...TARGETS, "none"];
 
 /**
  * Which back end a project publishes through.
@@ -95,6 +100,16 @@ export const TARGETS = ["atlassian", "ado"];
  *
  * An explicit override always wins, so a caller who genuinely wants to move a
  * project can say so.
+ *
+ * `PUBLISH_TARGET=none` turns publishing off for the installation, and it is
+ * deliberately checked AFTER rule 1. A project that has already delivered a
+ * pack into Confluence still has a page there and a client with links to it;
+ * an operator running `confluence-publish.mjs` by hand against that project is
+ * updating a document that exists, and refusing them because a new install
+ * default says "we do not publish" would be the environment variable stranding
+ * a delivered pack all over again. What `none` does refuse is a FIRST publish —
+ * a project with no recorded target, where the only thing naming a destination
+ * is the setting that just said there isn't one.
  */
 export async function resolvePublishTarget({ publishedFile, env = process.env, override } = {}) {
   if (override) {
@@ -110,8 +125,17 @@ export async function resolvePublishTarget({ publishedFile, env = process.env, o
   }
   const configured = env.PUBLISH_TARGET;
   if (configured) {
-    if (!TARGETS.includes(configured)) {
-      fail(`PUBLISH_TARGET='${configured}' is not a known target — expected one of ${TARGETS.join(", ")}`);
+    if (!CONFIGURABLE_TARGETS.includes(configured)) {
+      fail(`PUBLISH_TARGET='${configured}' is not a known target — expected one of ${CONFIGURABLE_TARGETS.join(", ")}`);
+    }
+    if (configured === "none") {
+      fail(
+        `publishing is disabled on this installation (PUBLISH_TARGET=none), and ` +
+        `this project has no previously published target to fall back on.\n` +
+        `  Nothing has been published. The artefacts are on disk and the companion ` +
+        `app has them; only the push to a wiki is off.\n` +
+        `  To publish, set PUBLISH_TARGET to ${TARGETS.join(" or ")} and restart the orchestrator, ` +
+        `or pass --target explicitly to publish this one document.`);
     }
     return configured;
   }

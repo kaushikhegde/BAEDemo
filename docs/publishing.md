@@ -12,6 +12,25 @@ prompt in `orchestrator.workflows.ts`.
 DevOps wiki + work items) is the other. Both are live and both are asserted by
 `npm run check:workflows`, which reads the same variable.
 
+**`PUBLISH_TARGET=none` is the third value, and it publishes nothing.** The
+ensure / publish / verify steps and the nine `publish-<stage>` workflows are
+not compiled at all, so a stage ends at its approval gate with the artefact on
+disk and the companion app updated. For an installation with no MCP
+credentials. It exists because there was no way to say so: a capability map
+generated correctly, validated, and was approved by a human — and the run then
+blocked on `ensure-confluence-space.mjs`, **four steps short of the
+companion-app render**. Every artefact was written and the one page a client
+looks at stayed four days stale, because the only path to that render ran
+through somebody else's server. The render now runs BEFORE the publish block in
+every workflow (`renderAppStep` in `orchestrator.workflows.ts`), and
+`check-workflows.mts` asserts that ordering.
+
+Two things `none` does NOT do. It does not move a project that has already
+published: `resolvePublishTarget` checks the recorded target first, so running
+`confluence-publish.mjs` by hand against such a project still works — a client
+holds links to those pages. And it does not change the gate; approval is still
+how an artefact is accepted, it just no longer promises a wiki page.
+
 **A project keeps the system it has already published into.** The target is
 recorded in `projects/<p>/.published.json` — `atlassianTarget` or `adoTarget`
 — and mirrored into `projects.atlassian_target` / `projects.ado_target`. Every

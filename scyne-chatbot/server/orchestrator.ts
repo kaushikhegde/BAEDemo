@@ -12,6 +12,16 @@ import { currentToken } from "./auth.js";
 
 const BASE = process.env.ORCHESTRATOR_API_URL || "http://127.0.0.1:3100";
 
+/**
+ * Whether this installation publishes at all.
+ *
+ * Read from the environment rather than imported, the same way `index.ts` and
+ * `orchestrator.workflows.ts` each read `PUBLISH_TARGET` — this module must not
+ * pull in the workflow compiler, and all three reading one variable is what
+ * keeps them from disagreeing about what got compiled.
+ */
+const PUBLISHES = (process.env.PUBLISH_TARGET ?? "atlassian") !== "none";
+
 async function call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
   // The token belongs to the person whose request is in flight, read from
   // AsyncLocalStorage rather than from a module global — a global would serve
@@ -112,6 +122,17 @@ export function workflowFor(title: string, params: Record<string, string>): stri
   // stage comes from the description 's Artefact line, not from the title,
   // because the title carries a human label and the label is not the key.
   if (/^Republish\b/i.test(title)) {
+    // Under PUBLISH_TARGET=none the orchestrator compiles no `publish-*`
+    // workflows at all, so routing to one would post an issue the engine
+    // rejects as an unknown workflow — a stack trace where "we do not publish
+    // from this installation" is the whole answer. Refuse HERE, in the words a
+    // person asked the question in.
+    if (!PUBLISHES) {
+      throw new Error(
+        `cannot republish '${title}': publishing is disabled on this installation ` +
+        `(PUBLISH_TARGET=none). The artefact is on disk and in the companion app; ` +
+        `only the push to a wiki is off.`);
+    }
     const stage = pipeline.stageFor(params.artefact ?? "");
     if (!stage) throw new Error(`cannot route republish '${title}': no Artefact line in the description`);
     return `publish-${stage}`;

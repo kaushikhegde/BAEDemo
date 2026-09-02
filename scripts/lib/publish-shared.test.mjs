@@ -9,10 +9,19 @@
 // Run:  node scripts/lib/publish-shared.test.mjs
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { resolvePublishTarget, mergePublished, readPublished, parseArgs } from "./publish-shared.mjs";
+
+/** `fail()` exits the process, so the refusal paths have to be run in a child. */
+const runInChild = (src) => new Promise((resolve) => {
+  execFile(process.execPath, ["--input-type=module", "-e", src],
+    (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout, stderr }));
+});
+const MODULE_URL = JSON.stringify(new URL("./publish-shared.mjs", import.meta.url).href);
 
 let dir;
 const published = (name) => path.join(dir, `${name}.json`);
@@ -76,6 +85,37 @@ await test("an adoTarget with no project does not count as published", async () 
   // system it never reached.
   const f = await write("empty", { adoTarget: {} });
   assert.equal(await resolvePublishTarget({ publishedFile: f, env: {} }), "atlassian");
+});
+
+await test("PUBLISH_TARGET=none keeps a project that HAS published on its recorded target", async () => {
+  // `none` is checked after the recorded target, and the ordering is the point:
+  // a client holds links to pages already delivered into that space, so turning
+  // publishing off for new work must not strand a document somebody can still
+  // be asked to correct.
+  const f = await write("none-recorded", { atlassianTarget: { space: "SP" } });
+  assert.equal(
+    await resolvePublishTarget({ publishedFile: f, env: { PUBLISH_TARGET: "none" } }),
+    "atlassian");
+});
+
+await test("PUBLISH_TARGET=none refuses a FIRST publish, and says nothing was published", async () => {
+  const r = await runInChild(
+    `import { resolvePublishTarget } from ${MODULE_URL};\n` +
+    `await resolvePublishTarget({ env: { PUBLISH_TARGET: "none" } });\n` +
+    `console.log("RESOLVED");`);
+  assert.notEqual(r.code, 0, `expected a non-zero exit, got ${r.code}`);
+  assert.match(r.stderr, /publishing is disabled/i);
+  // The refusal has to be reassuring as well as correct: the artefacts exist.
+  assert.match(r.stderr, /Nothing has been published/i);
+  assert.doesNotMatch(r.stdout, /RESOLVED/);
+});
+
+await test("an unknown PUBLISH_TARGET names none among the options", async () => {
+  const r = await runInChild(
+    `import { resolvePublishTarget } from ${MODULE_URL};\n` +
+    `await resolvePublishTarget({ env: { PUBLISH_TARGET: "wiki" } });`);
+  assert.notEqual(r.code, 0, `expected a non-zero exit, got ${r.code}`);
+  assert.match(r.stderr, /none/);
 });
 
 console.log("mergePublished");

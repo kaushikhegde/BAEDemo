@@ -118,8 +118,17 @@ function approvalSummary(s: Stage): string {
     `Files:`,
     ...attachFiles(s).map(f => `- ${f}`),
     ``,
-    s.publishes
-      ? `Approving publishes it to the Azure DevOps wiki. Rejecting sends it back to the ${s.agentKey} to regenerate.`
+    // `s.publishes && PUBLISHES`, not `s.publishes`: the stage flag says this
+    // artefact is worth publishing, the install flag says there is anywhere to
+    // publish it to. Promising a wiki page to a reviewer on an installation
+    // that has no publish steps compiled is the gate lying about what their
+    // approval does.
+    //
+    // The back end is named from PUBLISH_TARGET rather than hard-coded. This
+    // line read "the Azure DevOps wiki" on every install, including the
+    // Atlassian ones, which is a promise about a system the run never touches.
+    s.publishes && PUBLISHES
+      ? `Approving publishes it to ${PUBLISH_TARGET === "atlassian" ? "Confluence" : "the Azure DevOps wiki"}. Rejecting sends it back to the ${s.agentKey} to regenerate.`
       : `Approving completes this stage. Rejecting sends it back to the ${s.agentKey} to regenerate.`,
   ].join("\n");
 }
@@ -173,12 +182,35 @@ const parentPagesTpl = (s: Stage): string[] => {
  * compiled prompt cannot do is describe both systems without doubling in
  * length, so `ensurePublishTargetStep` below fails LOUDLY on a mismatch rather
  * than letting a run publish half a pack into the wrong place.
+ *
+ * `none` is the third value, and it exists because the pipeline had no way to
+ * say "this installation does not publish". A capability map generated
+ * correctly, passed its validator, was approved by a human — and then the run
+ * blocked on `ensure-confluence-space.mjs`, four steps short of the companion
+ * app render. Every artefact was on disk and none of it reached the one page a
+ * client looks at, because the only path to that render ran through somebody
+ * else's server. An install with no MCP credentials is a legitimate way to run
+ * this pipeline; making it a blocked issue was not.
+ *
+ * Under `none` the ensure / publish / verify steps and the `publish-<stage>`
+ * workflows are not compiled at all — an opt-out that removes the steps beats
+ * one that runs them and swallows the failure, because a step that always
+ * "succeeds" is a step nobody can trust when it matters.
  */
-const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
-if (PUBLISH_TARGET !== "atlassian" && PUBLISH_TARGET !== "ado") {
+const PUBLISH_TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado" | "none";
+if (PUBLISH_TARGET !== "atlassian" && PUBLISH_TARGET !== "ado" && PUBLISH_TARGET !== "none") {
   throw new Error(
-    `PUBLISH_TARGET='${PUBLISH_TARGET}' is not a known target — expected 'atlassian' or 'ado'.`);
+    `PUBLISH_TARGET='${PUBLISH_TARGET}' is not a known target — expected 'atlassian', 'ado' or 'none'.`);
 }
+
+/**
+ * Whether this installation publishes at all.
+ *
+ * Read this rather than testing `s.publishes` alone: that flag says the STAGE
+ * has a document worth pushing, which is a fact about the pipeline and stays
+ * true whether or not this machine has anywhere to push it to.
+ */
+const PUBLISHES = PUBLISH_TARGET !== "none";
 
 /**
  * The Confluence page title for an artefact.
@@ -498,7 +530,50 @@ function ensureConfluenceSpaceStep(key: string): Step {
 
 /** The right pre-publish check for whichever back end this install uses. */
 function ensurePublishTargetStep(key: string): Step {
+  // Not reachable under `none` — every caller is inside a `PUBLISHES` guard —
+  // and a throw rather than a silent fall-through to the ADO branch, because a
+  // future caller that forgets the guard should fail at boot with this line in
+  // the stack, not compile an Azure DevOps preflight into an install that has
+  // deliberately turned publishing off.
+  if (!PUBLISHES) throw new Error("ensurePublishTargetStep called with PUBLISH_TARGET=none");
   return PUBLISH_TARGET === "atlassian" ? ensureConfluenceSpaceStep(key) : ensureAdoProjectStep();
+}
+
+/**
+ * Re-render the companion app.
+ *
+ * Placed BEFORE the publish block in every workflow that has one, and that
+ * ordering is the whole point of the step being a function rather than an
+ * inline literal in two places.
+ *
+ * It used to sit after the publish + verify sequence, which made the one page
+ * a client actually looks at conditional on somebody else's server being
+ * reachable. A SAPN capability map generated correctly, validated, and was
+ * approved by a human; the next step — the Confluence space preflight — exited
+ * 1 because the project predated the code that records a space, and the issue
+ * blocked four steps short of this render. Nine deliverables' worth of
+ * machinery, and the visible output was lost to a preflight for a system the
+ * artefact did not need.
+ *
+ * Rendering first inverts that: the artefact is on disk and the gate has
+ * passed, so the page is EARNED. A publish failure after this point is still a
+ * blocked issue and still needs a human — it just no longer costs the UI.
+ *
+ * After the gate rather than before it, though. The companion app is what the
+ * client is shown, and putting unapproved content on it would make the gate
+ * decorative.
+ *
+ * `renders: false` opts a stage out, declared on the STAGE rather than tested
+ * for by key here. It used to read `key !== "app"`, which was right about `app`
+ * (that stage IS the render) and silently wrong about `extract`: extraction
+ * runs at order 0, so a new project reaches this step having produced nothing
+ * the companion app shows — extracts are internal and never reach a rendered
+ * page — and `render-companion-app.mjs` refuses by design with `nothing to
+ * render — no artefacts found`. A deliberate, correct refusal became a blocked
+ * issue on the first stage of every new project.
+ */
+function renderAppStep(): Step {
+  return { type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES };
 }
 
 /**
@@ -663,7 +738,10 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
     steps.push({ type: "gate", title: `Approve ${s.label} — ${scope(s)}`, summary: approvalSummary(s) });
   }
 
-  if (s.publishes) {
+  // BEFORE the publish block, deliberately. See `renderAppStep`.
+  if (s.renders !== false) steps.push(renderAppStep());
+
+  if (s.publishes && PUBLISHES) {
     steps.push(ensurePublishTargetStep(key));
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
@@ -679,21 +757,6 @@ export function stageWorkflow(key: string, s: Stage): WorkflowDef {
     // agent NOT to create them — the two must agree or they are made twice.
     if (key === "requirements") steps.push(createWorkItemsStep(key, s));
     steps.push(verifyPublishStep(key, s, publishAt));
-  }
-
-  // Every stage feeds the one companion app, so it is re-rendered after each —
-  // not once at the end, which would leave the chatbot's UI tab stale for hours.
-  //
-  // `renders: false` opts a stage out, declared on the STAGE rather than
-  // tested for by key here. It used to read `key !== "app"`, which was right
-  // about `app` (that stage IS the render) and silently wrong about `extract`:
-  // extraction runs at order 0, so a new project reaches this step having
-  // produced nothing the companion app shows — extracts are internal and never
-  // reach a rendered page — and `render-companion-app.mjs` refuses by design
-  // with `nothing to render — no artefacts found`. A deliberate, correct
-  // refusal became a blocked issue on the first stage of every new project.
-  if (s.renders !== false) {
-    steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
   }
 
   // Last, so it is after attach and after the publish + verify sequence
@@ -764,13 +827,16 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
         `Read the diff, not the document — the instruction should be the only`,
         `thing that changed, plus its genuine consequences.`,
         ``,
-        s.publishes
+        s.publishes && PUBLISHES
           ? `Approving UPDATES the existing wiki page rather than creating a second one.`
           : `Approving completes the revision.`,
       ].join("\n"),
     });
   }
-  if (s.publishes) {
+  // BEFORE the publish block, for the reason in `renderAppStep`. A revision
+  // always re-renders: it has by definition changed an artefact the page shows.
+  steps.push(renderAppStep());
+  if (s.publishes && PUBLISHES) {
     steps.push(ensurePublishTargetStep(key));
     // Captured rather than hard-coded as "one back": the index is read off the
     // array as it is being built, so inserting anything between publish and
@@ -787,7 +853,6 @@ export function reviseWorkflow(key: string, s: Stage): WorkflowDef {
     if (key === "requirements") steps.push(createWorkItemsStep(key, s));
     steps.push(verifyPublishStep(key, s, publishAt));
   }
-  steps.push({ type: "exec", label: "Updating the companion app", cmd: swap(RENDER_CMD), timeoutMs: 15 * MINUTES });
   steps.push(syncOutputsStep(s));
 
   // A mode of the stage it revises, not a tenth stage. The engine does not care
@@ -965,7 +1030,13 @@ export function buildWorkflows(): WorkflowDef[] {
   // revise and no skill to enter Revision mode. Every other stage gets one.
   const revise = entries.filter(([, s]) => Boolean(s.skill)).map(([key, s]) => reviseWorkflow(key, s));
   // Only a stage that publishes has anything to republish. `ui` and `app`
-  // produce local artefacts only, so there is no page to push them to.
-  const republish = entries.filter(([, s]) => s.publishes).map(([key, s]) => publishWorkflow(key, s));
+  // produce local artefacts only, so there is no page to push them to — and
+  // under `PUBLISH_TARGET=none` no stage does, so none of these is compiled.
+  // The chatbot answers "republish the stories" in chat on such an install
+  // (see `stageFromTitle` in scyne-chatbot/server/orchestrator.ts) rather than
+  // posting a workflow key the engine would reject as unknown.
+  const republish = PUBLISHES
+    ? entries.filter(([, s]) => s.publishes).map(([key, s]) => publishWorkflow(key, s))
+    : [];
   return [...generate, ...revise, ...republish, baselineWorkflow()];
 }

@@ -81,6 +81,25 @@ export function previewUrl(project: string, feature?: string | null): string {
   return feature ? `${base}/${encodeURIComponent(feature)}` : base;
 }
 
+/**
+ * Redraw the companion app from what is on disk, now.
+ *
+ * Every workflow refreshes the page, but a workflow that blocks before its
+ * render step leaves it stale — and the only way back used to be running the
+ * whole stage again, an agent call and a human approval to redraw a page from
+ * files that had already been written. This is the same script, on demand.
+ *
+ * Throws with the server's own message, which is worth surfacing verbatim: a
+ * project with nothing generated yet comes back 409 saying so, and that is a
+ * different thing for the reader than a render that failed.
+ */
+export async function renderCompanionApp(project: string): Promise<{ ok: true; entry: any }> {
+  const r = await apiFetch(`/api/companion-app/${encodeURIComponent(project)}/render`, { method: "POST" });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.message || data?.error || `Re-render failed (HTTP ${r.status})`);
+  return data;
+}
+
 export async function createTarget(project: string, feature: string) {
   const r = await apiFetch("/api/projects", {
     method: "POST",

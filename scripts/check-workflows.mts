@@ -37,9 +37,21 @@ import { ORG, buildWorkflows } from "../orchestrator.workflows.js";
  * PUBLISH_TARGET flipped, which is a checker measuring the wrong thing rather
  * than a pipeline that broke.
  */
-const TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado";
-const ENSURE_SCRIPT = TARGET === "atlassian" ? "ensure-confluence-space" : "ensure-ado-project";
-const BACKLOG_SCRIPT = TARGET === "atlassian" ? "jira-issues" : "ado-workitems";
+const TARGET = (process.env.PUBLISH_TARGET ?? "atlassian") as "atlassian" | "ado" | "none";
+/** Whether this compilation publishes at all — see PUBLISH_TARGET in orchestrator.workflows.ts. */
+const PUBLISHES = TARGET !== "none";
+const ENSURE_SCRIPT = TARGET === "ado" ? "ensure-ado-project" : "ensure-confluence-space";
+const BACKLOG_SCRIPT = TARGET === "ado" ? "ado-workitems" : "jira-issues";
+/**
+ * The label `renderAppStep()` gives the post-stage companion-app refresh.
+ *
+ * Matched on the LABEL rather than on `render-companion-app` in the command,
+ * because the `app` stage's own BUILD step runs the same script and is a
+ * different thing: there, the render is the deliverable and legitimately runs
+ * before that stage's gate. Matching the command caught it and called a correct
+ * workflow broken.
+ */
+const RENDER_LABEL = "Updating the companion app";
 
 let bad = 0;
 const fail = (m: string) => { console.error(`FAIL  ${m}`); bad++; };
@@ -73,7 +85,57 @@ for (const w of buildWorkflows()) {
   }
 }
 
-if (!publishSteps) fail("no publish steps found at all — has `publishes` been dropped from the pipeline?");
+if (PUBLISHES && !publishSteps) {
+  fail("no publish steps found at all — has `publishes` been dropped from the pipeline?");
+}
+// The opt-out has to actually opt out. A `PUBLISH_TARGET=none` install that
+// still compiled a publish step would reach a client's wiki on an installation
+// whose whole configuration says it has no credentials for one.
+if (!PUBLISHES && publishSteps) {
+  fail(`PUBLISH_TARGET=none but ${publishSteps} publish step(s) were compiled`);
+}
+if (!PUBLISHES) {
+  const republish = buildWorkflows().filter(w => w.key.startsWith("publish-"));
+  if (republish.length) {
+    fail(`PUBLISH_TARGET=none but ${republish.length} publish-* workflow(s) were compiled: ` +
+         republish.map(w => w.key).join(", "));
+  }
+}
+
+// The companion app is rendered BEFORE anything tries to publish.
+//
+// This is the SAPN failure as an assertion. A capability map generated,
+// validated and was approved; the Confluence preflight then exited 1 on a
+// project that predated the code recording a space, and the run blocked four
+// steps short of the render. Every artefact was on disk and the one page a
+// client looks at never updated — because the only path to it ran through
+// somebody else's server.
+//
+// Position-dependent on purpose, like the ensure/verify checks above: "renders
+// somewhere" is exactly the property a refactor can satisfy while putting the
+// render back behind the publish.
+{
+  let rendered = 0;
+  for (const w of buildWorkflows()) {
+    const renderAt = w.steps.findIndex(st =>
+      st.type === "exec" && String((st as any).label ?? "") === RENDER_LABEL);
+    const publishAt = w.steps.findIndex(st => st.type === "agent" && (st as any).phase === "publish");
+    if (renderAt < 0) continue;
+    rendered++;
+    if (publishAt >= 0 && renderAt > publishAt) {
+      fail(`${w.key}: the companion app render (step ${renderAt}) is behind the publish ` +
+           `(step ${publishAt}) — a publish failure would cost the UI`);
+    }
+    // After the gate, not before it. The companion app is what the client is
+    // shown, so rendering unapproved content onto it makes the gate decorative.
+    const gateAt = w.steps.findIndex(st => st.type === "gate");
+    if (gateAt >= 0 && renderAt < gateAt) {
+      fail(`${w.key}: the companion app render (step ${renderAt}) runs before the gate ` +
+           `(step ${gateAt}) — that publishes unapproved content to the client's page`);
+    }
+  }
+  if (!rendered) fail(`no workflow carries a "${RENDER_LABEL}" step — has renderAppStep been dropped?`);
+}
 
 // The wiki path scheme. One Azure DevOps project per Scyne project means the
 // project name is no longer needed IN the path — the project IS the container.
@@ -192,7 +254,10 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
   for (const w of buildWorkflows()) {
     const backlog = w.steps.filter(st =>
       st.type === "exec" && String((st as any).cmd ?? "").includes(BACKLOG_SCRIPT));
-    const should = w.key === "requirements" || (w as any).variantOf === "requirements";
+    // `PUBLISHES &&`: the backlog is created by the publish sequence, so an
+    // install with no publish steps compiled has none — and demanding one there
+    // is the checker measuring a back end this install does not have.
+    const should = PUBLISHES && (w.key === "requirements" || (w as any).variantOf === "requirements");
     if (should && backlog.length !== 1) {
       fail(`${w.key}: expected exactly 1 ${BACKLOG_SCRIPT} step, found ${backlog.length}`);
     }
@@ -217,5 +282,8 @@ if (!publishSteps) fail("no publish steps found at all — has `publishes` been 
 
 console.log(bad
   ? `\n${bad} workflow check(s) FAILED`
-  : `\nevery publish step (${publishSteps}) runs as the publisher, with no skill`);
+  : PUBLISHES
+    ? `\nevery publish step (${publishSteps}) runs as the publisher, with no skill, ` +
+      `and every render runs ahead of it`
+    : `\nPUBLISH_TARGET=none — no publish steps compiled, and the companion app still renders`);
 process.exit(bad ? 1 : 0);

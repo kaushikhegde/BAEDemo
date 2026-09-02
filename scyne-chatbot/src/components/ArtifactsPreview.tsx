@@ -1,5 +1,6 @@
 import { useEffect, useState, lazy, Suspense } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
+import { renderCompanionApp } from "../api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -77,6 +78,14 @@ type ArtifactTab = "stories" | "summary" | "gaps" | "datamodel" | "solution" | "
 export function ArtifactsPreview({ project, feature }: { project: string | null; feature: string | null }) {
   const [data, setData] = useState<Artifacts | null>(null);
   const [tab, setTab] = useState<ArtifactTab>("stories");
+  // The companion app is redrawn by every workflow, but a run that blocks
+  // before its render step leaves the page stale with the artefacts already on
+  // disk — so the reader needs a way to redraw it that is not "run the stage
+  // again". One piece of state for all three outcomes: a second boolean for
+  // "done" would let a stale success sit next to a fresh error.
+  const [rerender, setRerender] = useState<
+    { state: "idle" } | { state: "busy" } | { state: "done"; at: number } | { state: "error"; message: string }
+  >({ state: "idle" });
 
   // A project-level gate (capability map, personas) has no feature, and the
   // backend serves those from `?project=` alone. Gating on both here is what
@@ -87,7 +96,22 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
       ? `/api/artifacts?project=${encodeURIComponent(project)}&feature=${encodeURIComponent(feature)}`
       : `/api/artifacts?project=${encodeURIComponent(project)}`;
     fetch(url).then((r) => r.json()).then(setData).catch(() => {});
+    // A result from the previous project says nothing about this one.
+    setRerender({ state: "idle" });
   }, [project, feature]);
+
+  async function onRerender() {
+    if (!project) return;
+    setRerender({ state: "busy" });
+    try {
+      await renderCompanionApp(project);
+      setRerender({ state: "done", at: Date.now() });
+    } catch (e: any) {
+      // The server's own words — a project with nothing generated comes back
+      // saying exactly that, which is not the same news as a failed render.
+      setRerender({ state: "error", message: e?.message ?? String(e) });
+    }
+  }
 
   if (!project) {
     return (
@@ -247,15 +271,39 @@ export function ArtifactsPreview({ project, feature }: { project: string | null;
             {data.capabilityMap ? (
               <>
                 {/* The architect also renders a self-contained interactive page;
-                    it opens in its own tab rather than inside this card. */}
-                <a
-                  href={`/api/companion-app/${encodeURIComponent(project)}/`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-block mb-2 text-sm font-medium text-scyne-ink hover:underline"
-                >
-                  Open interactive map ↗
-                </a>
+                    it opens in its own tab rather than inside this card.
+
+                    Re-render sits beside it because this is where somebody
+                    notices the page is behind: they read the markdown here,
+                    open the map, and find it showing an older run. */}
+                <div className="mb-2 flex items-center gap-3">
+                  <a
+                    href={`/api/companion-app/${encodeURIComponent(project)}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm font-medium text-scyne-ink hover:underline"
+                  >
+                    Open interactive map ↗
+                  </a>
+                  <button
+                    type="button"
+                    onClick={onRerender}
+                    disabled={rerender.state === "busy"}
+                    className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-scyne-ink disabled:opacity-60"
+                    title="Redraw the companion app from the files currently on disk"
+                  >
+                    <RefreshCw className={cn("h-3.5 w-3.5", rerender.state === "busy" && "animate-spin")} />
+                    {rerender.state === "busy" ? "Re-rendering…" : "Re-render"}
+                  </button>
+                </div>
+                {rerender.state === "done" && (
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Companion app updated. Reopen the map to see it.
+                  </p>
+                )}
+                {rerender.state === "error" && (
+                  <p className="mb-2 text-xs text-destructive whitespace-pre-wrap">{rerender.message}</p>
+                )}
                 <Markdown source={data.capabilityMap} />
               </>
             ) : (
