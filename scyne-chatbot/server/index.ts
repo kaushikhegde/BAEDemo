@@ -81,6 +81,7 @@ import { READABLE_AFTER_CONVERSION } from "../../scripts/convert-to-md.mjs";
 import { projectState } from "../../scripts/extract-state.mjs";
 import type { ProjectExtractState, DocumentExtractState } from "../../scripts/extract-state.mjs";
 import { planRetry } from "./services/extractRetry.js";
+import { pickRegistryEntry } from "./registry.js";
 import { pickExtractRun } from "./services/extract-log.js";
 import {
   carryAuth, requireSession, login, logout, whoami,
@@ -3559,24 +3560,21 @@ app.get("/api/companion-app/:project/mockups/:feature/:file", async (req, res) =
 // 7b. Preview registry lookup for the iframe pane. Keyed by project — there is
 // one companion app per project, covering every feature. The feature-scoped
 // form is kept so an older client (or a saved link) still resolves.
-async function readRegistryEntry(project: string) {
-  const registryPath = path.join(WORKSPACE_PATH, "generated-apps", "registry.json");
-  let registry: Record<string, any> = {};
-  try {
-    registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
-  } catch {
-    return { error: "no_registry" as const, entry: null };
-  }
-  const entry = registry[project];
-  if (!entry) return { error: "no_entry" as const, entry: null };
-  return { error: null, entry };
+// Read from the document store first — where the app stage's output lands and
+// where the page itself is served from — then the install's disk. See
+// registry.ts.
+async function readRegistryEntry(project: string, token: string | null) {
+  const stored = await store.readDocumentByPath(token, project, "generated-apps/registry.json");
+  const disk = await fs.readFile(path.join(WORKSPACE_PATH, "generated-apps", "registry.json"), "utf8")
+    .catch(() => null);
+  return pickRegistryEntry(stored ? stored.toString("utf8") : null, disk, project);
 }
 
 app.get("/api/preview/:project", async (req, res) => {
   try {
     const { project } = req.params;
     assertSafeProject(project);
-    const { error, entry } = await readRegistryEntry(project);
+    const { error, entry } = await readRegistryEntry(project, tokenFor(req));
     if (error) return res.status(404).json({ error });
     res.json(entry);
   } catch (e: any) {
@@ -3588,7 +3586,7 @@ app.get("/api/preview/:project/:feature", async (req, res) => {
   try {
     const { project, feature } = req.params;
     assertSafeProjectFeature(project, feature);
-    const { error, entry } = await readRegistryEntry(project);
+    const { error, entry } = await readRegistryEntry(project, tokenFor(req));
     if (error) return res.status(404).json({ error });
     res.json(entry);
   } catch (e: any) {
