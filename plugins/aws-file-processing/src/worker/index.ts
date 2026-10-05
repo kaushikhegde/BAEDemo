@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { rm, readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { extname, join } from "node:path";
@@ -299,7 +300,10 @@ export const runResilientTurn = async (
 };
 
 // Entry point when run as a service.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL, not a `file://` template: import.meta.url percent-encodes a
+// space in the path and argv[1] does not, so the two never matched under a
+// folder with a space in its name and the entry point exited silently.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cfg = loadConfig();
   const storage = getStorage(cfg);
   await ensureStorage(storage);

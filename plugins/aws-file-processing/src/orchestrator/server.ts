@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "../shared/config.js";
@@ -108,7 +109,10 @@ export const startServer = (ctx: Ctx, port: number): Promise<http.Server> => {
 };
 
 // Entry point when run as a service.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL, not a `file://` template: import.meta.url percent-encodes a
+// space in the path and argv[1] does not, so the two never matched under a
+// folder with a space in its name and the entry point exited silently.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cfg = loadConfig();
   const storage = getStorage(cfg);
   await ensureStorage(storage);
