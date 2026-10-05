@@ -1570,6 +1570,15 @@ app.post("/api/project-description", async (req, res) => {
     const db = await store.saveDescription(tokenFor(req), project, body);
     if (!db.ok) console.warn(`[project-description] ${project}: not saved to the database — ${db.reason}`);
 
+    // And the document, which is the copy an AGENT actually sees. Its cwd is a
+    // scratch tree materialised from the document store — not this install's
+    // disk and not `projects.description` — so without this row every skill
+    // ran with no project definition. Best-effort, like every document row.
+    const doc = await store.createDocumentRow(tokenFor(req), {
+      project, path: "description.md", content: Buffer.from(content, "utf8"),
+    });
+    if (doc.state === "failed") console.warn(`[project-description] ${project}: description.md not stored — ${doc.reason}`);
+
     res.json({
       ok: true, project, path: `projects/${project}/description.md`, bytes: content.length,
       // Reported rather than swallowed: a caller that says "saved" when only
@@ -1881,6 +1890,11 @@ app.post("/api/projects", async (req, res) => {
         : `# ${project} — Project Definition\n\n${description}\n`;
       await fs.writeFile(path.join(root, "description.md"), content, "utf8");
       definitionWritten = true;
+      // The copy an agent sees — see /api/project-description.
+      const doc = await store.createDocumentRow(tokenFor(req), {
+        project, path: "description.md", content: Buffer.from(content, "utf8"),
+      });
+      if (doc.state === "failed") console.warn(`[projects] ${project}: description.md not stored — ${doc.reason}`);
     }
 
     // The Azure DevOps target, resolved once and recorded — in the COLUMN,
