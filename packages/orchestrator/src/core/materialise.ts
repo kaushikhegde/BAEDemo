@@ -169,7 +169,12 @@ export async function materialise(input: MaterialiseInput): Promise<Manifest> {
         `tree — the last one counted was ${ref.path}.`);
     }
 
-    const abs = join(levelDir(workRoot, projectName, featureName ?? null), ref.path);
+    // A project-level `generated-apps/…` document came from the work root's own
+    // `generated-apps/` (see `attribute`), so it goes back there. Under the
+    // project it read as a client document and its folder as a feature.
+    const abs = !ref.featureId && ref.path.startsWith("generated-apps/")
+      ? join(workRoot, ref.path)
+      : join(levelDir(workRoot, projectName, featureName ?? null), ref.path);
     const got = await store.get(projectId, ref.featureId, ref.path);
     if (!got) continue;
 

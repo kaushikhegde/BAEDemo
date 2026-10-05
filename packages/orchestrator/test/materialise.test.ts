@@ -69,6 +69,22 @@ describe("materialise", () => {
     expect(Object.keys(manifest.files)).toHaveLength(3);
   });
 
+  it("puts a harvested companion app back where harvest found it, not under the project", async () => {
+    // Harvest attributes `<workRoot>/generated-apps/…` to a project document
+    // whose path is `generated-apps/…`. Placing that under projects/<p>/ made
+    // the next stage see `projects/<p>/generated-apps/<p>/index.html` — a
+    // "document" the converter turned to markdown and the stage fed to the agent,
+    // and a folder the renderer listed as a feature.
+    await store.put({ projectId, featureId: null, path: "generated-apps/RTWSA/index.html", content: "<html>app</html>" });
+    const manifest = await materialise({ store, projectId, projectName: "RTWSA", features: FEATURES(), installRoot, workRoot });
+
+    expect(await readFile(join(workRoot, "generated-apps/RTWSA/index.html"), "utf8")).toBe("<html>app</html>");
+    await expect(lstat(join(workRoot, "projects/RTWSA/generated-apps"))).rejects.toThrow();
+    // And the round trip is stable: harvest attributes it to the same path.
+    expect(attribute("generated-apps/RTWSA/index.html", manifest)?.docPath).toBe("generated-apps/RTWSA/index.html");
+    expect(Object.keys(manifest.files)).toContain("generated-apps/RTWSA/index.html");
+  });
+
   it("links the install's material in, rather than copying it", async () => {
     await materialise({ store, projectId, projectName: "RTWSA", features: FEATURES(), installRoot, workRoot });
     const st = await lstat(join(workRoot, "scripts"));
