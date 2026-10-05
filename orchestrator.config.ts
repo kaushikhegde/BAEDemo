@@ -3,6 +3,9 @@
 // single source of truth for what a stage requires and produces. Nothing under
 // packages/orchestrator/ is touched to make this work.
 
+// FIRST, and for its side effect: loads `.env` before the modules below are
+// evaluated. See load-env.ts for why it cannot live in this file's body.
+import "./load-env.js";
 import { existsSync, accessSync, constants as fsConstants } from "node:fs";
 import { resolve, join, delimiter } from "node:path";
 import {
@@ -41,29 +44,6 @@ const binaryExists = (bin: string): boolean =>
       return false;
     }
   });
-
-/**
- * Read `.env` before anything below looks at `process.env`.
- *
- * Here rather than inside packages/orchestrator, because loading a config file
- * is the CONSUMER's job — the library is handed a resolved config object and
- * must not go hunting for one (see CLAUDE.md). It also has to happen at the
- * very top of this module: every value below, from `DATABASE_URL` to the
- * adapter registry, is read while this file's body executes.
- *
- * `process.loadEnvFile` is built into Node — no dotenv dependency, which
- * matters for a package that deliberately has three. It does NOT overwrite a
- * variable that is already set, so an explicit `DATABASE_URL=… npm run serve`
- * still beats the file, which is the behaviour anyone would expect.
- *
- * `.env.local` is loaded second for per-machine overrides. Neither file is
- * required; a deployment configured purely through real environment variables
- * simply has neither.
- */
-for (const file of [".env", ".env.local"]) {
-  const path = resolve(installRoot, file);
-  if (existsSync(path)) process.loadEnvFile(path);
-}
 
 /**
  * Derive the credential the Azure DevOps MCP actually wants.
