@@ -6,6 +6,7 @@
 // client's work. A failure here is a data leak, not a bug — fix the code, do
 // not adjust the expectation.
 
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +22,7 @@ let projA: string, projB: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-tenancy-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   p = createPlatformRepo(db);
   repo = createRepo(db);
 

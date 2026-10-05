@@ -65,6 +65,7 @@ export {
   type Overrides,
 } from "./core/overrides.js";
 
+import { fileURLToPath } from "node:url";
 import { openDb, migrate, type Db } from "./core/db.js";
 import { createRepo } from "./core/repo.js";
 import { createEngine } from "./core/engine.js";
@@ -106,7 +107,9 @@ export async function createOrchestrator(config: OrchestratorConfig): Promise<Or
   }
 
   const db = await openDb(config.db);
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  // fileURLToPath, not `.pathname`: the URL form keeps a space as `%20`, so a
+  // checkout under a folder with a space in its name found no migrations.
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   const repo = createRepo(db);
 
   // A byte store is not optional. `blobs.content` was dropped by 011, so an

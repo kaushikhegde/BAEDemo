@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,7 @@ let dir: string, db: Db;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-blobs-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
 });
 afterEach(async () => { await db.close(); rmSync(dir, { recursive: true, force: true }); });
 

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,7 +46,7 @@ function config(workspace: string, runner: any = fakeRunner) {
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-eng-"));
   db = await openDb({ driver: "pglite", dir: join(dir, "pg") });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   repo = createRepo(db);
   calls = [];
 });

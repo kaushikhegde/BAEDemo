@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ let dir: string, db: Db, p: PlatformRepo, home: string, other: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-authmw-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   p = createPlatformRepo(db);
   home = randomUUID();
   await db.query(`insert into companies (id, name, slug) values ($1,'Scyne','scyne')`, [home]);

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,7 @@ let dir: string, db: Db, repo: ReturnType<typeof createRepo>, companyId: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   repo = createRepo(db);
   companyId = await repo.ensureCompany("Scyne");
 });
@@ -225,7 +226,7 @@ describe("008 backfills issues created before attribution existed", () => {
   const backfill = async () => {
     const { readFileSync } = await import("node:fs");
     const sql = readFileSync(
-      new URL("../migrations/008_issue_project_backfill.sql", import.meta.url).pathname, "utf8");
+      fileURLToPath(new URL("../migrations/008_issue_project_backfill.sql", import.meta.url)), "utf8");
     // Strip `--` line comments BEFORE splitting. Splitting first and then
     // discarding chunks that begin with `--` throws away the statement the
     // comment introduces, which is every statement in a file written this way.

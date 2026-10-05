@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,10 +13,10 @@ describe("db", () => {
     dir = mkdtempSync(join(tmpdir(), "orch-"));
     const db = await openDb({ driver: "pglite", dir });
 
-    const first = await migrate(db, new URL("../migrations", import.meta.url).pathname);
+    const first = await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
     expect(first.applied).toContain("001_init.sql");
 
-    const second = await migrate(db, new URL("../migrations", import.meta.url).pathname);
+    const second = await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
     expect(second.applied).toEqual([]); // already applied
 
     const { rows } = await db.query<{ table_name: string }>(

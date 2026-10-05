@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdir, writeFile, readFile, rm, lstat } from "node:fs/promises";
@@ -22,7 +23,7 @@ const FEATURES = () => [{ id: featureId, name: "Appeals" }];
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-mat-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   store = createDocumentStore(db, memoryBlobBackend());
 
   const company = randomUUID();

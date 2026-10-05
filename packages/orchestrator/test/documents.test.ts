@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ let project: string, featureA: string, featureB: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-docs-"));
   db = await openDb({ driver: "pglite", dir });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
 
   const company = randomUUID();
   project = randomUUID(); featureA = randomUUID(); featureB = randomUUID();

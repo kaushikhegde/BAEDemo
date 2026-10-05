@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ let dir: string, db: Db, repo: ReturnType<typeof createRepo>, companyId: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "orch-reset-"));
   db = await openDb({ driver: "pglite", dir: join(dir, "pg") });
-  await migrate(db, new URL("../migrations", import.meta.url).pathname);
+  await migrate(db, fileURLToPath(new URL("../migrations", import.meta.url)));
   repo = createRepo(db);
   companyId = await repo.ensureCompany("Scyne");
   await repo.upsertAgent(companyId, { key: "ba", name: "BA" });

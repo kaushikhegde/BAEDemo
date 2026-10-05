@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +9,7 @@ import { openDb, migrate, type Db } from "../src/core/db.js";
 let dir: string;
 let db: Db;
 
-const MIGRATIONS = new URL("../migrations", import.meta.url).pathname;
+const MIGRATIONS = fileURLToPath(new URL("../migrations", import.meta.url));
 
 /** company → user → project → feature, the chain everything else hangs off. */
 async function seed(): Promise<{ company: string; user: string; project: string; feature: string }> {
