@@ -31,7 +31,7 @@ Eight lists. A document will legitimately have nothing for several of them —
 an empty list is a real answer, and far better than a padded one.
 
 **`businessFunctions`** — what the organisation *does*, as noun phrases:
-"Claims Management", "Provider Coordination", "Refund Escalation". Not job
+"Order Fulfilment", "Field Maintenance", "Complaint Handling". Not job
 titles, not systems. Each carries `name`, `does`, and `actor` where stated.
 
 **`processSteps`** — what happens, in order. Each carries `step`, `sequence`,

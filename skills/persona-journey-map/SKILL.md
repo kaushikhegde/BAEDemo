@@ -197,7 +197,10 @@ the internal staff are always better documented than the customers, and the
 customer is usually who the programme is for.
 
 Cover both sides. A persona set with four internal staff roles and no customer
-describes an operations manual, not a service.
+describes an operations manual, not a service. The customer is not always a
+member of the public: it may be an internal requester in another department,
+or an external business such as a supplier or partner. Resolve which from the
+project definition.
 
 For each persona record: a first name and role, the context they operate in,
 what today looks like (3–5 pain points), what tomorrow looks like (3–5
@@ -327,7 +330,7 @@ save it to the output path in Step 8, after the quality check).
 
 | Stage | Step | Doing | Thinking | Feeling | Channel | Today | Target | Pain / Opportunity |
 |---|---|---|---|---|---|---|---|---|
-| Discover | Realises a claim can be made | | | | Web | 2 | 4 | |
+| Discover | Notices a fault needs reporting | | | | Web | 2 | 4 | |
 
 **Satisfaction curve**
 
@@ -335,7 +338,7 @@ save it to the output path in Step 8, after the quality check).
 journey
     title [Persona] — [journey title] (today)
     section Discover
-      Realises a claim can be made: 2: Injured Worker
+      Notices a fault needs reporting: 2: Site Supervisor
 ```
 
 **Moments that matter**
@@ -442,7 +445,7 @@ Read during Step 3.
 ## What a persona is for
 
 A persona is a decision-making tool, not a character study. Its job is to let a
-team say "Marcus would never find that" and have everyone know what that means.
+team say "Sam would never find that" and have everyone know what that means.
 Everything that does not help someone make a design decision — favourite coffee,
 stock photography, invented hobbies — is noise that costs credibility with the
 people who supplied the evidence.
@@ -478,11 +481,11 @@ and the most important — but the reader must know which ones are solid.
 
 ## Naming
 
-Use a first name and a role: `Marcus — Injured Worker`. First names make the
+Use a first name and a role: `Sam — Site Supervisor`. First names make the
 persona memorable and quotable; the role keeps it honest. Avoid alliterative
 joke names, and avoid names that match real people in the discovery material.
 
-Persona `id` is the lowercase, hyphenated first name — `marcus`, `dr-james`.
+Persona `id` is the lowercase, hyphenated first name — `sam`, `dr-james`.
 
 ---
 
@@ -563,18 +566,18 @@ The companion app bundles Mermaid 11, which renders `journey` diagrams natively.
 
 ```mermaid
 journey
-    title Marcus — Lodging a first claim (today)
+    title Sam — Reporting a site fault (today)
     section Discover
-      Realises a claim can be made: 2: Injured Worker
-      Finds the claim form: 2: Injured Worker
+      Notices a fault needs reporting: 2: Site Supervisor
+      Finds the request form: 2: Site Supervisor
     section Lodge
-      Completes the 38-field form: 1: Injured Worker
-      Uploads evidence: 2: Injured Worker
+      Completes the 38-field form: 1: Site Supervisor
+      Uploads photos: 2: Site Supervisor
     section Wait
-      Waits without status: 1: Injured Worker
-      Chases by phone: 2: Injured Worker, Contact Centre
+      Waits without status: 1: Site Supervisor
+      Chases by phone: 2: Site Supervisor, Service Desk
     section Outcome
-      Receives the decision: 3: Injured Worker
+      Sees the fault fixed: 3: Site Supervisor
 ```
 
 Syntax rules that matter:
@@ -596,6 +599,9 @@ Syntax rules that matter:
 Read during Step 5. These shapes are consumed directly by the Scyne companion
 app, which is built last. Getting them wrong is not caught until that build.
 
+The examples below show **shape only**. Take every name, role, stage and pain
+point from the project's own documents.
+
 ## `personas.json`
 
 Matches the app's `Persona` interface exactly. `today` and `tomorrow` are arrays
@@ -606,23 +612,23 @@ so **never use a semicolon inside an individual bullet**.
 {
   "personas": [
     {
-      "id": "marcus",
-      "name": "Marcus",
-      "role": "Injured Worker",
-      "context": "Construction worker recovering from a back injury, navigating his first compensation claim",
+      "id": "sam",
+      "name": "Sam",
+      "role": "Site Supervisor",
+      "context": "Runs a busy workshop floor and needs a broken overhead crane fixed before the next shift",
       "avatarColor": "bg-amber-500",
       "today": [
-        "Confusing forms and paper-heavy lodgement",
-        "Black-box waiting for decisions",
-        "Jargon-filled letters"
+        "Faults reported by email with no reference number",
+        "Black-box waiting for a technician",
+        "Jargon-filled closure notes"
       ],
       "tomorrow": [
-        "Mobile-responsive online lodgement",
+        "Mobile fault lodgement with photos",
         "Real-time status updates",
-        "Plain-language SMS and email communications"
+        "Plain-language SMS and email updates"
       ],
-      "keyBenefit": "Recover with dignity, support, and clarity",
-      "journeySummary": "Marcus is an injured construction worker navigating his first compensation claim. The target-state Platform transforms his experience from confusing paper-heavy forms to mobile-responsive self-service with plain-language communications.",
+      "keyBenefit": "Keep the floor running with fewer chase-up calls",
+      "journeySummary": "Sam is a site supervisor who reports faults several times a month. The target state moves Sam from untracked email requests to mobile self-service with live status.",
       "sources": ["Workshop_Transcript_Facilities_Access.md", "SOP-FA-001.md"]
     }
   ]
@@ -659,28 +665,28 @@ journey data shape — this is that shape.
 {
   "journeys": [
     {
-      "id": "marcus-first-claim",
-      "personaId": "marcus",
-      "title": "Lodging a first compensation claim",
-      "scenario": "From realising a claim can be made through to returning to work",
+      "id": "sam-report-fault",
+      "personaId": "sam",
+      "title": "Reporting a site fault",
+      "scenario": "From noticing a fault through to confirming the fix",
       "stages": [
         {
           "id": "discover",
           "name": "Discover",
-          "l1Phase": "Claim Intake",
+          "l1Phase": "Request Intake",
           "steps": [
             {
               "id": "discover-1",
-              "name": "Realises a claim can be made",
-              "actor": "Injured Worker",
+              "name": "Notices a fault needs reporting",
+              "actor": "Site Supervisor",
               "channel": "Web",
-              "doing": "Searches for how to claim after a workplace injury",
-              "thinking": "I don't know if this even applies to me",
+              "doing": "Looks for where to report a broken overhead crane",
+              "thinking": "I don't know who owns this or how long it will take",
               "feeling": "uncertain",
               "todayScore": 2,
               "targetScore": 4,
-              "painPoints": ["No plain-language entry point"],
-              "opportunities": ["Guided eligibility check on the public site"],
+              "painPoints": ["No single place to report a fault"],
+              "opportunities": ["One guided request form on the intranet"],
               "capabilityIds": [],
               "sources": ["Workshop_Transcript_Facilities_Access.md"]
             }
@@ -691,7 +697,7 @@ journey data shape — this is that shape.
         { "stepId": "wait-1", "why": "Longest unexplained wait in the journey", "designResponse": "Proactive status notifications with an expected date" }
       ],
       "metrics": [
-        { "name": "Time to lodge", "today": "45 min", "target": "10 min", "source": "Workshop_Transcript.md" }
+        { "name": "Time to lodge", "today": "15 min", "target": "3 min", "source": "Workshop_Transcript.md" }
       ]
     }
   ]

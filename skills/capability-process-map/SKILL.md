@@ -205,7 +205,7 @@ Write the result to `outputs/capability-map.json`:
   "project": "<project>",
   "title": "<Client name> — Capability Map",
   "generatedOn": "YYYY-MM-DD",
-  "sources": ["project/policy/Claims Handling Standard.md", "interim-benefit/SOP/Allocation of New Claims.md", "..."],
+  "sources": ["project/policy/Maintenance Standard.md", "work-orders/SOP/Allocation of Work Orders.md", "..."],
   "capabilities": [
     {
       "id": "2.1.3",
@@ -216,7 +216,7 @@ Write the result to `outputs/capability-map.json`:
       "currentMaturity": "Operational",
       "targetMaturity": "Optimised",
       "description": "Allocation of work to team and officer by skill, urgency and capacity.",
-      "sourceDocs": ["process/Allocation of New Claims - SOP.pdf.md"]
+      "sourceDocs": ["process/Allocation of Work Orders - SOP.pdf.md"]
     }
   ]
 }
@@ -225,6 +225,10 @@ Write the result to `outputs/capability-map.json`:
 Field rules: `parentId` is `null` for L1; `level` is an integer 1–4 and must
 match the ID depth; `stage`, `currentMaturity`, `targetMaturity` are `""` when
 unknown; `sourceDocs` is never empty.
+
+The examples in this skill show **shape only**. Take every capability, phase,
+activity, actor and system name from the project's own documents, never from
+an example.
 
 ---
 
@@ -237,7 +241,7 @@ sequence they occur, grouped by L1 phase then L2 step.
   Lodgement", "Triage and Allocation", "Assessment", "Finalisation / Closure").
   Use the documents' own names.
 - **L2 — process step.** A cohesive step within a phase.
-- **L3 — activity.** A single verb-phrase action ("Verify claim information and
+- **L3 — activity.** A single verb-phrase action ("Verify request information and
   documentation"). This is the unit that carries all the detail.
 - **`actor`** — one of `Client`, `Front office`, `Back office`, `Third party`,
   `System`. Pick the one that performs the activity.
@@ -258,14 +262,14 @@ Write `outputs/process-model.json`:
   "activities": [
     {
       "l1": "Triage and Allocation",
-      "l2": "Allocate claim",
-      "l3": "Allocate claim to best-fit team and officer",
-      "description": "Match the claim to a team and officer by skill, urgency and workload.",
+      "l2": "Allocate work order",
+      "l3": "Allocate work order to best-fit team and technician",
+      "description": "Match the work order to a team and technician by skill, urgency and workload.",
       "actor": "Back office",
       "serviceTier": "All",
-      "components": ["Intelligent Claim Allocation"],
+      "components": ["Intelligent Work Allocation"],
       "capabilityIds": ["2.1.3"],
-      "sourceDocs": ["process/Allocation of New Claims - SOP.pdf.md"]
+      "sourceDocs": ["process/Allocation of Work Orders - SOP.pdf.md"]
     }
   ]
 }
@@ -299,7 +303,7 @@ phases and activities, the dominant maturity gap, and the biggest evidence gap.]
 
 | ID | Capability | Level | Parent | Lifecycle Stage | Current | Target | Source |
 |---|---|---|---|---|---|---|---|
-| 2.1.3 | Allocation & Workload Management | 3 | 2.1 | Triage and Allocation | Operational | Optimised | Allocation of New Claims SOP |
+| 2.1.3 | Allocation & Workload Management | 3 | 2.1 | Triage and Allocation | Operational | Optimised | Allocation of Work Orders SOP |
 
 [One row per capability, in ID order. Descriptions live in the JSON — keep this
 table scannable.]
@@ -351,7 +355,7 @@ matters most on exactly the labels this section asks for.]
 
 ```mermaid
 flowchart TD
-    A[Claim lodged] --> B{STP eligible?}
+    A[Request lodged] --> B{Auto-approval eligible?}
     B -- Yes --> C[Auto-process<br/>Within 2 business days]
     B -- No --> D[Allocate to officer]
 ```
