@@ -35,6 +35,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { WORK_ROOT } from "./lib/roots.mjs";
+import {
+  HEX, contrast, readableOn, mix, brandTextColor, ensureTextSurface, selectedSurface,
+} from "./lib/colour.mjs";
 import os from "node:os";
 // One definition of "what counts as a feature", shared with the CLI and the
 // server — otherwise `solutions/` and `documents/` show up as features here.
@@ -456,67 +459,7 @@ async function renderDiagrams(sources, { skip }) {
 // luminance rather than taken on trust — that is what keeps the page at WCAG
 // 2.0 AA no matter which palette a client supplies.
 
-const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
-
-function expandHex(h) {
-  const v = h.slice(1);
-  return v.length === 3 ? v.split("").map((c) => c + c).join("") : v;
-}
-function relativeLuminance(hex) {
-  const v = expandHex(hex);
-  const ch = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) / 255)
-    .map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
-  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
-}
-function contrast(a, b) {
-  const l1 = relativeLuminance(a), l2 = relativeLuminance(b);
-  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
-  return (hi + 0.05) / (lo + 0.05);
-}
-/** Whichever of white / near-black reads better on `bg`. */
-function readableOn(bg) {
-  return contrast(bg, "#ffffff") >= contrast(bg, "#12151d") ? "#ffffff" : "#12151d";
-}
-
-function hexToRgb(hex) {
-  const v = expandHex(hex);
-  return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
-}
-const toHexStr = (rgb) => `#${rgb.map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0")).join("")}`;
-const mix = (a, b, t) => toHexStr(hexToRgb(a).map((c, i) => c + (hexToRgb(b)[i] - c) * t));
-
-/**
- * A brand colour used as TEXT has to clear 4.5:1 against the surface behind it.
- * A client's palette is chosen for their website, not for this page's dark mode:
- * most brand colours are dark, and pasting one straight into both themes makes
- * the wordmark, headings and links invisible on a dark background. So the text
- * role is derived per theme — the brand is walked toward white or black only as
- * far as it must go, which keeps the hue recognisably theirs.
- */
-function brandTextColor(brand, surface) {
-  const target = readableOn(surface); // walk toward whichever end has headroom
-  for (let t = 0; t <= 1.0001; t += 0.05) {
-    const c = mix(brand, target, t);
-    if (contrast(c, surface) >= 4.5) return c;
-  }
-  return target;
-}
-
-/**
- * A colour used as a BACKGROUND behind text must clear 4.5:1 against some
- * foreground. Mid-greys are a dead zone: white and black both land near 4.4:1
- * there, so no choice of text colour rescues them. A brand that falls in that
- * band is walked out of it rather than trusted — otherwise the selected
- * navigation item fails for every client whose brand is a mid-tone.
- */
-function ensureTextSurface(bg, toward) {
-  if (contrast(bg, readableOn(bg)) >= 4.5) return bg;
-  for (let t = 0.05; t <= 1.0001; t += 0.05) {
-    const c = mix(bg, toward, t);
-    if (contrast(c, readableOn(c)) >= 4.5) return c;
-  }
-  return toward;
-}
+// The colour arithmetic lives in lib/colour.mjs, where it is tested.
 
 /**
  * A font stack out of theme.json is untrusted text landing inside a CSS rule.
@@ -569,10 +512,15 @@ async function loadTheme(featureRoot) {
     const LIGHT_SURFACE = "#f7f8fb", DARK_SURFACE = "#181c26";
 
     // The selected navigation item paints text ON the brand, so the brand has to
-    // be a surface that can carry text at all.
-    const selLight = ensureTextSurface(brand, "#12151d");
+    // be a surface that can carry text at all. `onBrand` is the house type
+    // colour on the brand (BAE: white on red); without it the maths picks.
+    if (t.onBrand != null && !(typeof t.onBrand === "string" && HEX.test(t.onBrand.trim()))) {
+      console.warn(`[render-companion-app] WARN theme.json "onBrand" is not a hex colour — ignored`);
+    }
+    const sel = selectedSurface(brand, t.onBrand);
+    const selLight = sel.bg;
     out.vars["--sel-bg"] = selLight;
-    out.vars["--sel-fg"] = readableOn(selLight);
+    out.vars["--sel-fg"] = sel.fg;
 
     // The wordmark, panel headings and links read against the page surface, and
     // that surface differs per theme — so these are theme-scoped, not part of
@@ -596,14 +544,15 @@ async function loadTheme(featureRoot) {
       "#ffffff",
     );
     out.darkVars["--brand"] = darkBrand;
-    out.darkVars["--sel-bg"] = darkBrand;
-    out.darkVars["--sel-fg"] = readableOn(darkBrand);
+    const selDark = selectedSurface(darkBrand, t.onBrand);
+    out.darkVars["--sel-bg"] = selDark.bg;
+    out.darkVars["--sel-fg"] = selDark.fg;
 
     console.log(
       `[render-companion-app] theme: brand ${brand}\n` +
       `  light  nav ${selLight} on ${out.vars["--sel-fg"]} (${contrast(selLight, out.vars["--sel-fg"]).toFixed(1)}:1), ` +
       `text ${out.lightVars["--brand-fg"]} (${contrast(out.lightVars["--brand-fg"], LIGHT_SURFACE).toFixed(1)}:1)\n` +
-      `  dark   nav ${darkBrand} on ${out.darkVars["--sel-fg"]} (${contrast(darkBrand, out.darkVars["--sel-fg"]).toFixed(1)}:1), ` +
+      `  dark   nav ${selDark.bg} on ${out.darkVars["--sel-fg"]} (${contrast(selDark.bg, out.darkVars["--sel-fg"]).toFixed(1)}:1), ` +
       `text ${out.darkVars["--brand-fg"]} (${contrast(out.darkVars["--brand-fg"], DARK_SURFACE).toFixed(1)}:1)`,
     );
   }
@@ -991,7 +940,7 @@ a{color:var(--brand-fg,var(--brand-deep))}
 a:focus-visible,button:focus-visible,[tabindex]:focus-visible,input:focus-visible,select:focus-visible{
   outline:3px solid var(--accent); outline-offset:2px; border-radius:4px;
 }
-.skip{position:absolute;left:-9999px;top:0;background:var(--brand);color:#fff;padding:.6rem 1rem;z-index:99}
+.skip{position:absolute;left:-9999px;top:0;background:var(--sel-bg);color:var(--sel-fg);padding:.6rem 1rem;z-index:99}
 .skip:focus{left:.5rem;top:.5rem}
 /* ---------- header (house design system — matches the capability map page) ---------- */
 header.top{
@@ -1218,7 +1167,7 @@ main{min-width:0}
 .so-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;font-size:.72rem}
 .so-crumb{background:none;border:0;padding:0;font:inherit;font-size:.72rem;color:var(--muted);cursor:pointer}
 .so-crumb:hover{color:var(--brand-fg,var(--brand-deep));text-decoration:underline}
-.so-sep{color:var(--line)}
+.so-sep{color:var(--muted)}
 .so-x{margin-left:auto;flex:none;background:none;border:0;font-size:1.75rem;line-height:1;color:var(--muted);cursor:pointer;padding:0 .25rem}
 .so-x:hover{color:var(--brand-fg,var(--brand-deep))}
 .so-body{padding:1.25rem 1.35rem 2rem;overflow-y:auto}
@@ -1287,7 +1236,7 @@ main{min-width:0}
 .cap-tile-t{font-size:.8rem;font-weight:600;line-height:1.35;color:var(--ink)}
 .mat-dots{display:inline-flex;align-items:center;gap:.3rem;font-size:.7rem;color:var(--muted)}
 .mat-dot{width:.45rem;height:.45rem;border-radius:50%;display:block;flex:none}
-.mat-arrow{color:var(--line)}
+.mat-arrow{color:var(--muted)}
 .mat-target{color:var(--ok);font-weight:600}
 /* A capability the documents said nothing about. Dimmer than an assessed one,
    because it is the absence of a finding rather than a low score. */
@@ -1299,7 +1248,7 @@ main{min-width:0}
 .crumb{background:none;border:0;padding:0;font:inherit;font-size:.85rem;color:var(--muted);cursor:pointer}
 .crumb:hover{color:var(--brand-fg,var(--brand-deep));text-decoration:underline}
 .crumb.on{color:var(--brand-fg,var(--brand-deep));font-weight:700;cursor:default;text-decoration:none}
-.crumb-sep{color:var(--line)}
+.crumb-sep{color:var(--muted)}
 .backbtn{display:inline-flex;align-items:center;gap:.4rem;background:none;border:0;padding:0;margin-bottom:1.25rem;font:inherit;font-size:.78rem;font-weight:700;color:var(--muted);cursor:pointer}
 .backbtn:hover{color:var(--brand-fg,var(--brand-deep))}
 .phase-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
