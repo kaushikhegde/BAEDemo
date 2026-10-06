@@ -70,6 +70,13 @@ const swap = (cmd: string): string =>
     .replaceAll(/"?<project>"?/g, '"{project}"')
     .replaceAll(/"?<feature>"?/g, '"{feature}"');
 
+/**
+ * The same substitution for a FILE PATH. `swap` quotes because it builds shell
+ * commands; a path is never shell-parsed, so the quotes would become part of it.
+ */
+const swapPath = (p: string): string =>
+  p.replaceAll("<project>", "{project}").replaceAll("<feature>", "{feature}");
+
 const isProject = (s: Stage): boolean => s.level === LEVEL.PROJECT;
 
 /** `stage.mjs` resolves the LEVEL before the name, so a project stage passes no feature. */
@@ -89,7 +96,7 @@ const artefactKeyTpl = (key: string, s: Stage): string => (isProject(s) ? key : 
 function attachFiles(s: Stage): string[] {
   return [
     ...s.produces.map(f => `${root(s)}${f}`),
-    ...(s.producesInWorkspace ?? []).map(swap),
+    ...(s.producesInWorkspace ?? []).map(swapPath),
   ];
 }
 
