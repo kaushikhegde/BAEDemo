@@ -281,8 +281,23 @@ stated and record the rest as a gap.
 ### Process flows (swimlanes)
 
 Add a `flows` array to the same `process-model.json`. The companion app draws
-each flow as a swimlane diagram, and Section 5's Mermaid is derived from it — so
-write `flows` first.
+each flow as a swimlane diagram.
+
+**Never hand-write `flows`.** Write Section 5's Mermaid (one `### <L1 phase>`
+heading and one ```` ```mermaid ```` flowchart per phase, every task label
+prefixed with its role — `SOO: verify ABN`), then generate `flows` from it:
+
+```bash
+node scripts/mermaid-to-flows.mjs <project>
+```
+
+It reads §5 and the activities, builds every lane, task, decision, start and
+end, links each task to its activity, validates, and writes `flows` into
+`process-model.json` — in seconds. Writing the same JSON by hand for six
+phases exhausted a whole run's output budget and saved nothing. After it runs,
+add `pain` to the few tasks where a source document states a problem at that
+step — small targeted edits to `process-model.json`, never a rewrite of the
+whole file. The rules the generated flows follow:
 
 - **One flow per L1 phase** that the documents describe as a sequence. A phase
   the documents do not sequence gets **no flow** — record it as a gap in
@@ -385,13 +400,15 @@ call it out in Section 6.]
 
 ## 5. Process Flow
 
-[One Mermaid `flowchart TD` per flow in `process-model.json`, **derived from
-`flows`** — the same nodes, the same decisions, the same edge labels — so this
-document and the companion app's swimlanes cannot disagree. Never draw a step
-or decision here that `flows` does not have. Prefix each task label with its
-lane's role, abbreviated where the actor has one (e.g. `REQ: Check catalogue or
-BPA`). Use `{ ... }` for gateways, put the `sla` in the node label, and avoid
-unescaped `()` in labels. A phase with no flow gets no diagram.
+[One `### <L1 phase name>` heading and one Mermaid `flowchart TD` per phase
+the documents sequence. **This is the source `flows` is generated from** (by
+`scripts/mermaid-to-flows.mjs`), so the document and the companion app's
+swimlanes cannot disagree. Prefix EVERY task label with its role — the
+abbreviation where the actor has one (`REQ: Check catalogue or BPA`), `Oracle:`
+for system steps; the prefix picks the swimlane lane. Use `{ ... }` for every
+decision, label every edge out of a decision (`-- Yes -->`), put a timeframe on
+its own line after `<br/>` (it becomes the step's SLA chip), and avoid
+unescaped `()` in labels. A phase with no sequence gets no diagram.
 
 **A line break in a node label is `<br/>` — never `\n`.** Mermaid's label
 grammar has no backslash escape, so `\n` does not break the line: the renderer
@@ -473,8 +490,8 @@ Before finishing, verify:
 - [ ] Every `capabilityIds` value exists in `capability-map.json`
 - [ ] Every L3 capability appears in the Section 4 coverage table
 - [ ] Activities are in lifecycle order within each phase
-- [ ] `flows` validate, and every phase without a flow is a Section 6 gap
-- [ ] Every decision in Section 5 exists as a gateway in `flows`, and no diagram has a step `flows` lacks
+- [ ] `node scripts/mermaid-to-flows.mjs <project>` ran clean, and every phase without a flow is a Section 6 gap
+- [ ] Every task label in Section 5 carries its role prefix, and every decision is a `{ }` node with labelled exits
 - [ ] Nothing was invented — every row traces to a named source file
 - [ ] A capability evidenced by several features appears ONCE, citing all of them
 - [ ] All three output files exist, with the exact fixed names
@@ -516,9 +533,10 @@ When the invocation supplies a **previous version** of these artefacts plus a
   check, which defeats the approval gate that follows.
 - Re-run the validator afterwards. A revision that breaks the JSON contract is
   worse than no revision.
-- **Adding flows to an existing map** (e.g. "add flows from §5"): build `flows`
-  from the existing Section 5 Mermaid and the process-model activities — the same
-  steps, decisions and edge labels, with lanes from the activities' `actor`
-  strings. `flows` is built to match Section 5, so Section 5 stays as it is.
+- **Adding flows to an existing map** (e.g. "add flows from §5"): run
+  `node scripts/mermaid-to-flows.mjs <project>` — it builds `flows` from the
+  existing Section 5 Mermaid, so Section 5 stays as it is. Then add `pain` only
+  where a source document states a problem at that step, as small edits. Do not
+  write `flows` by hand and do not rewrite `process-model.json` in one go.
   Change nothing else: no capability, activity or ID changes. Add a Revision
   History entry.

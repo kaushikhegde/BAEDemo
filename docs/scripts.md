@@ -94,6 +94,16 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   agent cannot self-check. `--validate-only` is how the pipeline calls it. Its own
   page renderer is retained but no longer wired in: a project has ONE page,
   rendered by `render-companion-app.mjs`.
+- `scripts/mermaid-to-flows.mjs <project> [--dry-run]` — used by the
+  **Capabilities Process Architect**. Generates `process-model.json`'s `flows`
+  (the swimlanes) from `capability-process.md` §5: one `### <phase>` heading and
+  Mermaid flowchart per phase, the role prefix on each task label (`SOO: …`)
+  picking the lane, `{…}` nodes as decisions. Adds start/end events, links tasks
+  to activities, keeps any `pain` the agent added, validates, writes.
+  > **Why a script.** Asked to hand-write `flows` for BAE's six phases, the agent
+  > spent its whole output budget (128k thinking tokens, four "output token limit
+  > hit" restarts, $2.34) and saved nothing. The translation is deterministic, so
+  > it lives in code; the agent only adds `pain`, as small edits.
 - `scripts/lib/flows.mjs` — `validateFlows(flows, activities)` → `{ flows,
   errors }`, the rules for `process-model.json`'s optional `flows` (one swimlane
   per L1 phase). Pure, so the guard above refuses exactly what the companion app
