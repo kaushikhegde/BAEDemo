@@ -36,12 +36,28 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   project stage), refuses a stage whose hard prerequisite is missing while naming
   the stage that would satisfy it, and prints the exact skill command to run next.
 - `scripts/render-companion-app.mjs <project>` — used by the **Developer**. Emits
-  ONE self-contained `generated-apps/<project>/index.html`: inline CSS + JS, data
-  as a JSON island, Mermaid pre-rendered to inline SVG, a hand-drawn SVG
-  satisfaction chart per journey. **Zero network requests.** Project tabs render
-  the client artefacts; feature tabs open on a grid of feature cards and drill
-  into one document, showing a muted "not generated" card for a feature that has
-  not run that stage. Flags: `--no-diagrams` skips the mermaid pass.
+  ONE self-contained `generated-apps/<project>/index.html`. **Zero network
+  requests.** The file at this path is a shim kept for its callers; the renderer
+  is `scripts/companion/`:
+  - `render.mjs` — entry: load, render every view, write the page and the
+    `registry.json` entry (printed LAST on stdout — the chatbot parses it).
+  - `load.mjs` — inputs, theme, markdown, Mermaid (moved unchanged).
+  - `views/*.mjs` — one per tab, data in, HTML out, through `html.mjs`'s
+    auto-escaping `html` template. The page is rendered **statically**: every
+    view is in the HTML, and `client.js` (~300 lines) only routes
+    `#/<tab>/<view>/<item>`, opens dialogs and the capability slide-over,
+    filters, searches and switches theme.
+  - `swimlane.mjs` + `swimlane.css` — one BPMN-style swimlane per phase, drawn at
+    build time from `flows` in `process-model.json` (contract:
+    `scripts/lib/flows.mjs`). A phase with no flow shows its cards only; a
+    malformed flow costs that swimlane, not the page.
+  - `styles.css` — the one visual system. Brand colour marks what matters, text
+    in the brand uses `--brand-fg` (computed to AA), never `--line`
+    (`test/companion-contrast.test.mjs`).
+  Project tabs render the client artefacts; feature tabs open on a grid of
+  feature cards, showing a muted "not generated" card for a feature that has not
+  run that stage. Flags: `--no-diagrams` skips the mermaid pass.
+  `test/companion-render.test.mjs` renders a fixture through the real CLI.
   > Inlined Mermaid SVGs have their internal ids namespaced per diagram, and
   > markdown heading anchors are scoped per document. Both matter only at project
   > scale: mermaid-cli emits a fixed `id="my-svg"` and fixed filter/marker defs
@@ -54,10 +70,10 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   `generated-apps/<project>/mockups/<feature>/` — one themed page per screen plus
   an index. Reads the project's `theme.json`, so a project branded once renders in
   the client's palette in both artefacts.
-  > **Its theme tokens are duplicated from `render-companion-app.mjs`** rather
-  > than imported, because the companion app builds its CSS inline inside a
-  > template literal. Until that is extracted, a palette change has to be made in
-  > both files.
+  > **Its theme tokens are duplicated from the companion app** rather than
+  > shared. The companion app's CSS is now a real file
+  > (`scripts/companion/styles.css`), so the two could share tokens; until they
+  > do, a palette change has to be made in both.
 - `scripts/migrate-to-project-level.mjs [<project>] [--apply] [--force]` — one-shot
   migration for a project created before the restructure. See
   [`operations.md`](operations.md) § Migrating a project created before the restructure.
@@ -78,6 +94,12 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   agent cannot self-check. `--validate-only` is how the pipeline calls it. Its own
   page renderer is retained but no longer wired in: a project has ONE page,
   rendered by `render-companion-app.mjs`.
+- `scripts/lib/flows.mjs` — `validateFlows(flows, activities)` → `{ flows,
+  errors }`, the rules for `process-model.json`'s optional `flows` (one swimlane
+  per L1 phase). Pure, so the guard above refuses exactly what the companion app
+  cannot draw: it dies on any error, while `flows` holds only the flows that
+  passed. Absent `flows` is valid — projects mapped before swimlanes still pass.
+  Tests: `test/flows-validate.test.mjs`.
 - **`scripts/confluence-publish.mjs <file.md> --title "Title"`** — create or
   update a Confluence page from a markdown file on disk, idempotent by the
   RECORDED PAGE ID (falling back to a title match) so a revision can never leave

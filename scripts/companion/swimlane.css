@@ -1,0 +1,87 @@
+/* Swimlane (scripts/companion/swimlane.mjs). Every colour comes from the
+   page tokens: --ink --muted --line --surface --surface-2 --brand
+   --ok --ok-bg --bad --bad-bg --warn --warn-bg. Font sizes are emitted as
+   attributes by the renderer (its wrapping depends on them). */
+
+.sl { display: block; overflow: visible; font-family: inherit; }
+.sl text { font-family: inherit; }
+.sl-text { fill: var(--ink); }
+
+/* lanes */
+.sl-lane { fill: var(--surface); }
+.sl-lane-alt { fill: var(--surface-2); }
+.sl-sep, .sl-divider { stroke: var(--line); stroke-width: 1; }
+.sl-lane-name { font-weight: 600; }
+.sl-badge { fill: var(--ink); }
+.sl-badge-text { fill: var(--surface); font-weight: 700; letter-spacing: .02em; }
+.sl-badge-sys { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.2; }
+.sl-badge-text-sys { fill: var(--muted); }
+
+/* edges */
+.sl-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.sl-edge-back { stroke-dasharray: 5 4; stroke-linecap: butt; }
+.sl-arrow { fill: var(--muted); }
+
+/* tasks */
+.sl-task {
+  fill: var(--surface);
+  stroke: var(--line);
+  stroke: color-mix(in srgb, var(--muted) 30%, var(--line));
+  stroke-width: 1;
+}
+.sl-task-sys {
+  fill: var(--surface-2);
+  stroke: var(--muted);
+  stroke-opacity: .55;
+  stroke-dasharray: 4 3;
+}
+.sl-task-label { font-weight: 600; }
+.sl-node-sys .sl-task-label { fill: var(--muted); }
+.sl-shadow { flood-color: #101828; flood-opacity: .10; }
+
+.sl-node[role="button"] { cursor: pointer; outline: none; }
+.sl-node[role="button"]:hover .sl-task { stroke: var(--brand); }
+.sl-node:focus-visible .sl-task { stroke: var(--brand); stroke-width: 2.5; }
+.sl-node.is-active .sl-task,
+.sl-node[aria-pressed="true"] .sl-task { stroke: var(--brand); stroke-width: 2; }
+
+/* pain badge + SLA chip */
+.sl-pain { cursor: help; }
+.sl-pain-dot { fill: var(--brand); stroke: var(--surface); stroke-width: 1.5; }
+.sl-pain-mark { fill: #fff; font-weight: 800; }
+.sl-sla-bg { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+.sl-sla-text { fill: var(--muted); font-weight: 500; }
+.sl-sla-icon { stroke: var(--muted); stroke-width: 1.1; stroke-linecap: round; }
+
+/* gateways */
+.sl-gw { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1.6; stroke-linejoin: round; }
+.sl-gw-mark { fill: var(--warn); font-weight: 700; }
+.sl-gw-label { font-weight: 600; }
+
+/* labels drawn over lanes get a halo so a crossing edge never hides them */
+.sl-gw-label, .sl-event-label {
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+/* events */
+.sl-start { fill: var(--ok-bg); stroke: var(--ok); stroke-width: 2; }
+.sl-end-good { fill: var(--ok-bg); stroke: var(--ok); stroke-width: 3.5; }
+.sl-end-bad { fill: var(--bad-bg); stroke: var(--bad); stroke-width: 3.5; }
+.sl-event-label { fill: var(--muted); }
+.sl-label-end-good { fill: var(--ok); font-weight: 600; }
+.sl-label-end-bad { fill: var(--bad); font-weight: 600; }
+
+/* edge-label pills */
+.sl-pill-bg { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+.sl-pill-text { fill: var(--muted); font-weight: 600; }
+.sl-pill-yes .sl-pill-bg { fill: var(--ok-bg); stroke: none; }
+.sl-pill-yes .sl-pill-text { fill: var(--ok); }
+.sl-pill-no .sl-pill-bg { fill: var(--surface-2); }
+
+@media print {
+  .sl-task { filter: none; }
+  .sl-node[role="button"] { cursor: default; }
+}

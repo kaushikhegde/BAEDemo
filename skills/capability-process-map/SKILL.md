@@ -102,7 +102,7 @@ inputs before invoking the skill. There is **no feature** at this level.
   never copy its rows in wholesale.
 - **Outputs (you write here):** `solutions/Capabilities/outputs/`
   - `capability-map.json` — the capability hierarchy (machine-readable)
-  - `process-model.json` — the L1/L2/L3 activities (machine-readable)
+  - `process-model.json` — the L1/L2/L3 activities and the process flows (machine-readable)
   - `capability-process.md` — the human-readable document (tables + Mermaid)
   - (no HTML — the project's single page is rendered separately, see Step 5)
 
@@ -278,6 +278,52 @@ Write `outputs/process-model.json`:
 Do **not** invent steps. If a flow is only partly described, model what is
 stated and record the rest as a gap.
 
+### Process flows (swimlanes)
+
+Add a `flows` array to the same `process-model.json`. The companion app draws
+each flow as a swimlane diagram, and Section 5's Mermaid is derived from it — so
+write `flows` first.
+
+- **One flow per L1 phase** that the documents describe as a sequence. A phase
+  the documents do not sequence gets **no flow** — record it as a gap in
+  Section 6 instead.
+- **`lanes`** — the actors who perform the phase's activities, using the exact
+  `actor` strings from `activities` (`System` for system steps), ordered by
+  first appearance in the flow.
+- **Nodes** — one `start`; a `task` per step, carrying `activity` (the exact
+  `l3` of an activity in the same `l1`) wherever one exists; a `gateway` for
+  **every decision the documents state**; one or more `end` nodes with
+  `outcome` `good` or `bad`. Every node sits in one of the flow's `lanes`.
+  Labels are short (80 chars max) — the full wording lives on the activity.
+- **Edges** — `from` / `to` node ids. Every edge out of a gateway carries a
+  label: `Yes` / `No`, or the outcome words the documents use (24 chars max).
+  Loops are allowed (a "request info" that goes back a step).
+- **`pain`** — only when a source document states a problem at that step.
+  Short and plain (140 chars max), no citation.
+- **`sla`** — only for a timeframe the documents state (60 chars max).
+
+Never invent steps or decisions to make a flow look complete. The validator in
+Step 5 refuses a flow whose lanes, ids or edges do not line up, or whose nodes
+cannot be reached from the start.
+
+```json
+"flows": [{
+  "l1": "Requisition & Approval",
+  "lanes": ["Requester (REQ)", "System", "Approving Manager (AM)", "Buyer (BUY)"],
+  "nodes": [
+    {"id": "start", "type": "start", "lane": "Requester (REQ)", "label": "Need identified"},
+    {"id": "t1", "type": "task", "lane": "Requester (REQ)", "label": "Check catalogue or BPA",
+     "activity": "<exact l3 of an activity in this l1>", "pain": "optional, <=140 chars", "sla": "optional, <=60 chars"},
+    {"id": "g1", "type": "gateway", "lane": "Requester (REQ)", "label": "Covered by catalogue?"},
+    {"id": "end-ok", "type": "end", "lane": "Buyer (BUY)", "label": "Ready for PO", "outcome": "good"}
+  ],
+  "edges": [{"from": "start", "to": "t1"}, {"from": "g1", "to": "t2", "label": "Yes"}]
+}]
+```
+
+(Abridged — a real flow lists every node its edges name, and every node is
+reachable from `start`.)
+
 ---
 
 ## Step 4 — Write the Document
@@ -339,10 +385,13 @@ call it out in Section 6.]
 
 ## 5. Process Flow
 
-[One Mermaid `flowchart TD` per L1 phase (or one overall flow if the phases are
-short), showing the L2 steps and their decision points in sequence. Keep the
-Mermaid source inline — it is the source of truth. Use `{ ... }` for decisions,
-put timeframes/SLAs in the node label, and avoid unescaped `()` in labels.
+[One Mermaid `flowchart TD` per flow in `process-model.json`, **derived from
+`flows`** — the same nodes, the same decisions, the same edge labels — so this
+document and the companion app's swimlanes cannot disagree. Never draw a step
+or decision here that `flows` does not have. Prefix each task label with its
+lane's role, abbreviated where the actor has one (e.g. `REQ: Check catalogue or
+BPA`). Use `{ ... }` for gateways, put the `sla` in the node label, and avoid
+unescaped `()` in labels. A phase with no flow gets no diagram.
 
 **A line break in a node label is `<br/>` — never `\n`.** Mermaid's label
 grammar has no backslash escape, so `\n` does not break the line: the renderer
@@ -355,9 +404,9 @@ matters most on exactly the labels this section asks for.]
 
 ```mermaid
 flowchart TD
-    A[Request lodged] --> B{Auto-approval eligible?}
-    B -- Yes --> C[Auto-process<br/>Within 2 business days]
-    B -- No --> D[Allocate to officer]
+    A[Client: lodge request] --> B{Auto-approval eligible?}
+    B -- Yes --> C[System: auto-process<br/>Within 2 business days]
+    B -- No --> D[Back office: allocate to officer]
 ```
 
 ---
@@ -397,7 +446,8 @@ node scripts/render-capability-map.mjs <project> --validate-only
 node scripts/render-companion-app.mjs <project>
 ```
 
-The first command reads the two JSON files and validates them, writing nothing.
+The first command reads the two JSON files and validates them — `flows`
+included — writing nothing.
 If it exits non-zero it names the file and field at fault — fix the JSON and
 re-run.
 
@@ -423,6 +473,8 @@ Before finishing, verify:
 - [ ] Every `capabilityIds` value exists in `capability-map.json`
 - [ ] Every L3 capability appears in the Section 4 coverage table
 - [ ] Activities are in lifecycle order within each phase
+- [ ] `flows` validate, and every phase without a flow is a Section 6 gap
+- [ ] Every decision in Section 5 exists as a gateway in `flows`, and no diagram has a step `flows` lacks
 - [ ] Nothing was invented — every row traces to a named source file
 - [ ] A capability evidenced by several features appears ONCE, citing all of them
 - [ ] All three output files exist, with the exact fixed names
@@ -464,3 +516,9 @@ When the invocation supplies a **previous version** of these artefacts plus a
   check, which defeats the approval gate that follows.
 - Re-run the validator afterwards. A revision that breaks the JSON contract is
   worse than no revision.
+- **Adding flows to an existing map** (e.g. "add flows from §5"): build `flows`
+  from the existing Section 5 Mermaid and the process-model activities — the same
+  steps, decisions and edge labels, with lanes from the activities' `actor`
+  strings. `flows` is built to match Section 5, so Section 5 stays as it is.
+  Change nothing else: no capability, activity or ID changes. Add a Revision
+  History entry.

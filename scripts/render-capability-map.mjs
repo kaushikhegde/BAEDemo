@@ -42,6 +42,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WORK_ROOT } from "./lib/roots.mjs";
+import { validateFlows } from "./lib/flows.mjs";
 
 // The project tree this run operates on. See scripts/lib/roots.mjs for why
 // this is not the same question as "where does this code live".
@@ -1335,6 +1336,9 @@ async function main() {
 
   const capabilities = normaliseCapabilities(capDoc);
   const activities = normaliseActivities(procDoc, new Set(capabilities.map((c) => c.id)));
+  // `flows` (the swimlanes) is optional; when present every rule must hold.
+  const { errors: flowErrors } = validateFlows(procDoc.flows, activities);
+  if (flowErrors.length) die(flowErrors.join("\n"));
 
   const sources = [...new Set([
     ...list(capDoc.sources),
