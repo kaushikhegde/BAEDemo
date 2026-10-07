@@ -3444,7 +3444,9 @@ app.post("/api/ui-agent/trigger", async (req, res) => {
 
     const title = `Build UI — ${project}`;
     const description = [
-      `project: ${project}`,
+      // `- ` is what parseParams reads as a param. Without it the issue carries
+      // no project and the engine refuses `unknown placeholder {project}`.
+      `- project: ${project}`,
       ...(feature ? [`feature: ${feature}   (context only — the page covers every feature)`] : []),
       `intent: build_ui`,
       ``,
