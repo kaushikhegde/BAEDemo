@@ -31,7 +31,8 @@ export function NewProjectWizard({
   onDeployed,
 }: {
   onCancel: () => void;
-  onDeployed: (project: string, issueId: string) => void;
+  /** `readingFirst`: the documents are still being read, and the baseline starts by itself after. */
+  onDeployed: (project: string, issueId: string, readingFirst?: boolean) => void;
 }) {
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState("");
@@ -100,7 +101,7 @@ export function NewProjectWizard({
     setBusy(true); setError(null);
     try {
       const issue = await bootstrapProject(name.trim());
-      onDeployed(name.trim(), issue.id);
+      onDeployed(name.trim(), issue.id, issue.waitingFor === "documents");
     } catch (e: any) {
       setError(e?.message || "Could not start the project setup.");
     } finally {

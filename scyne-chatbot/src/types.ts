@@ -50,6 +50,8 @@ export interface ActivityItem {
   createdAt: string;
 }
 export interface StatusSnapshot {
+  /** Set on a document-reading job that a Deploy was waiting on, once it has started the baseline. */
+  followedBy?: string | null;
   stage: { key: string; label: string };
   /** Parsed from the root issue description, so the UI can recover the target. */
   target?: { project: string | null; feature: string | null };

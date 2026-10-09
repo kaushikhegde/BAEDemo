@@ -682,6 +682,17 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       try {
         const s: StatusSnapshot = await getStatus(parentIssueId);
         if (cancelled) return;
+        // The reading job a Deploy waited on has started the baseline: follow
+        // it, so the person keeps watching the work rather than a finished job.
+        if (s.followedBy && s.followedBy !== parentIssueId) {
+          setParentIssueId(s.followedBy);
+          setChipsKey((k) => k + 1);
+          setMessages((m) => [...m, {
+            id: crypto.randomUUID(), role: "assistant",
+            text: "Every document is read. Building the **capability map**, then the **personas** — each raises an approval gate for you. Live progress on the right →",
+          }]);
+          return;
+        }
         setStatus(s);
         setStatusError(null);
         // Recover the target from the running workflow when the UI has none —
@@ -939,8 +950,11 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         try {
           const issue = await bootstrapProject(proj);
           setParentIssueId(issue.id);
+          setRightTab("activity");
           setChipsKey((k) => k + 1);
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** created and assigned to the Delivery Lead. Live progress on the right →` }]);
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: issue.waitingFor === "documents"
+            ? `Reading **${proj}**'s documents first (**${issue.identifier}**). The capability map starts by itself as soon as they are all read — live progress on the right →`
+            : `Issue **${issue.identifier}** created and assigned to the Delivery Lead. Live progress on the right →` }]);
         } catch (e: any) {
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: e?.code === "no_documents" ? `**${proj}** has no readable documents yet. Upload at least one policy, SOP or transcript with 📎, then say "go".` : `Couldn't start it: ${e?.message ?? e}` }]);
         }
@@ -1335,7 +1349,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         <Header right={<Button variant="ghost" onClick={() => setShowWizard(false)}>Back to chat</Button>} />
         <NewProjectWizard
           onCancel={() => setShowWizard(false)}
-          onDeployed={(project, issueId) => {
+          onDeployed={(project, issueId, readingFirst) => {
             setShowWizard(false);
             // A brand-new project opens on a CLEAN chat — it must not inherit
             // the thread the person was having about the last one.
@@ -1352,12 +1366,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
             setTargetProject(project);
             setTargetFeature(null);
             setParentIssueId(issueId);
+            setRightTab("activity");
             setFeaturesRefreshKey((k) => k + 1);
             setChipsKey((k) => k + 1);
             setMessages([buildGreeting(false), {
               id: crypto.randomUUID(),
               role: "assistant",
-              text: `**${project}** is set up. I'm building the baseline now — the capability map first, then the personas. Each raises its own approval gate; live progress is on the right.`,
+              text: readingFirst
+                ? `**${project}** is set up. I'm reading its documents first — about a minute each — and the capability map, then the personas, start by themselves when that's done. Each raises its own approval gate; live progress is on the right.`
+                : `**${project}** is set up. I'm building the baseline now — the capability map first, then the personas. Each raises its own approval gate; live progress is on the right.`,
             }]);
           }}
         />

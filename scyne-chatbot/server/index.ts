@@ -5,7 +5,6 @@ import "./env.js";
 import express from "express";
 import type { Request as ExpressRequest } from "express";
 import cors from "cors";
-import multer from "multer";
 import fs from "node:fs/promises";
 import fssync from "node:fs";
 import path from "node:path";
@@ -85,8 +84,9 @@ import { pickRegistryEntry } from "./registry.js";
 import { pickExtractRun } from "./services/extract-log.js";
 import {
   carryAuth, requireSession, login, logout, whoami,
-  tokenFor, setSessionCookie, clearSessionCookie,
+  tokenFor, setSessionCookie, clearSessionCookie, requestAuth, currentToken,
 } from "./auth.js";
+import { fileUpload } from "./upload.js";
 
 const app = express();
 // `credentials: true` and an explicit origin, not the bare default: the
@@ -358,7 +358,7 @@ app.post("/api/trigger", async (req, res) => {
 // (which runs to list), and anything else that needs to know which worker owns
 // an issue derive from here, so a new stage is added in ONE place.
 type Flow = {
-  key: "requirements" | "data_model" | "solution_design" | "solution_architecture" | "test_cases" | "capability_map" | "personas" | "ui_mockups" | "ui" | "project_setup" | "revision";
+  key: "requirements" | "data_model" | "solution_design" | "solution_architecture" | "test_cases" | "capability_map" | "personas" | "ui_mockups" | "ui" | "project_setup" | "revision" | "extraction";
   worker: string;
   generatingLabel: string;
   pushingLabel: string;
@@ -370,6 +370,10 @@ const FLOWS: { prefix: string; flow: Flow }[] = [
   // The one-pass replacement for "Set up project". The old prefix stays above so
   // issues created before this change still get a sensible stage label.
   { prefix: "Generate project baseline", flow: { key: "project_setup", worker: "Capabilities Process Architect", generatingLabel: "Building the project baseline", pushingLabel: "Publishing both pages" } },
+  // Document reading. Unmatched, it fell through to the first entry and a
+  // project whose documents were still being read was badged "Building the
+  // project baseline" — the step it is waiting to start.
+  { prefix: "Document Extraction", flow: { key: "extraction", worker: "Capabilities Process Architect", generatingLabel: "Reading the documents", pushingLabel: "Reading the documents" } },
   { prefix: "Revise", flow: { key: "revision", worker: "the owning specialist", generatingLabel: "Revising the artefact", pushingLabel: "Updating the wiki" } },
   { prefix: "Generate requirements", flow: { key: "requirements", worker: "BA", generatingLabel: "BA generating artifacts", pushingLabel: "Publishing the page and work items" } },
   { prefix: "Generate data model", flow: { key: "data_model", worker: "Data Modeler", generatingLabel: "Data Modeler generating the impact analysis", pushingLabel: "Publishing to the wiki" } },
@@ -1037,10 +1041,19 @@ app.get("/api/status/:issueId", async (req, res) => {
 
     const links = mergeLinks(commentLinks, diskLinks);
 
+    // A reading job that a Deploy was waiting on hands over to the baseline it
+    // started, so the page watching it can follow along without a refresh.
+    let followedBy: string | null = null;
+    if (String((tree as any)?.workflow_key ?? "") === "extract" && target.project) {
+      const next = await latestIssue("baseline", String(target.project));
+      if (next && String(next.created_at ?? "") > String((tree as any).created_at ?? "")) followedBy = next.id;
+    }
+
     res.json({
       tree,
       stage,
       target,
+      followedBy,
       flatIssues,
       activity: flatComments,
       approvals: flatApprovals,
@@ -1285,7 +1298,7 @@ app.post("/api/request-changes/:approvalId", async (req, res) => {
 // across all sessions, with their wiki page + work item links. Lists top-level
 // "Generate …" issues and extracts links from each run's comment tree. Build UI
 // runs stay excluded — they publish nothing.
-const HISTORY_PREFIXES = FLOWS.filter((f) => f.flow.key !== "ui").map((f) => f.prefix);
+const HISTORY_PREFIXES = FLOWS.filter((f) => f.flow.key !== "ui" && f.flow.key !== "extraction").map((f) => f.prefix);
 // ---- stopping a run ---------------------------------------------------------
 //
 // The chatbot is where most runs are started, so it is where most of them need
@@ -2125,6 +2138,35 @@ app.post("/api/project/bootstrap", async (req, res) => {
     const project = String(req.body?.project || "").trim();
     if (!project || !SAFE_PROJECT.test(project)) return res.status(400).json({ error: "bad_project" });
     const gate = await extractionGate(req, project);
+
+    // Documents still being read: Deploy is accepted and WAITS rather than
+    // refusing. The wizard used to stop on a red "0 of N ready" that said the
+    // same thing whether reading was in full swing, stopped, or never started,
+    // and pressing Deploy again was the only thing to do. Now the reading job
+    // is what the person watches in Activity, and the baseline starts by
+    // itself when it finishes — see `sweepPendingDeploys`.
+    const unread = gate.st.documents.filter(d => d.state !== "ready" && d.state !== "failed");
+    if (gate.code === "documents_not_ready" && unread.length) {
+      let job = await latestIssue("extract", project);
+      // A blocked or paused job is the one to show — its last comment says why,
+      // and Resume is on it. A finished one missed documents that arrived after
+      // it, and none means reading never started; both need a fresh pass.
+      if (!job || !["todo", "in_progress", "blocked", "paused"].includes(job.status)) {
+        // Deploy pressed within seconds of the last upload: start now, and drop
+        // the debounced start that would only join this pass and restart it.
+        clearTimeout(extractionTimers.get(project));
+        extractionTimers.delete(project);
+        job = await paperclip.startWorkflow("extract", { project }, `extract:${project}`);
+      }
+      queueDeploy(project, job.id, tokenFor(req));
+      return res.status(202).json({
+        ...job,
+        waitingFor: "documents",
+        message: `Reading ${unread.length} document(s) first (${job.identifier}) — about a minute each. ` +
+          `The capability map starts by itself as soon as they are all read.`,
+      });
+    }
+
     if (gate.code) {
       return res.status(409).json({
         error: gate.code,
@@ -2137,6 +2179,15 @@ app.post("/api/project/bootstrap", async (req, res) => {
         },
       });
     }
+    res.json(await startBaseline(project));
+  } catch (e: any) {
+    console.error("[project/bootstrap] failed:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+/** The baseline issue: capability map, then personas, one gate. */
+async function startBaseline(project: string): Promise<any> {
     const description = [
       "Generated by the Scyne chatbot. Build this project's baseline in ONE pass: the capability map, then the personas, then ONE approval gate.",
       ``,
@@ -2162,13 +2213,91 @@ app.post("/api/project/bootstrap", async (req, res) => {
     const owner = paperclip.agentId("capArchitect") ?? undefined;
     // The orchestrator's `baseline` workflow names its own assignee; this is
     // passed for the chat's reply text only.
-    const issue = await paperclip.createIssue(`Generate project baseline — ${project}`, description, owner);
-    res.json(issue);
-  } catch (e: any) {
-    console.error("[project/bootstrap] failed:", e);
-    res.status(500).json({ error: e?.message ?? String(e) });
+    return paperclip.createIssue(`Generate project baseline — ${project}`, description, owner);
+}
+
+// --- Deploy that waits for its documents -------------------------------------
+//
+// Projects whose Deploy was pressed while documents were still being read. A
+// sweep checks each one and starts the baseline once every document is ready.
+//
+// Kept HERE, beside the route, rather than as an engine step: the extraction
+// state is the chatbot's to compute (disk merged with the store), and the
+// engine has no step that waits on another issue.
+//
+// The list is mirrored to disk so a restart of this server does not silently
+// drop a deploy somebody is waiting on. Session tokens are NOT — a credential
+// never goes to a file — so after a restart the sweep acts with the install's
+// SCYNE_ORCH_TOKEN, which `npm run setup` writes.
+
+type PendingDeploy = { project: string; extractIssueId: string; since: string };
+const PENDING_DEPLOYS = path.join(WORKSPACE_PATH, ".orchestrator", "pending-deploys.json");
+const pendingDeploys = new Map<string, PendingDeploy>();
+const deployTokens = new Map<string, string>();
+
+async function savePendingDeploys(): Promise<void> {
+  await fs.mkdir(path.dirname(PENDING_DEPLOYS), { recursive: true });
+  await fs.writeFile(PENDING_DEPLOYS, JSON.stringify([...pendingDeploys.values()], null, 2));
+}
+
+function queueDeploy(project: string, extractIssueId: string, token: string | null): void {
+  pendingDeploys.set(project, { project, extractIssueId, since: new Date().toISOString() });
+  if (token) deployTokens.set(project, token);
+  void savePendingDeploys().catch((e) => console.warn(`[deploy] could not save the queue: ${e?.message ?? e}`));
+}
+
+async function dropDeploy(project: string): Promise<void> {
+  pendingDeploys.delete(project);
+  deployTokens.delete(project);
+  await savePendingDeploys().catch(() => {});
+}
+
+async function sweepPendingDeploys(): Promise<void> {
+  for (const p of [...pendingDeploys.values()]) {
+    const token = deployTokens.get(p.project) ?? process.env.SCYNE_ORCH_TOKEN ?? null;
+    if (!token) continue;
+    await requestAuth.run({ token }, async () => {
+      const st = await extractionStateFor(token, p.project);
+      if (!st.documents.length) return;
+
+      if (st.ready === st.documents.length) {
+        const issue = await startBaseline(p.project);
+        await dropDeploy(p.project);
+        console.log(`[deploy] ${p.project}: every document read — started ${issue?.identifier ?? issue?.id}`);
+        await paperclip.addComment(p.extractIssueId,
+          `All ${st.documents.length} documents are read. **Building the capability map and personas now — ` +
+          `${issue?.identifier ?? "the baseline"}.**`).catch(() => {});
+        return;
+      }
+
+      const unread = st.documents.filter(d => d.state !== "ready" && d.state !== "failed");
+      if (!unread.length) {
+        // Only failures left: nothing more will become ready on its own.
+        const failed = st.documents.filter(d => d.state === "failed");
+        await dropDeploy(p.project);
+        await paperclip.addComment(p.extractIssueId,
+          `${failed.length} document(s) could not be read: ` +
+          `${failed.slice(0, 5).map(d => `${d.docId}${d.reason ? ` (${d.reason})` : ""}`).join(", ")}. ` +
+          `Replace or delete them, then press Deploy again.`).catch(() => {});
+        return;
+      }
+
+      // Reading finished but some documents are still unread — they arrived
+      // after that pass took its list. One more pass picks them up.
+      const job = await latestIssue("extract", p.project);
+      if (job?.status === "done") {
+        const next = await paperclip.startWorkflow("extract", { project: p.project }, `extract:${p.project}`);
+        pendingDeploys.set(p.project, { ...p, extractIssueId: next.id });
+        await savePendingDeploys().catch(() => {});
+      }
+    }).catch((e: any) => console.warn(`[deploy] ${p.project}: ${e?.message ?? e}`));
   }
-});
+}
+
+void fs.readFile(PENDING_DEPLOYS, "utf8")
+  .then((raw) => { for (const p of JSON.parse(raw) as PendingDeploy[]) pendingDeploys.set(p.project, p); })
+  .catch(() => { /* nothing queued */ });
+setInterval(() => { void sweepPendingDeploys(); }, 15_000).unref();
 
 // --- Staleness, suggestions, revision --------------------------------------
 
@@ -2510,11 +2639,15 @@ function syncProjectToBlob(project: string): void {
  * extraction, where a missed one costs a capability map with a silent hole.
  */
 async function extractionState(req: ExpressRequest, project: string): Promise<ProjectExtractState> {
+  return extractionStateFor(tokenFor(req), project);
+}
+
+async function extractionStateFor(token: string | null, project: string): Promise<ProjectExtractState> {
   const [onDisk, inStore] = await Promise.all([
     projectState(WORKSPACE_PATH, project).catch(() => null),
     // Never fatal: the orchestrator can be down while this server is up, and a
     // disk-era project must still answer.
-    store.extractState(tokenFor(req), project).catch(() => null),
+    store.extractState(token, project).catch(() => null),
   ]);
 
   const merged = new Map<string, DocumentExtractState>();
@@ -2559,6 +2692,10 @@ async function extractionState(req: ExpressRequest, project: string): Promise<Pr
  * is idempotent and content-hash keyed, so a later `extract` run picks up
  * anything missed here.
  */
+/** How long uploads must go quiet before reading starts. */
+const EXTRACTION_QUIET_MS = 3_000;
+const extractionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 function startExtraction(
   project: string, feature?: string, extra: string[] = [],
 ): { started: boolean; error: string | null } {
@@ -2583,18 +2720,40 @@ function startExtraction(
     // and every feature's discovery folders — so one issue per project is the
     // correct unit of work, and the server returns the open one rather than
     // creating another.
-    void paperclip.startWorkflow("extract", { project }, `extract:${project}`)
-      .then((issue: any) => console.log(
-        `[extract] ${project}: started ${issue?.identifier ?? issue?.id ?? "?"}` +
-        `${feature ? ` (triggered by ${feature})` : ""}` +
-        `${extra.length ? ` [${extra.join(" ")}]` : ""}`))
-      .catch((e: any) => console.warn(
-        `[extract] ${project}: could not start extraction — ${e?.message ?? e}`));
+    //
+    // Debounced as well. The wizard uploads its files one request at a time,
+    // and each one joining the open issue restarted it from the top with a
+    // comment saying so — ten files, nine "Starting again from the top" lines
+    // in Activity before any reading happened. Waiting for the uploads to go
+    // quiet starts one pass that sees them all. The credential is captured now:
+    // the timer fires outside this request.
+    const token = currentToken();
+    clearTimeout(extractionTimers.get(project));
+    extractionTimers.set(project, setTimeout(() => {
+      extractionTimers.delete(project);
+      void requestAuth.run({ token }, () => paperclip.startWorkflow("extract", { project }, `extract:${project}`))
+        .then((issue: any) => console.log(
+          `[extract] ${project}: started ${issue?.identifier ?? issue?.id ?? "?"}` +
+          `${feature ? ` (triggered by ${feature})` : ""}` +
+          `${extra.length ? ` [${extra.join(" ")}]` : ""}`))
+        .catch((e: any) => console.warn(
+          `[extract] ${project}: could not start extraction — ${e?.message ?? e}`));
+    }, EXTRACTION_QUIET_MS));
     return { started: true, error: null };
   } catch (e: any) {
     console.warn(`[extract] ${project}: could not start extraction — ${e?.message ?? e}`);
     return { started: false, error: e?.message ?? String(e) };
   }
+}
+
+/** The newest issue of one workflow for a project, or null. */
+async function latestIssue(workflowKey: string, project: string): Promise<any | null> {
+  const raw = await paperclip.listCompanyIssues().catch(() => []);
+  const all: any[] = Array.isArray(raw) ? raw : (raw.items || raw.issues || []);
+  return all
+    .filter(i => (i.workflow_key ?? i.workflowKey) === workflowKey && i.params?.project === project)
+    .sort((a, b) => String(b.created_at ?? b.createdAt).localeCompare(String(a.created_at ?? a.createdAt)))[0]
+    ?? null;
 }
 
 /**
@@ -2621,11 +2780,7 @@ async function notReadyMessage(
     ? ` ${failed.length} could not be read: ${failed.slice(0, 3).map(d => `${d.docId}${d.reason ? ` (${d.reason})` : ""}`).join(", ")}.`
     : "";
 
-  const raw = await paperclip.listCompanyIssues().catch(() => []);
-  const all: any[] = Array.isArray(raw) ? raw : (raw.items || raw.issues || []);
-  const job = all
-    .filter(i => (i.workflow_key ?? i.workflowKey) === "extract" && i.params?.project === project)
-    .sort((a, b) => String(b.created_at ?? b.createdAt).localeCompare(String(a.created_at ?? a.createdAt)))[0];
+  const job = await latestIssue("extract", project);
 
   if (job && (job.status === "todo" || job.status === "in_progress")) {
     return `${head} The AI is reading them now (${job.identifier}) — about a minute each, ` +
@@ -2802,18 +2957,6 @@ app.post("/api/extract-retry/:project", async (req, res) => {
   }
 });
 
-/**
- * No size limit.
- *
- * There was one — 100 MB, in `multer.memoryStorage()` — because content
- * travelled through this process's memory and then base64 through a JSON body
- * to reach the database. Three ceilings sat behind it: 100 MB here, ~384 MB
- * from V8's cap on a base64 string, and 1 GB from Postgres `bytea`. Bytes go
- * to object storage now, addressed by their own hash, so all three are gone
- * rather than raised — raising them would only have moved the failure, since
- * two of the three were never ours to move.
- */
-const upload = multer({ storage: multer.memoryStorage() });
 
 function nameError(message: string): Error & { status: number } {
   const err = new Error(message) as Error & { status: number };
@@ -3139,7 +3282,7 @@ app.delete("/api/documents", async (req, res) => {
  * expected one is the worse failure: both get staged, and the pack quietly
  * cites a superseded policy.
  */
-app.put("/api/documents", upload.single("file"), async (req, res) => {
+app.put("/api/documents", fileUpload("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     const feature = String(req.body?.feature || "").trim();
@@ -3222,7 +3365,7 @@ app.put("/api/documents", upload.single("file"), async (req, res) => {
   }
 });
 
-app.post("/api/upload/project", upload.single("file"), async (req, res) => {
+app.post("/api/upload/project", fileUpload("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     if (!project) return res.status(400).json({ error: "missing_target", message: "project is required" });
@@ -3284,7 +3427,7 @@ app.post("/api/upload/project", upload.single("file"), async (req, res) => {
   }
 });
 
-app.post("/api/upload", upload.single("file"), async (req, res) => {
+app.post("/api/upload", fileUpload("file"), async (req, res) => {
   try {
     const project = String(req.body?.project || "").trim();
     const feature = String(req.body?.feature || "").trim();
