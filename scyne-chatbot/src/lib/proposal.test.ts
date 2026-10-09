@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { proposalMessage, claimProposal, settleProposal } from "./proposal";
+import { proposalMessage, claimProposal, settleProposal, targetAfterProposal } from "./proposal";
 import type { UIMessage } from "../types";
 
 describe("proposalMessage", () => {
@@ -55,5 +55,18 @@ describe("settleProposal", () => {
     const out = settleProposal([other, card], "p1", { state: "started", issue: "SCY-12" });
     expect(out[0]).toBe(other);
     expect(out[1].proposal).toMatchObject({ state: "started", issue: "SCY-12" });
+  });
+});
+
+describe("targetAfterProposal", () => {
+  // Switching the pinned project swaps the whole transcript for that
+  // project's, so setting it in the render that adds the card threw the card
+  // away — and the user's requested change with it.
+  it("keeps the pinned project, even when the card is for another one", () => {
+    expect(targetAfterProposal("BAE", "BAE-DEMO-101")).toBe("BAE");
+  });
+
+  it("adopts the card's project only when none is pinned", () => {
+    expect(targetAfterProposal(null, "BAE")).toBe("BAE");
   });
 });

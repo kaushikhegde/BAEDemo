@@ -30,7 +30,7 @@ import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
 import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, republishArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, getProjectChat, clearProjectChat, type RunSummary, type OpsIssue } from "./api";
-import { proposalMessage, claimProposal, settleProposal } from "./lib/proposal";
+import { proposalMessage, claimProposal, settleProposal, targetAfterProposal } from "./lib/proposal";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -981,7 +981,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
         if ("error" in card) {
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: card.error }]);
         } else {
-          setTargetProject(card.proposal!.project);
+          setTargetProject(targetAfterProposal(targetProject, card.proposal!.project));
           setMessages((m) => [...m, card]);
         }
       } else if (toolUse?.name === "republish_artefact") {

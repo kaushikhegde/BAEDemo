@@ -51,3 +51,15 @@ export function claimProposal(
 export function settleProposal(messages: UIMessage[], id: string, patch: Partial<RevisionProposal>): UIMessage[] {
   return messages.map((m) => (m.id === id && m.proposal ? { ...m, proposal: { ...m.proposal, ...patch } } : m));
 }
+
+/**
+ * The pinned project after a card is shown.
+ *
+ * Changing the pinned project swaps the whole transcript for that project's,
+ * so doing it in the render that adds a card for ANOTHER project threw the
+ * card away, and the requested change with it. The card carries its own
+ * project, so the pin only changes when nothing was pinned.
+ */
+export function targetAfterProposal(current: string | null, cardProject: string): string | null {
+  return current ?? cardProject;
+}
