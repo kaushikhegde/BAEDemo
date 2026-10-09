@@ -92,4 +92,35 @@ describe("answerWithReads", () => {
     await answerWithReads(turns, turn(read({ artefact: "qa" })), async () => { throw new Error("EACCES"); });
     expect(turns.sent[0][0].functionResponse.response).toEqual({ state: "invalid", reason: "Could not read it: EACCES" });
   });
+
+  it("reads alongside set_target, then hands set_target back with the answer", async () => {
+    // The prompt makes every turn that names a project carry set_target, so
+    // "what personas does BAE have?" arrives as set_target + read_artefact.
+    // Treating set_target as an action dropped the read and the user got
+    // "Target set to BAE." instead of an answer.
+    const target = { functionCall: { name: "set_target", args: { project: "BAE" } } };
+    const turns = fakeTurns([turn(text("Alex, Jordan, Sam, Morgan and Chris."))]);
+    const reader = vi.fn(async () => ({ state: "ok", content: "personas" }));
+    const out = await answerWithReads(turns, turn(target, read({ project: "BAE", artefact: "personas" })), reader);
+    expect(reader).toHaveBeenCalledTimes(1);
+    expect(turns.sent[0].map((p: any) => p.functionResponse.name)).toEqual(["set_target", READ_TOOL]);
+    expect(turns.sent[0][0].functionResponse.response).toEqual({ state: "ok" });
+    expect(partsOf(out)).toEqual([target, text("Alex, Jordan, Sam, Morgan and Chris.")]);
+  });
+
+  it("does not hand set_target back twice when the answer carries its own", async () => {
+    const target = { functionCall: { name: "set_target", args: { project: "BAE" } } };
+    const turns = fakeTurns([turn(target, text("done"))]);
+    const out = await answerWithReads(turns, turn(target, read({ artefact: "personas" })), async () => ({ state: "ok" }));
+    expect(partsOf(out)).toEqual([target, text("done")]);
+  });
+
+  it("puts a held set_target before an action, so the action is the call the browser runs", async () => {
+    const target = { functionCall: { name: "set_target", args: { project: "BAE" } } };
+    const revise = { functionCall: { name: "revise_artefact", args: { artefact: "personas" } } };
+    const turns = fakeTurns([turn(revise)]);
+    const out = await answerWithReads(turns, turn(target, read({ artefact: "personas" })), async () => ({ state: "ok" }));
+    expect(partsOf(out)).toEqual([target, revise]);
+  });
 });
+
