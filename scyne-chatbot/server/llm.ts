@@ -3,6 +3,8 @@ import * as store from "./store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WORKSPACE_PATH } from "./workspace.js";
+import { readArtefact, ARTEFACTS } from "./artefact-reader.js";
+import { answerWithReads, READ_TOOL } from "./read-loop.js";
 
 if (!process.env.GEMINI_API_KEY) {
   console.warn("[llm] Warning: GEMINI_API_KEY not set; chat will fail until configured.");
@@ -140,11 +142,12 @@ function buildCompactPrompt(
     "- data model -> trigger_data_model | architecture -> trigger_solution_architecture",
     "- test cases -> trigger_test_cases | wireframes/mockups -> trigger_ui_mockups",
     "- change something already generated -> revise_artefact",
+    "- a question about something already generated -> read_artefact first, then answer only from it",
     "- what documents are there -> list_documents | remove one -> delete_document",
     "- just picking a project/feature -> set_target",
     "",
     "PROJECT-level tools (capability map, personas, bootstrap, ui build) take a project and NO feature.",
-    "If the request is a question rather than an action, answer it in one or two sentences.",
+    "If the request is a question that is not about a generated artefact, answer it in one or two sentences.",
   ].filter(Boolean).join("\n");
 }
 
@@ -400,6 +403,17 @@ Both need **only the Product Summary**. Do NOT tell the user to run the data mod
 - Then tell them to drop that feature's documents in with the attach button, and offer the product summary when they are ready.
 - Features are per slice of work. The personas and capability map are already there — do NOT re-run those for a new feature.
 
+### Questions about what has been generated
+
+When the user asks about an artefact that already exists — "what personas do we have?", "is there a capability for supplier onboarding?", "which stories cover appeals?", "what fields are on the permit object?" — call \`read_artefact\` first, then answer only from what it returns.
+
+- **Name the item** your answer comes from: the persona's full name and abbreviation, the capability ID, the story number, the test ID.
+- **If it is not in the file, say so.** "The capability map has no supplier onboarding capability." Never fill the gap from general knowledge or from what a similar organisation would have.
+- **\`not_generated\`** means the stage has not run. Say so and offer to generate it.
+- **\`invalid\`** asking which feature: ask the user, in one line, which feature they mean.
+- **When the answer shows a gap, offer the change in one line** — "Want me to add a supplier persona?". On a yes, call \`revise_artefact\` with the user's request plus the gap you found, in their words.
+- Keep answers short. Quote at most a few lines of the artefact; point to the item rather than pasting sections.
+
 ### Changing something already generated — the revision path
 
 This is half of what the user asks you for. The chat does not only *run* stages; it **changes** what they produced.
@@ -418,9 +432,10 @@ Rules:
 
 1. **Only for artefacts that already exist.** If the stage has not run, the backend returns \`not_generated\` — offer to generate it instead.
 2. **Work out which artefact from what they are describing**, not from the word they used. "The screen should show the permit number" is the UI mockups. "Permit number needs to be a field" is the data model. If genuinely ambiguous, ask in one line.
-3. **A question is not a revision.** "Why does the data model use Case?" is answered in text. Only call \`revise_artefact\` when they want something changed.
+3. **A question is not a revision.** "Why does the data model use Case?" is answered by reading the data model with \`read_artefact\`. Only call \`revise_artefact\` when they want something changed.
 4. **Never claim you changed something yourself.** You raise the request; the specialist does the work and the human approves it.
 5. **"Solution design" and "solution architecture" collide.** If the user says only "the architecture" and both exist, ask which.
+6. **Do not ask "are you sure?" yourself.** The user is shown the change with a **Start change** button, and nothing runs until they press it.
 
 ### The documents themselves
 
@@ -664,8 +679,26 @@ const triggerTool: Tool = {
       },
     },
     {
+      name: READ_TOOL,
+      description: "Reads an artefact that has ALREADY BEEN GENERATED so you can answer a question about it - 'what personas do we have?', 'is there a capability for supplier onboarding?', 'which stories cover appeals?', 'what does the data model use for permits?', 'compare the journeys with the capability map'. Call it BEFORE answering any question about what a stage produced, and answer only from what it returns. Read-only and instant: it runs no specialist and changes nothing. Returns state 'ok' with the content, 'not_generated' if that stage has not run (offer to generate it), or 'invalid' with a reason (for a feature-level artefact with no feature, ask which feature).",
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          project: { type: SchemaType.STRING, description: "Project folder name. Required." },
+          feature: { type: SchemaType.STRING, description: "Feature folder name. Required for every artefact EXCEPT capabilities and personas, which are project-level." },
+          artefact: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: Object.keys(ARTEFACTS),
+            description: "capabilities = capability map + process model. personas = personas + journeys. requirements = product summary + user stories. ui = UI mockups. datamodel = Salesforce data model. architecture = Solution Architecture Document. qa = test pack. design = Solution Design Document.",
+          },
+        },
+        required: ["project", "artefact"],
+      },
+    },
+    {
       name: "revise_artefact",
-      description: "Requests a CHANGE to an artefact that has already been generated, routed to the specialist that produced it. Call this whenever the user wants something different in an existing product summary, user story, UI mockup, data model, solution architecture, test pack, persona set or capability map - 'add an SLA breach field to the data model', 'reword story 2.4.1.3', 'the personas are too generic', 'make the lodgement screen a map picker', 'add a negative test for the expired permit path'. Work out which artefact from what they are DESCRIBING, not from the word they used: 'the screen should show the permit number' is the UI mockups; 'permit number needs to be a field' is the data model. The specialist revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing wiki page rather than creating a second one. Do NOT call this for questions ('why does the data model use Case?') - answer those in text. Do NOT call it for a stage that has not run - offer to generate it instead.",
+      description: "Requests a CHANGE to an artefact that has already been generated, routed to the specialist that produced it. Call this whenever the user wants something different in an existing product summary, user story, UI mockup, data model, solution architecture, test pack, persona set or capability map - 'add an SLA breach field to the data model', 'reword story 2.4.1.3', 'the personas are too generic', 'make the lodgement screen a map picker', 'add a negative test for the expired permit path'. Work out which artefact from what they are DESCRIBING, not from the word they used: 'the screen should show the permit number' is the UI mockups; 'permit number needs to be a field' is the data model. The specialist revises rather than regenerates, raises a fresh approval gate, and on approval updates the existing wiki page rather than creating a second one. Do NOT call this for questions ('why does the data model use Case?') - read the artefact with read_artefact and answer. Do NOT call it for a stage that has not run - offer to generate it instead.",
       parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -838,22 +871,53 @@ export async function chat(
   const lastUser = history.pop();
   const userText = lastUser?.parts?.find((p: any) => typeof p.text === "string")?.text ?? "";
 
-  const send = (system: string) => retryWithBackoff(async () => {
+  // The model may ask to read an artefact before it answers. Those reads run
+  // here, on the server, against the caller's own project list — `tree` is
+  // already `store.available(token)` — and only the final turn goes back to
+  // the browser.
+  const read = (args: Record<string, unknown>) => readArtefact(
+    {
+      project: args.project || target?.project,
+      feature: args.feature || target?.feature,
+      artefact: args.artefact,
+    },
+    { workspace: WORKSPACE, visible: tree },
+  );
+
+  const send = async (system: string) => {
     const m = genAI.getGenerativeModel({ model: MODEL_NAME, systemInstruction: system, tools: [triggerTool] });
-    // Hand startChat a FRESH COPY, and drop any Content with no parts.
+    // Work on a FRESH COPY, and drop any Content with no parts.
     //
-    // startChat() appends the model's reply to the array it was given. When the
-    // model returns an empty candidate, what gets appended is a Content with
-    // zero parts — and the next startChat on that same array is rejected by the
-    // SDK with "Each Content should have at least one part". That is why the
-    // retry after an empty turn always failed: it threw before it ever reached
-    // the model, so a user asking to add a feature got silence twice.
-    const safeHistory = history
+    // Turns are appended to this list as they happen. When the model returns an
+    // empty candidate, what gets appended is a Content with zero parts — and a
+    // later request carrying it is rejected by the SDK with "Each Content
+    // should have at least one part". Sharing one array between the first try
+    // and the compact retry below is what made that retry always fail: it threw
+    // before it ever reached the model, so a user asking to add a feature got
+    // silence twice.
+    const contents: any[] = history
       .filter((h: any) => Array.isArray(h?.parts) && h.parts.length > 0)
       .map((h: any) => ({ ...h, parts: [...h.parts] }));
-    const r = await m.startChat({ history: safeHistory }).sendMessage(userText);
-    return r.response;
-  });
+    // generateContent over our own list rather than a ChatSession. A read
+    // takes several turns, and a ChatSession whose sendMessage once threw
+    // keeps that rejection and rethrows it on every later send — so retrying a
+    // 503 on the second round would fail for ever. Each call here is
+    // stateless, and a turn joins `contents` only once it has succeeded.
+    const turns = {
+      sendMessage: async (request: string | object[]) => {
+        // The roles a ChatSession would assign: function responses go back as
+        // "function", anything else as "user".
+        const next = typeof request === "string"
+          ? { role: "user", parts: [{ text: request }] }
+          : { role: "function", parts: request };
+        const r = await retryWithBackoff(() => m.generateContent({ contents: [...contents, next] as any }));
+        contents.push(next, { role: "model", parts: r.response.candidates?.[0]?.content?.parts ?? [] });
+        return { response: r.response };
+      },
+    };
+    const first = await turns.sendMessage(userText);
+    return answerWithReads(turns, first.response, read);
+  };
 
   // An empty turn — finishReason STOP, zero parts, and usage showing
   // totalTokenCount === promptTokenCount, i.e. the model generated nothing at
