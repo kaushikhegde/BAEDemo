@@ -848,6 +848,12 @@ export async function clearProjectChat(
  */
 export async function readDocumentByPath(
   token: string | null, project: string, docPath: string,
+  /**
+   * Which level the path belongs to: a feature's name, or null for the
+   * project itself. Omit it to match on path alone. A feature's artefacts need
+   * it — every feature has its own `outputs/product-summary.md`.
+   */
+  level?: { feature: string | null },
 ): Promise<Buffer | null> {
   if (!token) return null;
   try {
@@ -855,9 +861,10 @@ export async function readDocumentByPath(
     if (!row) return null;
 
     const q = new URLSearchParams({ prefix: docPath, all: "true" });
-    const listed = await get<Array<{ id: string; path: string }>>(
+    const listed = await get<Array<{ id: string; path: string; feature?: string | null }>>(
       token, `/projects/${row.id}/documents?${q}`, []);
-    const hit = listed.find(d => d.path === docPath);
+    const hit = listed.find(d =>
+      d.path === docPath && (!level || (d.feature ?? null) === level.feature));
     if (!hit) return null;
 
     // Raw, not base64: a companion app is megabytes and there is no reason to

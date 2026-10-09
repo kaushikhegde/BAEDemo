@@ -881,7 +881,14 @@ export async function chat(
       feature: args.feature || target?.feature,
       artefact: args.artefact,
     },
-    { workspace: WORKSPACE, visible: tree },
+    {
+      workspace: WORKSPACE,
+      visible: tree,
+      readStored: async (project, feature, rel) => {
+        const bytes = await store.readDocumentByPath(token ?? null, project, rel, { feature });
+        return bytes ? bytes.toString("utf8") : null;
+      },
+    },
   );
 
   const send = async (system: string) => {

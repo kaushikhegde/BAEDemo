@@ -36,6 +36,16 @@ export interface ReadScope {
   workspace: string;
   /** The caller's projects and each one's features — `store.available(token)`. */
   visible: Record<string, { name: string }[]>;
+  /**
+   * One file from the STORE, by its path relative to its own level, or null.
+   *
+   * The store is the system of record: every step works in a scratch tree
+   * that is harvested into it and then deleted, so a project made since has
+   * nothing on disk, and an older project's disk copy goes stale the moment a
+   * revision is approved. Disk is only the fallback for an install whose
+   * outputs predate that.
+   */
+  readStored?: (project: string, feature: string | null, rel: string) => Promise<string | null>;
 }
 
 const isArtefact = (a: string): a is ArtefactKey => Object.prototype.hasOwnProperty.call(ARTEFACTS, a);
@@ -80,6 +90,12 @@ export async function readArtefact(
   const found: string[] = [];
   const bodies: string[] = [];
   for (const rel of def.files) {
+    const stored = await scope.readStored?.(project, def.level === "feature" ? feature : null, rel);
+    if (stored != null) {
+      bodies.push(stored);
+      found.push(rel);
+      continue;
+    }
     try {
       bodies.push(await fs.readFile(path.join(root, rel), "utf8"));
       found.push(rel);

@@ -93,3 +93,50 @@ describe("readArtefact", () => {
     expect(Buffer.byteLength(r.content)).toBeLessThanOrEqual(MAX_ARTEFACT_BYTES);
   });
 });
+
+/**
+ * A run's outputs live in the store, not on disk: every step works in a
+ * scratch tree that is harvested into the store and deleted. A project made
+ * since then has nothing on disk at all, and an older one has a disk copy that
+ * stops matching the moment a revision is approved.
+ */
+describe("readArtefact — the store is the system of record", () => {
+  const stored = (files: Record<string, string>) => {
+    const calls: Array<[string, string | null, string]> = [];
+    const readStored = async (project: string, feature: string | null, rel: string) => {
+      calls.push([project, feature, rel]);
+      return files[`${project}|${feature ?? ""}|${rel}`] ?? null;
+    };
+    return { calls, readStored };
+  };
+
+  it("prefers the stored copy over a stale one on disk", async () => {
+    const s = stored({ "BAE||solutions/Capabilities/outputs/capability-process.md": "# Revised\nL1.9 Supplier Payments" });
+    const r = await readArtefact({ project: "BAE", artefact: "capabilities" }, { ...scope(), readStored: s.readStored });
+    expect(r.state === "ok" && r.content).toContain("L1.9 Supplier Payments");
+    expect(r.state === "ok" && r.content).not.toContain("L1.1 Source to Pay");
+  });
+
+  it("reads an artefact that exists only in the store", async () => {
+    const s = stored({ "BAE||solutions/Experience/outputs/personas-journeys.md": "# Personas\nAlex — Requester" });
+    const r = await readArtefact({ project: "BAE", artefact: "personas" }, { ...scope(), readStored: s.readStored });
+    expect(r).toMatchObject({ state: "ok", files: ["solutions/Experience/outputs/personas-journeys.md"] });
+  });
+
+  it("falls back to disk when the store has no copy", async () => {
+    const s = stored({});
+    const r = await readArtefact({ project: "BAE", artefact: "capabilities" }, { ...scope(), readStored: s.readStored });
+    expect(r.state === "ok" && r.content).toContain("L1.1 Source to Pay");
+  });
+
+  it("asks the store for a project artefact with no feature, and a feature artefact with its feature", async () => {
+    const s = stored({});
+    await readArtefact({ project: "BAE", feature: "intake", artefact: "capabilities" }, { ...scope(), readStored: s.readStored });
+    await readArtefact({ project: "BAE", feature: "intake", artefact: "requirements" }, { ...scope(), readStored: s.readStored });
+    expect(s.calls).toEqual([
+      ["BAE", null, "solutions/Capabilities/outputs/capability-process.md"],
+      ["BAE", "intake", "outputs/product-summary.md"],
+      ["BAE", "intake", "outputs/stories.md"],
+    ]);
+  });
+});
