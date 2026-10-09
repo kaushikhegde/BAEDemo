@@ -135,7 +135,15 @@ const { admin, restart } = await withServer(async (base, running) => {
   // one comment and one run row per document — through the orchestrator's API,
   // which needs a key. Without one the work still happens but nothing moves on
   // screen until all of it is done, which reads as stuck.
-  if (process.env.SCYNE_ORCH_TOKEN) return { admin, restart: false };
+  // Checked, not just present: a key made against a database since wiped or
+  // replaced is rejected with 401, and the narration fails just as silently.
+  const current = process.env.SCYNE_ORCH_TOKEN;
+  if (current) {
+    const me = await fetch(`${base}/auth/whoami`, { headers: { authorization: `Bearer ${current}` } })
+      .catch(() => null);
+    if (me?.ok) return { admin, restart: false };
+    ok("the progress key in .env no longer works — making a new one");
+  }
   if (!session) {
     console.log("  Background jobs need a key to report their progress. Sign in once to make it:");
     const { email, password } = await credentials("Email: ", "Password: ");

@@ -591,9 +591,7 @@ function stageTrigger(stage: {
             error: gate.code,
             message: gate.code === "no_documents"
               ? stage.gateMessage(project, feature)
-              : `${gate.st.ready} of ${gate.st.documents.length} documents are ready. ` +
-                `Waiting on: ${gate.st.documents.filter(d => d.state !== "ready")
-                  .slice(0, 5).map(d => `${d.docId} (${d.state})`).join(", ")}`,
+              : await notReadyMessage(project, gate.st),
             extraction: {
               ready: gate.st.ready, missing: gate.st.missing,
               failed: gate.st.failed, extracting: gate.st.extracting,
@@ -2132,9 +2130,7 @@ app.post("/api/project/bootstrap", async (req, res) => {
         error: gate.code,
         message: gate.code === "no_documents"
           ? `No documents for ${project} yet. Upload at least one policy, SOP or transcript first.`
-          : `${gate.st.ready} of ${gate.st.documents.length} documents are ready. ` +
-            `Waiting on: ${gate.st.documents.filter(d => d.state !== "ready")
-              .slice(0, 5).map(d => `${d.docId} (${d.state})`).join(", ")}`,
+          : await notReadyMessage(project, gate.st),
         extraction: {
           ready: gate.st.ready, missing: gate.st.missing,
           failed: gate.st.failed, extracting: gate.st.extracting,
@@ -2599,6 +2595,56 @@ function startExtraction(
     console.warn(`[extract] ${project}: could not start extraction — ${e?.message ?? e}`);
     return { started: false, error: e?.message ?? String(e) };
   }
+}
+
+/**
+ * The "documents not ready" refusal, said in terms of what the reading job is
+ * doing rather than only per-document states.
+ *
+ * Extraction runs in a per-step scratch tree and its extracts reach the store
+ * only when the step ends, so every document reads `missing` for the whole
+ * time it is being worked on. Listing those alone made a job in full swing
+ * look identical to one that never started or one that had stopped — and a
+ * refusal that looks the same after ten minutes reads as stuck.
+ *
+ * So the newest `extract` issue for the project is consulted: running says
+ * wait, blocked says why, and none — or one that finished before the latest
+ * upload landed — starts a fresh pass, which only reads what is still missing.
+ */
+async function notReadyMessage(
+  project: string, st: Awaited<ReturnType<typeof extractionState>>,
+): Promise<string> {
+  const pending = st.documents.filter(d => d.state !== "ready");
+  const head = `${st.ready} of ${st.documents.length} documents are ready.`;
+  const failed = pending.filter(d => d.state === "failed");
+  const failedNote = failed.length
+    ? ` ${failed.length} could not be read: ${failed.slice(0, 3).map(d => `${d.docId}${d.reason ? ` (${d.reason})` : ""}`).join(", ")}.`
+    : "";
+
+  const raw = await paperclip.listCompanyIssues().catch(() => []);
+  const all: any[] = Array.isArray(raw) ? raw : (raw.items || raw.issues || []);
+  const job = all
+    .filter(i => (i.workflow_key ?? i.workflowKey) === "extract" && i.params?.project === project)
+    .sort((a, b) => String(b.created_at ?? b.createdAt).localeCompare(String(a.created_at ?? a.createdAt)))[0];
+
+  if (job && (job.status === "todo" || job.status === "in_progress")) {
+    return `${head} The AI is reading them now (${job.identifier}) — about a minute each, ` +
+      `and they all turn ready together when it finishes. Deploy works then.${failedNote}`;
+  }
+  if (job && (job.status === "blocked" || job.status === "paused")) {
+    const comments: any[] = await paperclip.getComments(job.id).then((c: any) =>
+      Array.isArray(c) ? c : (c?.items ?? c?.comments ?? [])).catch(() => []);
+    const last = String(comments.at(-1)?.body ?? "").replace(/```[\s\S]*?```/g, "").replace(/\s+/g, " ").trim();
+    return `${head} Reading stopped (${job.identifier}, ${job.status})` +
+      `${last ? `: ${last.slice(0, 240)}` : ""}. Fix that, then Resume ${job.identifier} ` +
+      `in the console (http://127.0.0.1:3100/orch).${failedNote}`;
+  }
+  if (pending.some(d => d.state !== "failed")) {
+    startExtraction(project);
+    return `${head} ${job ? "Some documents arrived after the last reading finished" : "Reading had not started"}, ` +
+      `so it has started now — about a minute per document. Deploy works once it finishes.${failedNote}`;
+  }
+  return `${head}${failedNote} Replace or delete those documents, then Deploy again.`;
 }
 
 /**
