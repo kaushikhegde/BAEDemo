@@ -30,6 +30,7 @@ import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import type { UIMessage, StatusSnapshot } from "./types";
 import { postChat, postTrigger, getStatus, getRuns, approve, requestChanges, hasPreview, triggerUiBuild, triggerDataModel, triggerSolutionDesign, triggerCapabilityMap, triggerSolutionArchitecture, triggerTestCases, triggerPersonas, triggerUiMockups, extractBrand, saveProjectDefinition, postUiComment, createProject, createFeature, bootstrapProject, reviseArtefact, republishArtefact, fetchStaleness, listDocuments, deleteDocument, UNAUTHENTICATED_EVENT, getIssues, getProjectChat, clearProjectChat, type RunSummary, type OpsIssue } from "./api";
+import { proposalMessage, claimProposal, settleProposal } from "./lib/proposal";
 
 function buildGreeting(resuming: boolean): UIMessage {
   return {
@@ -973,23 +974,15 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Couldn't create it: ${e?.message ?? e}` }]);
         }
       } else if (toolUse?.name === "revise_artefact") {
-        const args = toolUse.input as any;
-        const proj = String(args?.project || targetProject || "").trim();
-        const feat = String(args?.feature || targetFeature || "").trim();
-        const artefact = String(args?.artefact || "").trim();
-        const instruction = String(args?.instruction || "").trim();
-        if (proj) setTargetProject(proj);
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Passing that to the specialist who owns the ${artefact}…` }]);
-        try {
-          const issue = await reviseArtefact(proj, artefact, instruction, feat || undefined);
-          setParentIssueId(issue.id);
-          setChipsKey((k) => k + 1);
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** raised. They'll revise it rather than regenerate it, and you'll get an approval gate with the change before anything is published. Live progress on the right →` }]);
-        } catch (e: any) {
-          const msg = e?.code === "not_generated"
-            ? `${e.message} Want me to generate it instead?`
-            : `Couldn't raise that change: ${e?.message ?? e}`;
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: msg }]);
+        // The model PROPOSES; the person commits. A revision is a fifteen-minute,
+        // dollar-and-a-half specialist run, and now that the chat answers
+        // questions a loose "yes, nice" is easy to misread as "change it".
+        const card = proposalMessage((toolUse.input ?? {}) as Record<string, unknown>, { project: targetProject, feature: targetFeature });
+        if ("error" in card) {
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: card.error }]);
+        } else {
+          setTargetProject(card.proposal!.project);
+          setMessages((m) => [...m, card]);
         }
       } else if (toolUse?.name === "republish_artefact") {
         const args = toolUse.input as any;
@@ -1211,6 +1204,38 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Hit an error: ${e?.message ?? e}` }]);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // A ref, not state: two clicks in the same frame both see the card as
+  // pending in `messages`, and only one of them may start a revision.
+  const claimedProposals = useRef(new Set<string>());
+
+  async function handleProposal(id: string, action: "start" | "cancel") {
+    if (claimedProposals.current.has(id)) return;
+    const claimed = claimProposal(messages, id);
+    if (!claimed) return;
+    claimedProposals.current.add(id);
+    if (action === "cancel") {
+      setMessages((m) => settleProposal(m, id, { state: "cancelled" }));
+      return;
+    }
+    const p = claimed.proposal;
+    setMessages(claimed.messages);
+    try {
+      const issue = await reviseArtefact(p.project, p.artefact, p.instruction, p.feature || undefined);
+      setParentIssueId(issue.id);
+      setChipsKey((k) => k + 1);
+      setRightTab("activity");
+      setMessages((m) => [
+        ...settleProposal(m, id, { state: "started", issue: issue.identifier }),
+        { id: crypto.randomUUID(), role: "assistant", text: `Issue **${issue.identifier}** raised. The specialist revises rather than regenerates, and you get an approval gate with the change before anything is published. Live progress on the right →` },
+      ]);
+    } catch (e: any) {
+      // Back to pending so the person can try again once the cause is fixed.
+      claimedProposals.current.delete(id);
+      const msg = e?.code === "not_generated" ? `${e.message} Want me to generate it instead?` : `Couldn't start that change: ${e?.message ?? e}`;
+      setMessages((m) => [...settleProposal(m, id, { state: "pending" }), { id: crypto.randomUUID(), role: "assistant", text: msg }]);
     }
   }
 
@@ -1534,7 +1559,7 @@ function AuthenticatedApp({ session, onLogout }: { session: LoginSession; onLogo
                 </div>
               </div>
             )}
-            {messages.map((m) => <MessageBubble key={m.id} m={m} />)}
+            {messages.map((m) => <MessageBubble key={m.id} m={m} onProposal={handleProposal} />)}
             {pendingApprovals.map((a) => (
               <ApprovalCard key={a.id} approval={a} project={targetProject} feature={targetFeature} onApprove={handleApprove} onRequestChanges={handleRequestChanges} />
             ))}

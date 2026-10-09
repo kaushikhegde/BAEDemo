@@ -1,6 +1,8 @@
 import { Check, PencilLine } from "lucide-react";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { LinksPanel } from "./LinksPanel";
+import { Button } from "@/components/ui/button";
+import { ARTEFACT_LABELS } from "../lib/proposal";
 import type { UIMessage } from "../types";
 
 function DecisionRecord({ m }: { m: UIMessage }) {
@@ -53,7 +55,40 @@ function DecisionRecord({ m }: { m: UIMessage }) {
   );
 }
 
-export function MessageBubble({ m }: { m: UIMessage }) {
+function ProposalCard({ m, onProposal }: { m: UIMessage; onProposal?: (id: string, action: "start" | "cancel") => void }) {
+  const p = m.proposal!;
+  const label = ARTEFACT_LABELS[p.artefact] ?? p.artefact;
+  const scope = p.feature && p.artefact !== "capabilities" && p.artefact !== "personas" ? `${p.project} / ${p.feature}` : p.project;
+  return (
+    <div className="flex justify-start gap-3 animate-slide-up">
+      <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-transparent" />
+      <div className="max-w-[88%] w-full min-w-0 rounded-lg border border-slate-200 bg-white/80 px-3 py-2.5">
+        <div className="text-[12px] font-semibold text-slate-600">
+          Change the {label} · <span className="font-normal">{scope}</span>
+        </div>
+        <div className="mt-1 border-l-2 border-slate-300 pl-2 text-[13.5px] italic text-slate-800 whitespace-pre-wrap">
+          “{p.instruction}”
+        </div>
+        <div className="mt-1.5 text-[12px] text-slate-500">
+          The specialist edits it (about 15 min, about $1.50), then you approve it before anything is published.
+        </div>
+        {p.state === "pending" ? (
+          <div className="mt-2.5 flex gap-2">
+            <Button size="sm" onClick={() => onProposal?.(m.id, "start")}>Start change</Button>
+            <Button size="sm" variant="outline" onClick={() => onProposal?.(m.id, "cancel")}>Cancel</Button>
+          </div>
+        ) : (
+          <div className="mt-2 text-[12px] font-medium text-slate-600">
+            {p.state === "starting" ? "Starting…" : p.state === "started" ? `Started${p.issue ? ` — ${p.issue}` : ""}` : "Cancelled"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({ m, onProposal }: { m: UIMessage; onProposal?: (id: string, action: "start" | "cancel") => void }) {
+  if (m.kind === "proposal" && m.proposal) return <ProposalCard m={m} onProposal={onProposal} />;
   if (m.kind === "decision" && m.decision) return <DecisionRecord m={m} />;
   if (m.kind === "links" && m.links) {
     return (

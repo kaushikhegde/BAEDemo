@@ -1,4 +1,4 @@
-export type MessageKind = "user" | "assistant" | "agent" | "decision" | "links";
+export type MessageKind = "user" | "assistant" | "agent" | "decision" | "links" | "proposal";
 
 export interface UIMessage {
   id: string;
@@ -25,6 +25,23 @@ export interface UIMessage {
    * transcript where they lose their connection to the run that produced them.
    */
   links?: { wiki: string[]; workItems: string[] };
+  /**
+   * Set on `kind: "proposal"` — a revision the assistant proposed and the
+   * person has not yet started. A revision is a fifteen-minute specialist run,
+   * so the model proposes and the person commits. Persisted with the
+   * transcript, so a card already started cannot be started again after a
+   * reload.
+   */
+  proposal?: RevisionProposal;
+}
+
+export interface RevisionProposal {
+  project: string;
+  feature?: string;
+  artefact: string;
+  instruction: string;
+  state: "pending" | "starting" | "started" | "cancelled";
+  issue?: string;
 }
 
 export interface IssueProgress {
