@@ -74,6 +74,13 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   > shared. The companion app's CSS is now a real file
   > (`scripts/companion/styles.css`), so the two could share tokens; until they
   > do, a palette change has to be made in both.
+- `scripts/migrate-blobs-to-local.mjs [--apply]` (`npm run migrate:blobs:local`) —
+  copies every document's bytes out of S3/LocalStack or Azure into the local
+  folder store and rewrites its `blob_path` to `local:…`, so the install no
+  longer needs Docker. A plan without `--apply`. Each row is rewritten only
+  after its bytes read back with the right hash, so a run killed halfway is
+  safe to re-run; the originals are left in place. The source store must be up
+  while it runs.
 - `scripts/migrate-to-project-level.mjs [<project>] [--apply] [--force]` — one-shot
   migration for a project created before the restructure. See
   [`operations.md`](operations.md) § Migrating a project created before the restructure.

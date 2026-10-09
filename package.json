@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Local orchestration for the Scyne requirements generator stack. Runs on @scyne/orchestrator (packages/orchestrator) — no Paperclip.",
   "scripts": {
+    "start": "npm run setup && npm run -s link-skills > /dev/null && npm run dev",
     "setup": "npm install && npm --prefix packages/orchestrator install && npm --prefix scyne-chatbot install",
     "chatbot": "cd scyne-chatbot && npm run dev",
     "link-skills": "mkdir -p .claude/skills && for s in skills/*/; do n=$(basename \"$s\"); rm -rf \".claude/skills/$n\"; ln -s \"../../skills/$n\" \".claude/skills/$n\"; done && ls -l .claude/skills",
@@ -26,6 +27,7 @@
     "sync:docs": "node scripts/sync-documents.mjs",
     "backfill:ado": "node scripts/backfill-ado-target.mjs",
     "migrate:blobs": "./packages/orchestrator/node_modules/.bin/tsx scripts/migrate-blobs-to-azure.mjs",
+    "migrate:blobs:local": "./packages/orchestrator/node_modules/.bin/tsx scripts/migrate-blobs-to-local.mjs",
     "scyne": "node cli/index.ts",
     "test:cli": "node --test \"cli/*.test.ts\"",
     "test:scripts": "node --test \"scripts/lib/*.test.mjs\" \"test/**/*.test.mjs\"",

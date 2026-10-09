@@ -268,8 +268,9 @@ into the database on **every** boot, so the file cannot drift from what runs.
 - **Cost has two columns and they are never merged**: `runs.cost_usd` (what the
   CLI reported) and `runs.est_cost_usd` (ours). **`CODEX_MODEL` must be set** or
   every Codex run shows `—`.
-- **Storage** is Postgres for metadata, Azure Blob for document bytes. Disk is a
-  scratch surface, one tree per step, deleted after it.
+- **Storage** is Postgres for metadata; document bytes go where
+  `SCYNE_DOCUMENT_STORE` says — `local` (a folder, no Docker), `s3` or `azure`.
+  Step working trees are scratch, one per step, deleted after it.
 
 → [`docs/configuration.md`](docs/configuration.md).
 

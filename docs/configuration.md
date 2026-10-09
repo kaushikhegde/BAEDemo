@@ -130,11 +130,30 @@ rate you corrected.
 > `applied: 1` — the whole feature, inert. The sanity ceiling was reading the
 > same absent key, so it was not checking those rows either.
 
-**Storage** is Postgres for metadata and **Azure Blob Storage for every byte of
+**Storage** is Postgres for metadata and a **byte store for every byte of
 document content**, addressed by SHA-256. Raw run logs stay as JSONL at
 `.orchestrator/runs/<issueId>-<stepIndex>.jsonl`.
 
-> **No document content lives in the database, and none lives durably on disk.**
+The byte store is one of three, chosen by **`SCYNE_DOCUMENT_STORE`**
+(`storage/blobs.ts`):
+
+| Value | Where | Needs |
+|---|---|---|
+| `local` | `.orchestrator/blobs/` (or `SCYNE_BLOB_DIR`) | nothing — the default when no object store is configured |
+| `s3` | S3, or LocalStack in Docker | `SCYNE_S3_DOCUMENTS_BUCKET` (+ `SCYNE_S3_ENDPOINT` for LocalStack) |
+| `azure` | Azure Blob, or Azurite | `AZURE_STORAGE_CONNECTION_STRING` |
+
+The switch picks where **writes** go. Reads span every store — the local folder
+always, the others when configured — because each locator names its owner
+(`local:`, `s3:`, `azure:`), so flipping the switch never strands a document.
+Naming a store that is not configured is refused at boot.
+
+LocalStack's free image keeps nothing across a container restart; the local
+folder does. `npm run migrate:blobs:local -- --apply` copies an install's
+documents out of S3 or Azure into the folder.
+
+> **No document content lives in the database.** Outside the `local` store,
+> none lives durably on disk either.
 > `blobs.content` (bytea) was dropped by migration 011; `blobs` is now metadata
 > ABOUT content it does not hold — the hash that names it, its size, its type,
 > and `blob_path`, the locator saying where the bytes actually are.

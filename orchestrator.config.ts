@@ -203,29 +203,20 @@ export default defineOrchestrator({
     ? { driver: "external", url: process.env.DATABASE_URL }
     : { driver: "pglite", dir: ".orchestrator/pgdata" },
 
-  // Where document BYTES live. S3 for the Claude stack, Azure Blob for the
-  // Codex stack, both at once when both are configured — reads span every
-  // configured store because a locator names its owner, writes go to one.
-  // Undefined when neither is set, which is in-memory and does not survive
-  // the process.
+  // Where document BYTES live: a local folder, S3 (LocalStack in Docker, or
+  // real AWS) or Azure Blob. `SCYNE_DOCUMENT_STORE` picks which one takes
+  // writes; reads span every configured store because a locator names its
+  // owner, so switching never strands a document. Nothing configured means
+  // the local folder `.orchestrator/blobs`, which survives a restart.
   //
-  // Absent is the safe default: an install that has not migrated its blobs
-  // keeps working exactly as before, and setting this is the one step that
-  // changes where content is read from. Run `npm run migrate:blobs -- --apply`
-  // FIRST on an install that already holds documents, or every existing
-  // document reads back as absent.
+  // `npm run migrate:blobs:local -- --apply` copies documents an install
+  // already holds in S3 or Azure into the folder, so the container can go.
   blobs,
 
-  // A scratch tree per STEP, materialised out of the store and harvested back,
-  // when bytes live in object storage. Disk is then working space rather than
-  // the record: nothing survives a step, so a replica dying mid-run leaves
-  // nothing orphaned.
-  //
-  // Off when blobs are still in Postgres — that install's tree on disk IS the
-  // working copy and there is nothing to pull it from.
-  workspaces: blobs
-    ? ((db) => scratchWorkspaces({ db, installRoot, blobs }))
-    : undefined,
+  // A scratch tree per STEP, materialised out of the store and harvested back.
+  // Disk is then working space rather than the record: nothing survives a
+  // step, so a replica dying mid-run leaves nothing orphaned.
+  workspaces: (db) => scratchWorkspaces({ db, installRoot, blobs }),
 
   // The SOURCE of truth, not `.claude/skills` — that is a directory of symlinks
   // pointing here, so editing this is what the team maintains and what

@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { selectBlobBackend, compositeBlobBackend, describeBlobConfig } from "./blobs.js";
 import { blobNameFor } from "./blob-name.js";
 import type { BlobBackend } from "../packages/orchestrator/src/index.js";
@@ -30,8 +33,39 @@ const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 
 describe("blob backend selection — env-separated, both usable at once", () => {
-  it("picks nothing when neither store is configured", async () => {
-    expect(await selectBlobBackend({})).toBeUndefined();
+  it("falls back to a local folder when no object store is configured", async () => {
+    // No Docker, no cloud account: the bytes go to a folder, which survives a
+    // restart — unlike the in-memory backend the orchestrator refuses.
+    const dir = mkdtempSync(join(tmpdir(), "scyne-blobs-"));
+    const b = await selectBlobBackend({ SCYNE_INSTALL_ROOT: dir });
+    const loc = await b!.write(SHA_A, Buffer.from("x"), null);
+    expect(loc.startsWith("local:")).toBe(true);
+    expect(existsSync(join(dir, ".orchestrator", "blobs", blobNameFor(SHA_A)))).toBe(true);
+    expect(describeBlobConfig({})).toBe("local");
+  });
+
+  it("SCYNE_DOCUMENT_STORE is the one switch between local and S3", async () => {
+    // S3 stays configured; flipping one variable moves writes to the folder.
+    const dir = mkdtempSync(join(tmpdir(), "scyne-blobs-"));
+    const env = { SCYNE_S3_DOCUMENTS_BUCKET: "docs", SCYNE_BLOB_DIR: dir, SCYNE_DOCUMENT_STORE: "local" };
+    const b = await selectBlobBackend(env);
+    const loc = await b.write(SHA_A, Buffer.from("x"), null);
+    expect(loc).toBe(`local:${blobNameFor(SHA_A)}`);
+    expect(describeBlobConfig(env)).toBe("local + s3, writing to local (set SCYNE_DOCUMENT_STORE to change)");
+    expect(describeBlobConfig({ ...env, SCYNE_DOCUMENT_STORE: "s3" })).toBe("s3");
+  });
+
+  it("still reads the local folder after switching back to S3", async () => {
+    // Nothing written under one setting is stranded by the other.
+    const dir = mkdtempSync(join(tmpdir(), "scyne-blobs-"));
+    const loc = await (await selectBlobBackend({ SCYNE_BLOB_DIR: dir })).write(SHA_B, Buffer.from("kept"), null);
+    const s3Mode = await selectBlobBackend({ SCYNE_S3_DOCUMENTS_BUCKET: "docs", SCYNE_BLOB_DIR: dir });
+    expect((await s3Mode.read(loc))?.toString()).toBe("kept");
+  });
+
+  it("refuses a store that is named but not configured", async () => {
+    await expect(selectBlobBackend({ SCYNE_DOCUMENT_STORE: "s3" })).rejects.toThrow(/SCYNE_S3_DOCUMENTS_BUCKET/);
+    await expect(selectBlobBackend({ SCYNE_DOCUMENT_STORE: "docker" })).rejects.toThrow(/local, s3 or azure/);
   });
 
   it("picks S3 alone for a Claude install", async () => {

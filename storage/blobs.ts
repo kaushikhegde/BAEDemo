@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import type { BlobBackend } from "../packages/orchestrator/src/index.js";
+import { localBlobBackend } from "./local-blobs.js";
 
 /**
  * Which object store the orchestrator keeps document bytes in.
@@ -8,7 +10,12 @@ import type { BlobBackend } from "../packages/orchestrator/src/index.js";
  *   Claude  -> AWS S3        + Jira / Confluence
  *   Codex   -> Azure Blob    + Azure DevOps
  *
- * so this is NOT an either/or. Both may be configured at once — both plugins
+ * and a third store needs neither: a LOCAL folder, for a machine with no
+ * Docker and no cloud account. `SCYNE_DOCUMENT_STORE` (local | s3 | azure)
+ * is the one switch between them; unset, it is S3 or Azure when one is
+ * configured and the local folder otherwise.
+ *
+ * So this is NOT an either/or. Both may be configured at once — both plugins
  * are meant to be usable at the same time — and when they are, the composite
  * below reads from whichever store actually holds a given blob.
  *
@@ -26,25 +33,49 @@ import type { BlobBackend } from "../packages/orchestrator/src/index.js";
 
 export type BlobEnv = Record<string, string | undefined>;
 
-/** Where new bytes go when BOTH stores are configured. Reads still span both. */
-const writeTarget = (env: BlobEnv, hasS3: boolean, hasAzure: boolean): "s3" | "azure" => {
-  const explicit = env.SCYNE_BLOB_WRITE?.trim().toLowerCase();
-  if (explicit === "s3" || explicit === "azure") return explicit;
-  // No explicit choice and both present: S3 wins, because the Claude stack is
-  // the one this repo's default plugin drives. Announced in the log rather
-  // than silent — a person who configured both and expected the other should
-  // find out from a line at boot, not from a blob in the wrong bucket.
-  return hasS3 ? "s3" : "azure";
+type Store = "local" | "s3" | "azure";
+const STORES: Store[] = ["local", "s3", "azure"];
+
+const objectStores = (env: BlobEnv): Store[] => [
+  ...(env.SCYNE_S3_DOCUMENTS_BUCKET ? ["s3" as const] : []),
+  ...(env.AZURE_STORAGE_CONNECTION_STRING ? ["azure" as const] : []),
+];
+
+/**
+ * Where new bytes go. Reads span every store, so flipping this never strands a
+ * document written under the other setting.
+ *
+ * `SCYNE_BLOB_WRITE` is the older name for the same switch and still honoured.
+ * Unset: S3 when configured — the store this repo's default plugin drives —
+ * then Azure, then the local folder. A named store that is not configured is
+ * refused at boot rather than quietly swapped for another one.
+ */
+const writeTarget = (env: BlobEnv): Store => {
+  const named = (env.SCYNE_DOCUMENT_STORE ?? env.SCYNE_BLOB_WRITE)?.trim().toLowerCase();
+  const have = objectStores(env);
+  if (!named) return have[0] ?? "local";
+  if (!STORES.includes(named as Store)) {
+    throw new Error(`SCYNE_DOCUMENT_STORE must be local, s3 or azure — got ${JSON.stringify(named)}`);
+  }
+  if (named !== "local" && !have.includes(named as Store)) {
+    throw new Error(named === "s3"
+      ? "SCYNE_DOCUMENT_STORE=s3 but SCYNE_S3_DOCUMENTS_BUCKET is not set"
+      : "SCYNE_DOCUMENT_STORE=azure but AZURE_STORAGE_CONNECTION_STRING is not set");
+  }
+  return named as Store;
 };
 
+/** The local store's folder. Relative paths are taken from the install root. */
+export const localBlobDir = (env: BlobEnv = process.env): string =>
+  resolve(env.SCYNE_INSTALL_ROOT ?? process.cwd(), env.SCYNE_BLOB_DIR ?? ".orchestrator/blobs");
+
 export const describeBlobConfig = (env: BlobEnv = process.env): string => {
-  const hasS3 = Boolean(env.SCYNE_S3_DOCUMENTS_BUCKET);
-  const hasAzure = Boolean(env.AZURE_STORAGE_CONNECTION_STRING);
-  if (!hasS3 && !hasAzure) return "none (documents have nowhere to live)";
-  if (hasS3 && hasAzure) {
-    return `s3 + azure, writing to ${writeTarget(env, true, true)} (set SCYNE_BLOB_WRITE to change)`;
-  }
-  return hasS3 ? "s3" : "azure";
+  const target = writeTarget(env);
+  // The local folder is always readable, but only worth naming once it is in
+  // use — an S3 install should read "s3" at boot, not a list.
+  const stores = target === "local" ? ["local", ...objectStores(env)] : objectStores(env);
+  if (stores.length === 1) return stores[0];
+  return `${stores.join(" + ")}, writing to ${target} (set SCYNE_DOCUMENT_STORE to change)`;
 };
 
 /**
@@ -100,10 +131,15 @@ const emulatorCredentials = (env: BlobEnv) => {
 
 export const selectBlobBackend = async (
   env: BlobEnv = process.env,
-): Promise<BlobBackend | undefined> => {
+): Promise<BlobBackend> => {
+  const target = writeTarget(env);
   const bucket = env.SCYNE_S3_DOCUMENTS_BUCKET;
   const conn = env.AZURE_STORAGE_CONNECTION_STRING;
-  if (!bucket && !conn) return undefined;
+
+  // Always present as a reader, whatever takes writes: it costs nothing until a
+  // `local:` locator is asked for, and it is what lets an install switch to S3
+  // and back without losing the documents written in between.
+  const local = localBlobBackend({ dir: localBlobDir(env) });
 
   const s3 = bucket
     ? (await import("./s3-blobs.js")).s3BlobBackend({
@@ -129,9 +165,7 @@ export const selectBlobBackend = async (
       })
     : null;
 
-  if (s3 && !azure) return s3;
-  if (azure && !s3) return azure;
-
-  const primary = writeTarget(env, true, true) === "s3" ? s3! : azure!;
-  return compositeBlobBackend(primary, [s3!, azure!]);
+  const primary = { local, s3, azure }[target]!;
+  const all = [local, s3, azure].filter((b): b is BlobBackend => b !== null);
+  return compositeBlobBackend(primary, all);
 };
