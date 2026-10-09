@@ -198,10 +198,40 @@ The LLM's pipeline tools (plus `control_dev_server` / `comment_on_ui_build` for 
   at a prompt is not consent to change what every later stage reads. There is
   deliberately no replace tool: a replacement needs a file from the user's own
   machine, so the prompt points at the Docs tab or `/replace <path> <file>`.
+- `read_artefact` — reads an artefact that already exists, so the bot can answer
+  a question about it. See below; it is the one tool the server runs.
+- `revise_artefact` — a change to an artefact that already exists. It no longer
+  starts a run: the browser shows a card with the artefact, the instruction in
+  quotes, and **Start change** / **Cancel** (`src/lib/proposal.ts`,
+  `MessageBubble.tsx`). Only a `pending` card can be started, so a double click
+  or a reload never starts the same revision twice.
 - `save_project_definition` — writes `projects/<project>/description.md` from the user's own words. The system prompt lists which projects have one and which do not, and tells the bot to ask once — never to block a run on it.
 - `trigger_ui_build` — fires the UI flow (creates a `Build UI — …` issue assigned to the Delivery Lead). The Developer + UX Auditor chain runs from there.
 
 The system prompt teaches the dependency chain (requirements → data model → solution design) so the bot proactively explains and offers the missing prerequisite rather than firing a stage that would just block.
+
+#### Questions about generated artefacts — `read_artefact`
+
+Every other tool is one-way: the model names it, the browser runs it, and the
+result never returns to the model. A question about an artefact needs the result
+back, so `chat()` runs `read_artefact` itself (`server/read-loop.ts`), sends the
+file back as a function response, and returns only the final turn. At most three
+rounds; at the limit the pending calls are answered with `state: "limit"`,
+because Gemini rejects plain text after an unanswered function call.
+
+`server/artefact-reader.ts` maps each artefact to a fixed list of files (the
+`.md` rendering where one exists), refuses any project not in
+`store.available(token)` and any feature that project does not have, and caps
+the content at 200 KB. The model never supplies a path.
+
+The turns go through `generateContent` over a list `chat()` keeps, not a
+`ChatSession`: a session whose `sendMessage` once threw keeps that rejection
+and rethrows it on every later send, so a retried 503 on the second round
+would never succeed.
+
+File contents are not kept in the chat history, so a follow-up question reads
+the file again. That keeps every later turn small, which matters: long prompts
+are what cause Gemini's empty turns (see `llm.ts`).
 
 ### Frontend layout
 

@@ -196,7 +196,8 @@ The prompt instructs a discovery flow:
 | `trigger_solution_architecture` | feature | SAD / HLD / target architecture. **Not `trigger_solution_design`.** |
 | `trigger_test_cases` | feature | Test pack / UAT / traceability matrix. |
 | `trigger_solution_design` | feature | The optional SDD. `409 no_data_model`. Offered only when asked for by name. |
-| `revise_artefact` | either | **Any change to something already generated.** The instruction goes through verbatim. |
+| `read_artefact` | either | **Any question about something already generated.** The one tool the SERVER runs: `chat()` reads the file and hands it back to the model before it answers (`server/read-loop.ts`, `server/artefact-reader.ts`). |
+| `revise_artefact` | either | **Any change to something already generated.** The instruction goes through verbatim. The browser shows a **Start change** card; nothing runs until it is clicked. |
 | `list_documents` | either | "What documents have we got", "did my upload land". Reads DISK, which is what the stages read — so it is also the honest answer to a `no_documents` refusal. |
 | `delete_document` | either | Removes one document and its archived original. The model PROPOSES; **both surfaces confirm with the person before anything goes** — a loose sentence is not consent to change what every later stage reads. No replace tool: that needs a file from the user's machine, so the prompt points at the Docs tab or `/replace`. |
 | `trigger_ui_build` | project | The companion app page. |
@@ -215,7 +216,7 @@ If you want the bot to invoke a new server action (say, `cancel_workflow`), the 
 3. Add a handler in `App.tsx` (inside the `if (toolUse?.name === ...)` branch) that POSTs to the matching new endpoint.
 4. Add the endpoint in `server/index.ts`.
 
-Don't try to inline the tool's result into the same chat turn — the LLM doesn't get a second pass currently. Surface the result as a visible assistant message in the UI thread.
+An ACTION tool's result is not fed back to the model — surface it as a visible assistant message in the UI thread. The one exception is `read_artefact`, which the server runs inside `chat()` so the model can answer from the file; a new read-only tool the model needs to SEE belongs in that loop, not in `App.tsx`.
 
 ## Live audio (RecordMeetingPanel)
 
