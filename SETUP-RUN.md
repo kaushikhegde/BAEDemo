@@ -13,11 +13,13 @@ Codex spend, Azure DevOps publishing, and the standalone CLI.
 ## 0. Once per clone
 
 ```bash
-npm run setup          # root, packages/orchestrator and scyne-chatbot
-npm run link-skills    # .claude/ is gitignored — a fresh clone always needs this
+npm run setup          # packages, skills, a local .env, and the first login
 ```
 
-Without `link-skills`, every agent run dies with `Unknown skill: <slug>`.
+It installs root, `packages/orchestrator` and `scyne-chatbot`, runs
+`npm run link-skills` (`.claude/` is gitignored — without it every agent run
+dies with `Unknown skill: <slug>`), writes `.env` if there is none, and claims
+the installation on a fresh database.
 
 ## 1. Start from a clean database
 

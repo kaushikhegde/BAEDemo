@@ -63,6 +63,7 @@ do the work — it posts a **workflow** to **`@scyne/orchestrator`**
 Claude Code. A workflow names its own assignee, so there is no routing layer.
 
 ```bash
+npm run setup        # once per clone: packages, skills, a local .env, first login
 npm run dev          # orchestrator on :3100 (console at /orch), chatbot on :5173
 ```
 

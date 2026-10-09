@@ -5,8 +5,7 @@
   "type": "module",
   "description": "Local orchestration for the Scyne requirements generator stack. Runs on @scyne/orchestrator (packages/orchestrator) — no Paperclip.",
   "scripts": {
-    "start": "npm run setup && npm run -s link-skills > /dev/null && npm run dev",
-    "setup": "npm install && npm --prefix packages/orchestrator install && npm --prefix scyne-chatbot install",
+    "setup": "node scripts/setup.mjs",
     "chatbot": "cd scyne-chatbot && npm run dev",
     "link-skills": "mkdir -p .claude/skills && for s in skills/*/; do n=$(basename \"$s\"); rm -rf \".claude/skills/$n\"; ln -s \"../../skills/$n\" \".claude/skills/$n\"; done && ls -l .claude/skills",
     "stage": "node scripts/stage.mjs",

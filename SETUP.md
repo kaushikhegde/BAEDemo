@@ -8,6 +8,27 @@ machine except where marked **unverified**.
 
 ---
 
+## New machine — two commands
+
+You need **Node 24**, **Claude Code** installed and signed in once
+(`npm install -g @anthropic-ai/claude-code`, then `claude`), and a **Gemini API
+key** for the chat. No Docker, no Postgres.
+
+```bash
+npm run setup     # once: packages, skills, .env, and your admin login
+npm run dev       # every time
+```
+
+Then open `http://localhost:5173` and sign in with the login setup created.
+
+Setup writes a `.env` that keeps everything on this machine: the built-in
+database (`.orchestrator/pgdata`), documents in a folder
+(`.orchestrator/blobs`, `SCYNE_DOCUMENT_STORE=local`) and publishing off
+(`PUBLISH_TARGET=none`). It is safe to re-run; an existing `.env` is kept.
+Back up `.orchestrator/` to back up everything.
+
+---
+
 ## The four pieces
 
 Knowing which is which makes the rest of this readable.

@@ -74,6 +74,14 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   > shared. The companion app's CSS is now a real file
   > (`scripts/companion/styles.css`), so the two could share tokens; until they
   > do, a palette change has to be made in both.
+- `scripts/setup.mjs` (`npm run setup`) — one-time setup for a fresh clone:
+  checks Node ≥ 22.18 and the `claude` CLI, installs the three package trees,
+  runs `link-skills`, writes a local-only `.env` if there is none (Claude
+  agents, built-in database, `SCYNE_DOCUMENT_STORE=local`, `PUBLISH_TARGET=none`)
+  and creates the first login through `/auth/bootstrap` on a temporary
+  orchestrator. Refuses while port 3100 is in use, because a second server on
+  the same database would mark the running one's in-flight runs orphaned.
+  Imports only Node built-ins at the top — it runs before `npm install`.
 - `scripts/migrate-blobs-to-local.mjs [--apply]` (`npm run migrate:blobs:local`) —
   copies every document's bytes out of S3/LocalStack or Azure into the local
   folder store and rewrites its `blob_path` to `local:…`, so the install no
