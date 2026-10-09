@@ -79,8 +79,9 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   runs `link-skills`, writes a local-only `.env` if there is none (Claude
   agents, built-in database, `SCYNE_DOCUMENT_STORE=local`, `PUBLISH_TARGET=none`)
   and creates the first login through `/auth/bootstrap` on a temporary
-  orchestrator. Refuses while port 3100 is in use, because a second server on
-  the same database would mark the running one's in-flight runs orphaned.
+  orchestrator — only on a fresh install (no `.orchestrator/pgdata`, no
+  `DATABASE_URL`), because `/auth/bootstrap` makes the FIRST account only and a
+  second server on an existing database would re-fire its unfinished runs.
   Imports only Node built-ins at the top — it runs before `npm install`.
 - `scripts/migrate-blobs-to-local.mjs [--apply]` (`npm run migrate:blobs:local`) —
   copies every document's bytes out of S3/LocalStack or Azure into the local

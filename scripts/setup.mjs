@@ -60,13 +60,6 @@ if (claude.status !== 0) {
 }
 ok(`Claude Code ${claude.stdout.trim()} — make sure you have signed in once by running \`claude\``);
 
-// Setup boots the orchestrator briefly to create the first login. A running
-// stack would either hold the built-in database's lock or, on Postgres, have
-// its in-flight runs marked orphaned by the second process's startup.
-if (await portInUse(3100)) {
-  stop("Something is already running on port 3100 — probably `npm run dev`. Stop it (Ctrl+C) and run setup again.");
-}
-
 // ─── 2. Packages ────────────────────────────────────────────────────────────
 step(2, "Installing packages (the first time takes a few minutes)");
 for (const dir of [".", "packages/orchestrator", "scyne-chatbot"]) {
@@ -102,20 +95,21 @@ if (existsSync(envFile)) {
 }
 
 // ─── 5. First login ─────────────────────────────────────────────────────────
-step(5, "Creating the admin login");
+step(5, "Admin login");
 let admin = null;
-// The built-in database lives in .orchestrator/pgdata. Neither that nor a
-// DATABASE_URL means nothing has ever been set up here, so there is certainly
-// no login yet. Otherwise there probably is one, and booting the server just to
-// be told so is not worth it — the person can say.
+// Only a brand-new install can have its first login made here:
+// `/auth/bootstrap` refuses the moment any account exists. Neither a built-in
+// database (.orchestrator/pgdata) nor a DATABASE_URL means nothing has been set
+// up yet. Otherwise the install already has its logins, and booting a second
+// orchestrator against its database would re-fire its unfinished runs — so it
+// is left alone unless `--email` asks otherwise.
 loadEnvFile(envFile);
 const fresh = !process.env.DATABASE_URL && !existsSync(path.join(ROOT, ".orchestrator/pgdata"));
-const wanted = flag("email") ? true
-  : fresh ? true
-  : /^y/i.test(await prompt("  This install already has a database. Create a new admin login anyway? (y/N) "));
 
-if (!wanted) {
-  ok("skipped — sign in with the login you already have");
+if (!fresh && !flag("email")) {
+  ok("this install is already set up — sign in with the login you already have");
+  console.log("    To add a person: the console's Users tab, or, while `npm run dev` runs:\n" +
+              "    npm run scyne -- user create <email>");
 } else {
   const email = flag("email") ?? await prompt("  Admin email: ");
   if (!email) {
@@ -123,6 +117,12 @@ if (!wanted) {
   } else {
     const password = flag("password") ?? await prompt("  Admin password: ", { silent: true });
     if (!password) stop("a password is required");
+    // A running stack on an existing database would hold the built-in
+    // database's lock or, on Postgres, have its in-flight runs marked orphaned
+    // by the second server's startup. A fresh install has nothing running.
+    if (!fresh && await portInUse(3100)) {
+      stop("`npm run dev` is running. Stop it (Ctrl+C), run setup again, then start it.");
+    }
     admin = await claim(email, password, flag("name"));
   }
 }
@@ -176,7 +176,8 @@ async function claim(email, password, name) {
     });
     const body = await res.json().catch(() => ({}));
     if (res.status === 403) {
-      ok("this install already has an admin — sign in with that login");
+      // Not saved: an install has exactly one first login, made once.
+      ok("not created — this install already has its admin. Sign in with that login");
       return null;
     }
     if (!res.ok) stop(`could not create the login: ${body.error ?? res.status}`);
