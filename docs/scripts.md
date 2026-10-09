@@ -78,7 +78,10 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   checks Node ≥ 22.18 and the `claude` CLI, installs the three package trees,
   runs `link-skills`, writes a local-only `.env` if there is none (Claude
   agents, built-in database, `SCYNE_DOCUMENT_STORE=local`, `PUBLISH_TARGET=none`)
-  and creates the first login through `/auth/bootstrap`. It asks
+  creates the first login through `/auth/bootstrap`, and saves
+  `SCYNE_ORCH_TOKEN` to `.env` — the key `extract-documents.mjs` uses to post
+  its per-document progress and run rows (without it extraction still works,
+  but nothing moves on screen until it is all done). It asks
   `GET /auth/status` first, so a claimed install is told so rather than asked
   for a login `/auth/bootstrap` would refuse. It talks to the `npm run dev`
   already on :3100 when there is one — a second server on the same database

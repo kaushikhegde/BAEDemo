@@ -21,6 +21,8 @@ npm run dev       # every time
 
 Then open `http://localhost:5173` and sign in with the login setup created.
 
+Setup also saves `SCYNE_ORCH_TOKEN`, the key background jobs use to report
+progress — without it, document reading shows nothing until it has finished.
 Setup writes a `.env` that keeps everything on this machine: the built-in
 database (`.orchestrator/pgdata`), documents in a folder
 (`.orchestrator/blobs`, `SCYNE_DOCUMENT_STORE=local`) and publishing off

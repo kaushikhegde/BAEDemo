@@ -19,7 +19,7 @@
  * so a dependency imported here would not exist yet.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,45 +94,65 @@ if (existsSync(envFile)) {
   ok(gemini ? ".env written" : ".env written — add GEMINI_API_KEY to it before using the chat");
 }
 
-// ─── 5. First login ─────────────────────────────────────────────────────────
+// ─── 5. First login, and the key background jobs use ───────────────────────
 step(5, "Admin login");
 loadEnvFile(envFile);
-// Asked of the server rather than guessed from what is on disk: an install
-// whose `npm run dev` ran before setup has a database and still no login.
-// `/auth/bootstrap` makes the FIRST account only, so a claimed install is told
-// so instead of being asked for a login that could never be saved.
-const admin = await withServer(async (base, running) => {
+const { admin, restart } = await withServer(async (base, running) => {
+  let admin = null;
+  let session = null;
+
+  // Asked of the server rather than guessed from what is on disk: an install
+  // whose `npm run dev` ran before setup has a database and still no login.
+  // `/auth/bootstrap` makes the FIRST account only, so a claimed install is
+  // told so instead of being asked for a login that could never be saved.
   // Null from a server started before `/auth/status` existed — a `npm run dev`
-  // left running across a pull. Then the bootstrap's own 403 says the same.
+  // left running across a pull — and then the bootstrap's own 403 says it.
   const status = await fetch(`${base}/auth/status`)
     .then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (status?.claimed) {
     ok("this install already has its admin — sign in with that login");
     console.log("    To add a person: the console's Users tab, or, while `npm run dev` runs:\n" +
                 "    npm run scyne -- user create <email>");
-    return null;
+  } else {
+    const { email, password } = await credentials("Admin email: ", "Admin password: ");
+    if (email) {
+      const res = await post(`${base}/auth/bootstrap`, { email, password, name: flag("name") });
+      if (res.status === 403) {
+        ok("not created — this install already has its admin. Sign in with that login");
+      } else if (!res.ok) {
+        stop(`could not create the login: ${res.body.error ?? res.status}`);
+      } else {
+        admin = res.body.user?.email ?? email;
+        session = res.body.token;
+        ok(`admin login created for ${admin}${running ? " (on your running `npm run dev`)" : ""}`);
+      }
+    } else {
+      ok("skipped — run setup again to create it");
+    }
   }
-  const email = flag("email") ?? await prompt("  Admin email: ");
-  if (!email) {
-    ok("skipped — run setup again (or `npm run scyne -- init` while `npm run dev` runs) to create it");
-    return null;
-  }
-  const password = flag("password") ?? await prompt("  Admin password: ", { silent: true });
-  if (!password) stop("a password is required");
 
-  const res = await fetch(`${base}/auth/bootstrap`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password, name: flag("name") }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 403) {
-    ok("not created — this install already has its admin. Sign in with that login");
-    return null;
+  // Document extraction runs as a background step and reports its progress —
+  // one comment and one run row per document — through the orchestrator's API,
+  // which needs a key. Without one the work still happens but nothing moves on
+  // screen until all of it is done, which reads as stuck.
+  if (process.env.SCYNE_ORCH_TOKEN) return { admin, restart: false };
+  if (!session) {
+    console.log("  Background jobs need a key to report their progress. Sign in once to make it:");
+    const { email, password } = await credentials("Email: ", "Password: ");
+    if (!email) {
+      ok("skipped — run setup again to add it; extraction will show no progress until then");
+      return { admin, restart: false };
+    }
+    const res = await post(`${base}/auth/login`, { email, password });
+    if (!res.ok) stop(`could not sign in: ${res.body.error ?? res.status}`);
+    session = res.body.token;
   }
-  if (!res.ok) stop(`could not create the login: ${body.error ?? res.status}`);
-  ok(`admin login created for ${body.user?.email ?? email}${running ? " (on your running `npm run dev`)" : ""}`);
-  return body.user?.email ?? email;
+  const minted = await post(`${base}/auth/tokens`, { name: "background jobs (setup)" }, session);
+  if (!minted.ok || !minted.body.token) stop(`could not create the key: ${minted.body.error ?? minted.status}`);
+  setEnvVar(envFile, "SCYNE_ORCH_TOKEN", minted.body.token,
+    "# Lets background jobs (document extraction) report progress. Made by `npm run setup`.");
+  ok("progress key saved to .env");
+  return { admin, restart: running };
 });
 
 console.log(`
@@ -141,7 +161,7 @@ console.log(`
   Start Scyne (every time):   npm run dev
   Then open:                  http://localhost:5173${admin ? `   — sign in as ${admin}` : ""}
   Operator console:           http://127.0.0.1:3100/orch
-`);
+${restart ? "\n  `npm run dev` is running: stop it (Ctrl+C) and start it again so it reads the new .env.\n" : ""}`);
 // A prompt leaves stdin open, which would keep the process alive.
 process.exit(0);
 
@@ -215,6 +235,35 @@ PUBLISH_TARGET=none
 # The chat's model.
 GEMINI_API_KEY=${gemini ?? ""}
 `;
+}
+
+/** Ask for an email, then — only if one was given — a password. Flags win. */
+async function credentials(emailLabel, passwordLabel) {
+  const email = flag("email") ?? await prompt(`  ${emailLabel}`);
+  if (!email) return { email: "", password: "" };
+  const password = flag("password") ?? await prompt(`  ${passwordLabel}`, { silent: true });
+  if (!password) stop("a password is required");
+  return { email, password };
+}
+
+async function post(url, body, token) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+/** Set one variable in .env: replace its line (commented or not), else append. */
+function setEnvVar(file, name, value, comment) {
+  const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const line = new RegExp(`^#?\\s*${name}=.*$`, "m");
+  const next = line.test(text)
+    ? text.replace(line, `${name}=${value}`)
+    : `${text.replace(/\n*$/, "\n")}\n${comment}\n${name}=${value}\n`;
+  writeFileSync(file, next, { mode: 0o600 });
+  process.env[name] = value;
 }
 
 function loadEnvFile(file) {
