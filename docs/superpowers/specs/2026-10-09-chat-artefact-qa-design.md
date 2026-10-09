@@ -39,7 +39,7 @@ then answer from it.
 ### 1. `server/artefact-reader.ts` (new)
 
 `readArtefact({ project, feature, artefact })` returns
-`{ state: "ok", file, content, truncated } | { state: "not_generated", file } | { state: "invalid", reason }`.
+`{ state: "ok", files, content, truncated } | { state: "not_generated", files } | { state: "invalid", reason }`.
 
 The artefact maps to one readable file:
 
@@ -74,8 +74,9 @@ content in a form the model reads more reliably, at about half the size.
   `artefact`.
 - After each model turn, if the only tool calls are `read_artefact`, run them
   on the server and send the results back as `functionResponse` parts on the
-  same chat session. Repeat at most 3 rounds, then send one more turn telling
-  the model to answer with what it has.
+  same chat session. Repeat at most 3 rounds. At the limit, answer the pending
+  calls with a `state: "limit"` function response telling the model to answer
+  now, because Gemini rejects plain text after an unanswered function call.
 - A turn whose tool calls are all `read_artefact` continues the loop; any text
   in that turn is discarded, because the answer comes after the read.
 - A turn with any other tool call (trigger, revise, delete, and so on) ends the
