@@ -75,7 +75,9 @@ Split out of `CLAUDE.md`. What every script in `scripts/` does and why. Read the
   > (`scripts/companion/styles.css`), so the two could share tokens; until they
   > do, a palette change has to be made in both.
 - `scripts/setup.mjs` (`npm run setup`) — one-time setup for a fresh clone:
-  checks Node ≥ 22.18 and the `claude` CLI, installs the three package trees,
+  checks Node ≥ 22.18 and the `claude` CLI, installs the three package trees
+  with `npm ci` (exactly the committed lockfile, never rewriting it — skipped
+  when `node_modules/.package-lock.json` is already newer),
   runs `link-skills`, writes a local-only `.env` if there is none (Claude
   agents, built-in database, `SCYNE_DOCUMENT_STORE=local`, `PUBLISH_TARGET=none`)
   creates the first login through `/auth/bootstrap`, and saves

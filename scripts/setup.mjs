@@ -19,7 +19,7 @@
  * so a dependency imported here would not exist yet.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,12 +62,29 @@ ok(`Claude Code ${claude.stdout.trim()} — make sure you have signed in once by
 
 // ─── 2. Packages ────────────────────────────────────────────────────────────
 step(2, "Installing packages (the first time takes a few minutes)");
+// `npm ci`, never `npm install`: ci installs exactly what the committed
+// lockfile says and never writes to it. `npm install` rewrites the lockfile
+// whenever the local npm formats it differently, which leaves a clone with a
+// modified file the person never touched — and the next `git pull` that
+// changes it refuses with "your local changes would be overwritten".
+//
+// Skipped when the packages already match: npm records what it installed in
+// node_modules/.package-lock.json, so a lockfile no newer than that has
+// nothing new in it. That keeps a re-run fast, and a re-run after a pull
+// that changed dependencies reinstalls them.
+let reinstalled = false;
 for (const dir of [".", "packages/orchestrator", "scyne-chatbot"]) {
-  const r = spawnSync("npm", ["install", "--no-fund", "--no-audit"], {
-    cwd: path.join(ROOT, dir), stdio: "inherit", shell: WIN,
-  });
-  if (r.status !== 0) stop(`npm install failed in ${dir}`);
-  ok(dir === "." ? "workspace" : dir);
+  const cwd = path.join(ROOT, dir);
+  const name = dir === "." ? "workspace" : dir;
+  const installed = mtime(path.join(cwd, "node_modules", ".package-lock.json"));
+  if (installed && installed >= mtime(path.join(cwd, "package-lock.json"))) {
+    ok(`${name} (up to date)`);
+    continue;
+  }
+  const r = spawnSync("npm", ["ci", "--no-fund", "--no-audit"], { cwd, stdio: "inherit", shell: WIN });
+  if (r.status !== 0) stop(`npm ci failed in ${dir}`);
+  reinstalled ||= Boolean(installed);
+  ok(name);
 }
 
 // ─── 3. Skills ──────────────────────────────────────────────────────────────
@@ -169,7 +186,7 @@ console.log(`
   Start Scyne (every time):   npm run dev
   Then open:                  http://localhost:5173${admin ? `   — sign in as ${admin}` : ""}
   Operator console:           http://127.0.0.1:3100/orch
-${restart ? "\n  `npm run dev` is running: stop it (Ctrl+C) and start it again so it reads the new .env.\n" : ""}`);
+${restart || reinstalled ? "\n  If `npm run dev` is running, stop it (Ctrl+C) and start it again so it picks up the changes.\n" : ""}`);
 // A prompt leaves stdin open, which would keep the process alive.
 process.exit(0);
 
@@ -272,6 +289,11 @@ function setEnvVar(file, name, value, comment) {
     : `${text.replace(/\n*$/, "\n")}\n${comment}\n${name}=${value}\n`;
   writeFileSync(file, next, { mode: 0o600 });
   process.env[name] = value;
+}
+
+/** A file's modification time in ms, or 0 when it does not exist. */
+function mtime(file) {
+  try { return statSync(file).mtimeMs; } catch { return 0; }
 }
 
 function loadEnvFile(file) {
