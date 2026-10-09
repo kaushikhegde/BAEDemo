@@ -7,9 +7,10 @@
 // table is re-exported into `ROUTES` so the OpenAPI contract test still checks
 // both directions across the whole surface — one contract, two files.
 //
-// Every route here authenticates. The two exceptions are deliberate and
-// narrow: `POST /auth/bootstrap`, which works only while the company has no
-// users at all, and `POST /auth/login`.
+// Every route here authenticates. The exceptions are deliberate and narrow:
+// `POST /auth/bootstrap`, which works only while the company has no users at
+// all, `GET /auth/status`, which says whether that is still the case, and
+// `POST /auth/login`.
 //
 // The rule that shapes the rest: a project a caller may not see returns 404,
 // never 403. A 403 confirms the project exists, which is exactly the fact a
@@ -30,6 +31,7 @@ import type { Orchestrator } from "../index.js";
 
 export const PLATFORM_ROUTES = [
   { method: "POST",   path: "/auth/bootstrap" },
+  { method: "GET",    path: "/auth/status" },
   { method: "POST",   path: "/auth/login" },
   { method: "POST",   path: "/auth/logout" },
   { method: "GET",    path: "/auth/whoami" },
@@ -179,6 +181,16 @@ export function createPlatformRouter(orch: Orchestrator): Router {
     const { secret } = await platform.createToken(user.id, "bootstrap");
     await audit(req, "auth.bootstrap", { userId: user.id, targetType: "user", targetId: user.id });
     created(res, { user: { id: user.id, email: user.email, role: user.role }, token: secret });
+  }));
+
+  /**
+   * Whether the installation has been claimed. Open for the same reason as
+   * bootstrap — it is asked before anyone can sign in — and it reveals nothing
+   * a 403 from bootstrap does not. Setup reads it to decide whether to ask for
+   * a first login at all.
+   */
+  r.get("/auth/status", wrap(async (_req, res) => {
+    res.json({ claimed: !(await platform.isUnclaimed(orch.homeCompanyId)) });
   }));
 
   r.post("/auth/login", wrap(async (req, res) => {

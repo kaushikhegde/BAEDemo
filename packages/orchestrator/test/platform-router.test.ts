@@ -87,6 +87,14 @@ describe("bootstrap and login", () => {
     expect(second.body.error).toContain("already has users");
   });
 
+  it("says whether the installation is claimed, without a credential", async () => {
+    // How setup knows to ask for a first login — and not to on an install that
+    // already has one. It reveals nothing a 403 from /auth/bootstrap does not.
+    expect((await call("GET", "/auth/status")).body).toEqual({ claimed: false });
+    await bootstrap();
+    expect((await call("GET", "/auth/status")).body).toEqual({ claimed: true });
+  });
+
   it("logs in, identifies itself, and logs out", async () => {
     await bootstrap();
     const login = await call("POST", "/auth/login", { body: { email: "admin@scyne.co", password: "pw-admin" } });

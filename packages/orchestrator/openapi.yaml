@@ -1283,6 +1283,13 @@ paths:
         "201":
           description: OK
         "401": { description: Authentication required }
+  /auth/status:
+    get:
+      operationId: installationStatus
+      summary: Whether the installation has been claimed. Open, so a first-run setup can ask before anyone can sign in.
+      responses:
+        "200":
+          description: OK
   /auth/login:
     post:
       operationId: login

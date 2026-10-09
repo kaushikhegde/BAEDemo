@@ -11,9 +11,9 @@
  * running entirely on this machine (no Docker, no Postgres, no publishing), and
  * creates the first login.
  *
- * Safe to re-run. An existing `.env` is kept as it is, installs are no-ops when
- * nothing changed, and the login step is offered only on an install that has
- * no database yet.
+ * Safe to re-run, and safe while `npm run dev` runs. An existing `.env` is
+ * kept as it is, installs are no-ops when nothing changed, and the login is
+ * asked for only while the installation has none.
  *
  * Imports nothing but Node built-ins at the top: it runs BEFORE `npm install`,
  * so a dependency imported here would not exist yet.
@@ -96,36 +96,44 @@ if (existsSync(envFile)) {
 
 // ─── 5. First login ─────────────────────────────────────────────────────────
 step(5, "Admin login");
-let admin = null;
-// Only a brand-new install can have its first login made here:
-// `/auth/bootstrap` refuses the moment any account exists. Neither a built-in
-// database (.orchestrator/pgdata) nor a DATABASE_URL means nothing has been set
-// up yet. Otherwise the install already has its logins, and booting a second
-// orchestrator against its database would re-fire its unfinished runs — so it
-// is left alone unless `--email` asks otherwise.
 loadEnvFile(envFile);
-const fresh = !process.env.DATABASE_URL && !existsSync(path.join(ROOT, ".orchestrator/pgdata"));
-
-if (!fresh && !flag("email")) {
-  ok("this install is already set up — sign in with the login you already have");
-  console.log("    To add a person: the console's Users tab, or, while `npm run dev` runs:\n" +
-              "    npm run scyne -- user create <email>");
-} else {
+// Asked of the server rather than guessed from what is on disk: an install
+// whose `npm run dev` ran before setup has a database and still no login.
+// `/auth/bootstrap` makes the FIRST account only, so a claimed install is told
+// so instead of being asked for a login that could never be saved.
+const admin = await withServer(async (base, running) => {
+  // Null from a server started before `/auth/status` existed — a `npm run dev`
+  // left running across a pull. Then the bootstrap's own 403 says the same.
+  const status = await fetch(`${base}/auth/status`)
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (status?.claimed) {
+    ok("this install already has its admin — sign in with that login");
+    console.log("    To add a person: the console's Users tab, or, while `npm run dev` runs:\n" +
+                "    npm run scyne -- user create <email>");
+    return null;
+  }
   const email = flag("email") ?? await prompt("  Admin email: ");
   if (!email) {
-    ok("skipped — run `npm run scyne -- init` while `npm run dev` is running to create it later");
-  } else {
-    const password = flag("password") ?? await prompt("  Admin password: ", { silent: true });
-    if (!password) stop("a password is required");
-    // A running stack on an existing database would hold the built-in
-    // database's lock or, on Postgres, have its in-flight runs marked orphaned
-    // by the second server's startup. A fresh install has nothing running.
-    if (!fresh && await portInUse(3100)) {
-      stop("`npm run dev` is running. Stop it (Ctrl+C), run setup again, then start it.");
-    }
-    admin = await claim(email, password, flag("name"));
+    ok("skipped — run setup again (or `npm run scyne -- init` while `npm run dev` runs) to create it");
+    return null;
   }
-}
+  const password = flag("password") ?? await prompt("  Admin password: ", { silent: true });
+  if (!password) stop("a password is required");
+
+  const res = await fetch(`${base}/auth/bootstrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password, name: flag("name") }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 403) {
+    ok("not created — this install already has its admin. Sign in with that login");
+    return null;
+  }
+  if (!res.ok) stop(`could not create the login: ${body.error ?? res.status}`);
+  ok(`admin login created for ${body.user?.email ?? email}${running ? " (on your running `npm run dev`)" : ""}`);
+  return body.user?.email ?? email;
+});
 
 console.log(`
   Setup done.
@@ -141,12 +149,18 @@ process.exit(0);
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Create the first account through the orchestrator's own `/auth/bootstrap` —
- * the route `scyne init` uses — on a server started for the purpose on a spare
- * port, then stopped. The real code path, rather than writing the user row
- * here, so password hashing and the audit entry stay in one place.
+ * Run `fn` against an orchestrator: the one `npm run dev` already has on :3100
+ * if it is up, otherwise one started for the purpose on a spare port and
+ * stopped afterwards. Going through the real server — the routes `scyne init`
+ * uses — keeps password hashing and the audit entry in one place.
+ *
+ * Starting a second server while dev runs is what this avoids: it would hit the
+ * built-in database's lock, or on Postgres mark the running one's in-flight
+ * runs orphaned.
  */
-async function claim(email, password, name) {
+async function withServer(fn) {
+  if (await healthy("http://127.0.0.1:3100")) return fn("http://127.0.0.1:3100", true);
+
   const port = await freePort();
   const tsx = path.join(ROOT, "node_modules", ".bin", WIN ? "tsx.cmd" : "tsx");
   const server = spawn(tsx, ["packages/orchestrator/src/cli.ts", "serve", "--port", String(port)], {
@@ -156,33 +170,17 @@ async function claim(email, password, name) {
   server.stdout.on("data", (d) => { log += d; });
   server.stderr.on("data", (d) => { log += d; });
   const exited = new Promise((res) => server.on("exit", res));
+  const tail = () => log.trim().split("\n").slice(-15).join("\n");
 
   try {
     const base = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + 120_000;
-    for (;;) {
-      if (server.exitCode !== null) stop(`the orchestrator did not start:\n${log.trim().split("\n").slice(-15).join("\n")}`);
-      if (Date.now() > deadline) stop(`the orchestrator did not answer within two minutes:\n${log.trim().split("\n").slice(-15).join("\n")}`);
-      try {
-        if ((await fetch(`${base}/health`)).ok) break;
-      } catch { /* not listening yet */ }
+    while (!(await healthy(base))) {
+      if (server.exitCode !== null) stop(`the orchestrator did not start:\n${tail()}`);
+      if (Date.now() > deadline) stop(`the orchestrator did not answer within two minutes:\n${tail()}`);
       await new Promise((r) => setTimeout(r, 500));
     }
-
-    const res = await fetch(`${base}/auth/bootstrap`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password, name }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (res.status === 403) {
-      // Not saved: an install has exactly one first login, made once.
-      ok("not created — this install already has its admin. Sign in with that login");
-      return null;
-    }
-    if (!res.ok) stop(`could not create the login: ${body.error ?? res.status}`);
-    ok(`admin login created for ${body.user?.email ?? email}`);
-    return body.user?.email ?? email;
+    return await fn(base, false);
   } finally {
     // SIGTERM, which `serve` handles by closing the database cleanly — killing
     // it outright could leave the built-in database's lock file behind.
@@ -191,6 +189,10 @@ async function claim(email, password, name) {
     await exited;
     clearTimeout(timer);
   }
+}
+
+async function healthy(base) {
+  try { return (await fetch(`${base}/health`)).ok; } catch { return false; }
 }
 
 function envTemplate(gemini) {
@@ -207,7 +209,7 @@ SCYNE_DOCUMENT_STORE=local
 PUBLISH_TARGET=none
 
 # The built-in database lives in .orchestrator/pgdata. To use your own Postgres
-# instead, set this (and run setup's login step again):
+# instead, set this (and run setup again for its first login):
 # DATABASE_URL=postgres://user:password@localhost:5432/scyne
 
 # The chat's model.
@@ -217,15 +219,6 @@ GEMINI_API_KEY=${gemini ?? ""}
 
 function loadEnvFile(file) {
   try { process.loadEnvFile(file); } catch { /* no .env is fine */ }
-}
-
-function portInUse(port) {
-  return new Promise((res) => {
-    const s = createServer();
-    s.once("error", () => res(true));
-    s.once("listening", () => s.close(() => res(false)));
-    s.listen(port, "127.0.0.1");
-  });
 }
 
 function freePort() {
